@@ -27,6 +27,7 @@ use crate::{
     types::AuthorityIndex,
     wal::{self, walf},
     schedule_fetcher::ScheduleFetcher,
+    scheduler::Scheduler,
 };
 
 pub struct Validator {
@@ -87,7 +88,9 @@ impl Validator {
         );
 
         let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
-        ScheduleFetcher::start(Arc::clone(&pevm_api));
+
+        ScheduleFetcher::start(pevm_api.clone());
+        Scheduler::start(pevm_api.clone());
 
         TransactionGenerator::start(
             block_sender,
@@ -95,6 +98,7 @@ impl Validator {
             client_parameters,
             public_config.clone(),
             metrics.clone(),
+            pevm_api.clone(),   
         );
         let committed_transaction_log =
             TransactionLog::start(private_config.committed_transactions_log())

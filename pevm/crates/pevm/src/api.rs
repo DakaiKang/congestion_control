@@ -3,8 +3,10 @@
 
 use std::fmt;
 use std::error::Error;
-#[cfg(feature = "with-tokio")]
+// #[cfg(feature = "with-tokio")]
 use tokio::time::{sleep, Duration};
+// #[cfg(feature = "with-tokio")]
+use tokio::sync::Mutex;
 
 use std::{
     collections::{VecDeque},
@@ -34,49 +36,55 @@ impl Error for APIError {}
 #[derive(Debug)]
 pub struct PevmAPI {
     pevm: Pevm,
-    txns_queue: VecDeque<i32>,
-    scheduled_txns: VecDeque<i32>,
+    txns_queue: Mutex<VecDeque<i32>>,
+    scheduled_txns: Mutex<VecDeque<i32>>,
 }
 
 impl PevmAPI {
     pub fn new() -> Self {
         Self {
             pevm: Pevm::default(),
-            txns_queue: VecDeque::new(),
-            scheduled_txns: VecDeque::new(),
+            txns_queue: Mutex::new(VecDeque::new()),
+            scheduled_txns: Mutex::new(VecDeque::new()),
         }
     }
-    pub fn add_transactions(&mut self, transactions: Vec<i32>) {
+    pub async fn add_transactions(&mut self, transactions: Vec<i32>) {
+        tracing::info!("Waiting queue lock");
+        let mut queue = self.txns_queue.lock().await;
         for txn in &transactions {
             tracing::info!("Adding transaction: {}", txn);
-            self.txns_queue.push_back(*txn);
+            queue.push_back(*txn);
         }
     }
 
+    // Continously run the transaction scheduling logic
     pub async fn schedule(&mut self) {
         loop {
-            let Some(transaction) = self.txns_queue.pop_front() else {
-                tracing::info!("No more transactions to schedule");
-                #[cfg(feature = "with-tokio")]
-                sleep(Duration::from_millis(1000)).await;
-                continue;
-            };
-            tracing::info!("Scheduling transaction: {:?}", transaction);
-            // Here we would schedule the transaction for execution
-            // For now, we just log it
-            self.scheduled_txns.push_back(transaction);
+                let mut queue = self.txns_queue.lock().await;
+                let Some(transaction) = queue.pop_front() else {
+                    tracing::info!("No more transactions to schedule");
+                    // #[cfg(feature = "with-tokio")]
+                    sleep(Duration::from_millis(1000)).await;
+                    continue;
+                };
+                tracing::info!("Scheduling transaction: {:?}", transaction);
+                // Here we would schedule the transaction for execution
+                // For now, we just log it
+                let mut scheduled_queue = self.scheduled_txns.lock().await;
+                scheduled_queue.push_back(transaction);
         }
     }
 
-    pub fn scheduled_transactions(&mut self) -> Result<i32, APIError> {
-        if self.scheduled_txns.is_empty() {
+    pub async fn scheduled_transactions(&mut self) -> Result<i32, APIError> {
+        let mut scheduled_queue = self.scheduled_txns.lock().await;
+        if scheduled_queue.is_empty() {
             tracing::info!("No scheduled transactions");
             return Err(APIError::NoScheduledTransactions);
         }
 
-        tracing::info!("Scheduled transactions: {:?}", self.scheduled_txns);
+        tracing::info!("Scheduled transactions: {:?}", scheduled_queue);
 
-        self.scheduled_txns
+        scheduled_queue
             .pop_front()
             .ok_or(APIError::NoScheduledTransactions)
     }

@@ -25,6 +25,8 @@ pub mod network;
 pub mod prometheus;
 mod range_map;
 mod runtime;
+mod schedule_fetcher;
+mod scheduler;
 mod serde;
 #[cfg(test)]
 #[cfg(feature = "simulator")]
@@ -41,7 +43,6 @@ mod synchronizer;
 mod test_util;
 mod threshold_clock;
 mod transactions_generator;
-mod schedule_fetcher;
 pub mod types;
 pub mod validator;
 mod wal;

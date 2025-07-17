@@ -13,11 +13,11 @@ use crate::{
 };
 use pevm::api::{PevmAPI, APIError};
 
-pub struct ScheduleFetcher {
+pub struct Scheduler {
     // This struct can hold any necessary state for fetching scheduled tasks.
 }
 
-impl ScheduleFetcher {
+impl Scheduler {
     pub fn new() -> Self {
         Self {}
     }
@@ -31,21 +31,12 @@ impl ScheduleFetcher {
 
     pub async fn run(self, pevm_api: Arc<Mutex<PevmAPI>>) {
         loop {
-            // Periodically fetch scheduled tasks
+            // Periodically schedule transactions
             sleep(Duration::from_millis(100)).await;
             let pevm_api_clone = pevm_api.clone();
             tokio::spawn(async move {
                 let mut guard = pevm_api_clone.lock().await;
-                let result = guard.scheduled_transactions().await;
-                match result {
-                    Ok(task) => {
-                        tracing::info!("Fetched scheduled task {}", task);
-                        // [TODO] propose task to Mysticeti Vertex
-                    }
-                    Err(e) => {
-                        tracing::error!("Error fetching scheduled task: {}", e);
-                    }
-                }
+                guard.schedule().await;
             });
         }
     }

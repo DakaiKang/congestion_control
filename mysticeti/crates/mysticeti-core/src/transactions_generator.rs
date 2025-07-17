@@ -4,7 +4,7 @@
 use std::{cmp::min, sync::Arc, time::Duration};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc,Mutex};
 use pevm::api::{PevmAPI, APIError};
 
 use crate::{
@@ -32,6 +32,7 @@ impl TransactionGenerator {
         client_parameters: ClientParameters,
         node_public_config: NodePublicConfig,
         metrics: Arc<Metrics>,
+        pevm_api: Arc<Mutex<PevmAPI>>,
     ) {
         assert!(client_parameters.transaction_size > 8 + 8); // 8 bytes timestamp + 8 bytes random
         tracing::info!(
@@ -47,11 +48,19 @@ impl TransactionGenerator {
                 node_public_config,
                 metrics,
             }
-            .run(),
+            .run(pevm_api),
         );
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
+        tracing::info!("Pushing three i32 into pevm_api");
+        let mut txns_to_push = vec![1, 2, 3];
+        {
+            let mut guard = pevm_api.lock().await;
+            tracing::info!("Got Lock");
+            guard.add_transactions(txns_to_push).await;
+        }
+
         let load = self.client_parameters.load;
         let transactions_per_block_interval = (load + 9) / 10;
         tracing::info!(
