@@ -214,6 +214,8 @@ macro_rules! index_mutex {
     };
 }
 
+
+
 pub mod chain;
 mod compat;
 mod mv_memory;
@@ -227,6 +229,8 @@ pub use storage::{
 };
 mod vm;
 pub use vm::{ExecutionError, PevmTxExecutionResult};
+pub mod api;
+pub use api::{APIError, PevmAPI};
 
 #[cfg(feature = "rpc-storage")]
 pub use storage::RpcStorage;

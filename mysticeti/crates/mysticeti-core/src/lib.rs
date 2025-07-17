@@ -41,6 +41,7 @@ mod synchronizer;
 mod test_util;
 mod threshold_clock;
 mod transactions_generator;
+mod schedule_fetcher;
 pub mod types;
 pub mod validator;
 mod wal;

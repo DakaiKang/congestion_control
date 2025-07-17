@@ -5,7 +5,6 @@ use std::{cmp::min, sync::Arc, time::Duration};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::sync::mpsc;
-use pevm::Pevm;
 
 use crate::{
     config::{ClientParameters, NodePublicConfig},
@@ -95,6 +94,7 @@ impl TransactionGenerator {
                     // which returns a set of transactions and the specific execution path.
                     // (2) Keep sending a batch of transactions to the scheduler; 
                     // use a different thread to receive the generated blocks 
+                    
                     if self.sender.send(block.clone()).await.is_err() {
                         return;
                     }

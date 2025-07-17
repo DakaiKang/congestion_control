@@ -15,6 +15,10 @@ optimism = [
   "dep:op-alloy-rpc-types",
 ]
 
+with-tokio = [
+  "dep:tokio",
+]
+
 rpc-storage = [
   "dep:alloy-transport",
   "dep:alloy-transport-http",
@@ -42,6 +46,8 @@ smallvec.workspace = true
 thiserror.workspace = true
 
 revm.workspace = true
+
+tracing.workspace = true
 
 # OP dependencies
 op-alloy-consensus = { workspace = true, optional = true }

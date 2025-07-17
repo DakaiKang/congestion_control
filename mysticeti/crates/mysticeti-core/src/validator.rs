@@ -8,6 +8,7 @@ use std::{
 
 use ::prometheus::Registry;
 use eyre::{eyre, Context, Result};
+use pevm::api::{PevmAPI, APIError};
 
 use crate::{
     block_handler::{RealBlockHandler, TestCommitHandler},
@@ -24,6 +25,7 @@ use crate::{
     transactions_generator::TransactionGenerator,
     types::AuthorityIndex,
     wal::{self, walf},
+    schedule_fetcher::ScheduleFetcher,
 };
 
 pub struct Validator {
@@ -82,6 +84,9 @@ impl Validator {
             metrics.clone(),
             public_config.parameters.consensus_only,
         );
+
+        let pevm_api = PevmAPI::new();
+        ScheduleFetcher::start(pevm_api);
 
         TransactionGenerator::start(
             block_sender,
