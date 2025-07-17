@@ -3,11 +3,12 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
+    sync::{Arc},
 };
 
 use ::prometheus::Registry;
 use eyre::{eyre, Context, Result};
+use tokio::sync::Mutex;
 use pevm::api::{PevmAPI, APIError};
 
 use crate::{
@@ -85,8 +86,8 @@ impl Validator {
             public_config.parameters.consensus_only,
         );
 
-        let pevm_api = PevmAPI::new();
-        ScheduleFetcher::start(pevm_api);
+        let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
+        ScheduleFetcher::start(Arc::clone(&pevm_api));
 
         TransactionGenerator::start(
             block_sender,

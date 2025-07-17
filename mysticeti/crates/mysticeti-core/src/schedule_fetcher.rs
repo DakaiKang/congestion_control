@@ -4,7 +4,10 @@
 // ScheduleFetcher is responsible for fetching scheduled tasks from the PevmAPI.
 // The fetched tasks can then be proposed as a Mysticeti Vertex.
 
-use std::{cmp::min, sync::Arc, time::Duration};
+use std::{cmp::min, sync::{Arc}};
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
+
 use crate::{
     runtime::{self, timestamp_utc},
 };
@@ -19,29 +22,27 @@ impl ScheduleFetcher {
         Self {}
     }
 
-    pub fn start(pevm_api: PevmAPI) {
-        runtime::Handle::current().spawn(
-            Self {
-            }
-            .run(pevm_api),
-        );
+    pub fn start(pevm_api: Arc<Mutex<PevmAPI>>) {
+        tracing::info!("Starting ScheduleFetcher");
+        tokio::spawn(async move {
+            Self{}.run(pevm_api).await;
+        });
     }
 
-    // A thread that continuously fetches scheduled tasks from the PevmAPI.
-    pub async fn run(self, mut pevm_api: PevmAPI) {
-        tracing::info!("Starting ScheduleFetcher to fetch scheduled task");
+    pub async fn run(self, pevm_api: Arc<Mutex<PevmAPI>>) {
         loop {
-            match pevm_api.scheduled_transactions() {
+            sleep(Duration::from_millis(100)).await;
+            let mut guard = pevm_api.lock().await;
+            match guard.scheduled_transactions() {
                 Ok(task) => {
                     tracing::info!("Fetched scheduled task {}", task);
-                    // [TODO] Here you would typically process the tasks, e.g., propose them as a Mysticeti Vertex.
+                    // [TODO] propose task to Mysticeti Vertex
                 }
                 Err(e) => {
                     tracing::error!("Error fetching scheduled task: {}", e);
                 }
             }
-            // Sleep for 100ms before fetching again.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(guard);
         }
     }
 }

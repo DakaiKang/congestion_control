@@ -5,6 +5,7 @@ use std::{cmp::min, sync::Arc, time::Duration};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::sync::mpsc;
+use pevm::api::{PevmAPI, APIError};
 
 use crate::{
     config::{ClientParameters, NodePublicConfig},
