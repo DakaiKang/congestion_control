@@ -231,6 +231,7 @@ mod vm;
 pub use vm::{ExecutionError, PevmTxExecutionResult};
 pub mod api;
 pub use api::{APIError, PevmAPI};
+pub mod serialization;
 
 #[cfg(feature = "rpc-storage")]
 pub use storage::RpcStorage;

@@ -24,6 +24,9 @@ rpc-storage = [
 global-alloc = ["dep:rpmalloc", "dep:snmalloc-rs", "dep:tikv-jemallocator"]
 
 [dependencies]
+rlp = "0.5"
+ethereum-types = "0.14"
+hex = "0.4"
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-provider.workspace = true

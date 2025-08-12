@@ -1,3 +1,5 @@
 mysticeti/v*.log.ansi
 mysticeti/dryrun-validator*
 mysticeti/target/*
+pevm/target/*
+pevm/crates/pevm/target/*

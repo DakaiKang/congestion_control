@@ -2971,8 +2971,10 @@ dependencies = [
  "bitvec",
  "criterion",
  "dashmap",
+ "ethereum-types",
  "flate2",
  "hashbrown 0.15.2",
+ "hex",
  "op-alloy-consensus",
  "op-alloy-network",
  "op-alloy-rpc-types",
@@ -2981,6 +2983,7 @@ dependencies = [
  "reqwest 0.12.12",
  "revm",
  "revme",
+ "rlp",
  "rpmalloc",
  "rustc-hash",
  "serde",
@@ -2990,6 +2993,7 @@ dependencies = [
  "thiserror 2.0.10",
  "tikv-jemallocator",
  "tokio",
+ "tracing",
  "walkdir",
 ]
 
