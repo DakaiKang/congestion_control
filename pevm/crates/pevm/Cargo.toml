@@ -24,6 +24,8 @@ rpc-storage = [
 global-alloc = ["dep:rpmalloc", "dep:snmalloc-rs", "dep:tikv-jemallocator"]
 
 [dependencies]
+rand = "0.8"
+ethers.workspace=true
 rlp = "0.5"
 ethereum-types = "0.14"
 hex = "0.4"
