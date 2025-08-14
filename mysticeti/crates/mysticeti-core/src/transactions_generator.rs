@@ -5,8 +5,7 @@ use std::{cmp::min, sync::Arc, time::Duration};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::sync::{mpsc,Mutex};
-use pevm::api::{PevmAPI, APIError};
-use pevm::erc20::generate_cluster;
+use pevm::api::{PevmAPI, APIError, TransactionWithHint};
 
 use crate::{
     config::{ClientParameters, NodePublicConfig},
@@ -74,8 +73,9 @@ impl TransactionGenerator {
 
 
     pub async fn run(mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
-        tracing::info!("Pushing three i32 into pevm_api");
-        let mut txns_to_push = vec![1, 2, 3];
+        tracing::info!("Pushing three TransactionWithHint into pevm_api");
+        // let mut txns_to_push = vec![TransactionWithHint{raw_hex: String::from("0x0"), hint: String::from(""),}; 3];
+        let mut txns_to_push = vec![TransactionWithHint::default(); 3];
         {
             let mut guard = pevm_api.lock().await;
             tracing::info!("Got Lock");

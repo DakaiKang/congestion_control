@@ -36,10 +36,10 @@ impl ScheduleFetcher {
             let pevm_api_clone = pevm_api.clone();
             tokio::spawn(async move {
                 let mut guard = pevm_api_clone.lock().await;
-                let result = guard.scheduled_transactions().await;
+                let result = guard.fetch_one_scheduled_txn().await;
                 match result {
                     Ok(task) => {
-                        tracing::info!("Fetched scheduled task {}", task);
+                        tracing::info!("Fetched scheduled task {:?}", task);
                         // [TODO] propose task to Mysticeti Vertex
                     }
                     Err(e) => {

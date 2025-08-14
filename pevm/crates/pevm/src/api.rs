@@ -15,10 +15,15 @@ use crate::{
     Pevm,
 };
 
+#[derive(Debug, Clone, Default)]
+pub struct TransactionWithHint {
+    raw_hex: String,
+    hint: String, // [TODO] The type 'String' is a placeholder for now
+}
 
 
 /// A list of Error types that can be returned by the Pevm API.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum APIError {
     NoScheduledTransactions,
 }
@@ -36,8 +41,8 @@ impl Error for APIError {}
 #[derive(Debug)]
 pub struct PevmAPI {
     pevm: Pevm,
-    txns_queue: Mutex<VecDeque<i32>>,
-    scheduled_txns: Mutex<VecDeque<i32>>,
+    txns_queue: Mutex<VecDeque<TransactionWithHint>>,
+    scheduled_txns: Mutex<VecDeque<TransactionWithHint>>,
 }
 
 impl PevmAPI {
@@ -48,12 +53,12 @@ impl PevmAPI {
             scheduled_txns: Mutex::new(VecDeque::new()),
         }
     }
-    pub async fn add_transactions(&mut self, transactions: Vec<i32>) {
+    pub async fn add_transactions(&mut self, transactions: Vec<TransactionWithHint>) {
         tracing::info!("Waiting queue lock");
         let mut queue = self.txns_queue.lock().await;
-        for txn in &transactions {
-            tracing::info!("Adding transaction: {}", txn);
-            queue.push_back(*txn);
+        for txn in transactions {
+            tracing::info!("Adding transaction: {:?}", txn);
+            queue.push_back(txn);
         }
     }
 
@@ -75,7 +80,7 @@ impl PevmAPI {
         }
     }
 
-    pub async fn scheduled_transactions(&mut self) -> Result<i32, APIError> {
+    pub async fn fetch_one_scheduled_txn(&mut self) -> Result<TransactionWithHint, APIError> {
         let mut scheduled_queue = self.scheduled_txns.lock().await;
         if scheduled_queue.is_empty() {
             tracing::info!("No scheduled transactions");
