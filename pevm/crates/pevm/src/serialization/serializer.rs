@@ -9,8 +9,8 @@ use rlp::Encodable;
 use std::str::FromStr;
 use rand;
 
-/// 生成并签名交易，支持 EIP-1559 和 Legacy
-async fn build_and_sign_tx(
+/// Generate and sign a transaction, either EIP-1559 or Legacy
+pub async fn build_and_sign_tx(
     wallet: &LocalWallet,
     use_legacy: bool,
     to_addr: &str,
@@ -51,6 +51,10 @@ async fn build_and_sign_tx(
         }
         .into()
     };
+
+    let raw_bytes_us = typed_tx.rlp();
+    let raw_tx_hex_us = format!("0x{}", hex::encode(raw_bytes_us));
+    println!("unsigned raw tx: {}", raw_tx_hex_us);
 
     let sig: Signature = wallet.sign_transaction(&typed_tx).await?;
     let signed_tx = typed_tx.clone().rlp_signed(&sig);
@@ -109,7 +113,7 @@ pub async fn test() -> Result<(), Box<dyn std::error::Error>> {
     // A wallet with random private key
     let wallet = LocalWallet::new(&mut rand::thread_rng()).with_chain_id(1u64);
 
-    // 测试：生成 EIP-1559 交易
+    // Test: Generate and sign EIP-1559 transaction
     let raw_1559 = build_tx_unsigned(
         false, // false = EIP-1559
         "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
@@ -122,6 +126,7 @@ pub async fn test() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!("unsigned EIP-1559 raw tx: {}", raw_1559);
 
+    // Test: Generate an unsigned EIP-1559 transaction
     let raw_1559_signed = build_and_sign_tx(
         &wallet,
         false, // false = EIP-1559
@@ -137,7 +142,7 @@ pub async fn test() -> Result<(), Box<dyn std::error::Error>> {
     println!("sigend EIP-1559 raw tx: {}", raw_1559_signed);
     println!("");
 
-    // 测试：生成 Legacy 交易
+    // Test: Generate and sign Legacy transaction
     let raw_legacy = build_and_sign_tx(
         &wallet,
         true, // true = Legacy
