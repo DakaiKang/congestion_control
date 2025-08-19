@@ -1,5 +1,6 @@
 use pevm::serialization::serializer;
 use pevm::serialization::deserializer;
+use pevm::serialization::adapter;
 pub use ethers::types::{Address, H256, U256};
 pub use ethers::signers::{LocalWallet, Signer};
 pub use hex::FromHex;
@@ -34,7 +35,14 @@ async fn test_serializer() -> Result<(), Box<dyn std::error::Error>> {
     println!("sigend EIP-1559 raw tx: {}", raw_1559_signed);
     println!("");
 
-    deserializer::decode_hex(&raw_1559_signed);
+
+    let deserialized_tx = deserializer::decode_hex(&raw_1559_signed);
+
+    println!("{:#?}", deserialized_tx);
+
+    let tx_env = adapter::adapt_transaction(deserialized_tx);
+
+    println!("{:#?}", tx_env);
 
     Ok(())
 }

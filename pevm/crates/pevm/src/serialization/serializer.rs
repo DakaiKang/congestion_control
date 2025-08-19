@@ -1,8 +1,8 @@
 use ethers::types::{
     transaction::eip2718::TypedTransaction,
     transaction::eip1559::Eip1559TransactionRequest,
-    transaction::eip2930::AccessList,
-    TransactionRequest, NameOrAddress, Address, U256, Bytes, Signature
+    transaction::eip2930::{AccessList, AccessListItem},
+    TransactionRequest, NameOrAddress, Address, U256, Bytes, Signature, H256, U64,
 };
 use ethers::signers::{LocalWallet, Signer};
 use rlp::Encodable;
@@ -28,7 +28,7 @@ pub async fn build_and_sign_tx(
             from: None,
             to: Some(NameOrAddress::Address(to)),
             gas: Some(gas_limit.into()),
-            gas_price: None,
+            gas_price: Some(gas_price_or_priority_fee.map(U256::from).unwrap_or_default()),
             value: Some(value),
             data: Some(Vec::new().into()),
             nonce: Some(nonce.into()),
@@ -37,6 +37,17 @@ pub async fn build_and_sign_tx(
         .into()
     } else {
         // EIP-1559 交易
+        let mut access_list_items = Vec::<AccessListItem>::new();
+        access_list_items.push(AccessListItem {
+            address: Address::from_str("0x0000000000000000000000000000000012345678")?,
+            storage_keys: vec![H256::from_low_u64_be(0x1), H256::from_low_u64_be(0x2), H256::from_low_u64_be(0x3)],
+        });
+        access_list_items.push(AccessListItem {
+            address: Address::from_str("0x0000000000000000000000000000000012340000")?,
+            storage_keys: vec![H256::from_low_u64_be(0x4), H256::from_low_u64_be(0x5), H256::from_low_u64_be(0x6)],
+        });
+        let access_list = AccessList::from(access_list_items);
+
         Eip1559TransactionRequest {
             from: None,
             to: Some(NameOrAddress::Address(to)),
@@ -47,7 +58,7 @@ pub async fn build_and_sign_tx(
             chain_id: Some(1u64.into()),
             max_priority_fee_per_gas: gas_price_or_priority_fee.map(U256::from),
             max_fee_per_gas: max_fee_per_gas.map(U256::from),
-            access_list: AccessList::default(),
+            access_list: access_list,
         }
         .into()
     };
@@ -108,6 +119,7 @@ pub async fn build_tx_unsigned(
 
     Ok(raw_tx_hex)
 }
+
 
 pub async fn test() -> Result<(), Box<dyn std::error::Error>> {
     // A wallet with random private key

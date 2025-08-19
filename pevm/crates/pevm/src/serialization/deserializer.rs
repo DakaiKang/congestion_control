@@ -1,18 +1,27 @@
-use ethers::types::{
+pub use ethers::types::{
     transaction::eip2718::TypedTransaction,
     transaction::eip1559::Eip1559TransactionRequest,
-    transaction::eip2930::AccessList,
-    TransactionRequest, NameOrAddress, Address, U256, Bytes, Signature, H256
+    transaction::eip2930::{AccessList, AccessListItem},
+    TransactionRequest, NameOrAddress, Address, U256, Bytes, Signature, H256, U64
 };
-use ethers::core::k256::{
+
+pub use ethers::core::k256::{
     ecdsa::{Signature as K256Signature, SigningKey, VerifyingKey},
     elliptic_curve::sec1::ToEncodedPoint,
 };
-use ethers::utils::keccak256;
+
+pub use ethers::utils::keccak256;
 
 pub use hex::FromHex;
 pub use rlp::{Rlp, RlpStream};
 pub use std::env;
+
+#[derive(Debug)]
+pub enum DecodedTransaction {
+    Legacy(TransactionRequest, Address),
+    Eip1559(Eip1559TransactionRequest, Address),
+    Unknown(String),
+}
 
 fn u256_from_bytes(b: &[u8]) -> U256 {
     if b.is_empty() {
@@ -21,6 +30,16 @@ fn u256_from_bytes(b: &[u8]) -> U256 {
         U256::from_big_endian(b)
     }
 }
+
+fn u64_from_bytes(b: &[u8]) -> U64 {
+    if b.is_empty() {
+        U64::from(0)
+    } else {
+        U64::from_big_endian(b)
+    }
+}
+
+
 
 fn parse_to_address(b: &[u8]) -> Option<Address> {
     if b.is_empty() {
@@ -111,7 +130,7 @@ fn recover_address(
 }
 
 
-fn decode_legacy(bytes: &[u8], no_signature: Vec<u8>) {
+fn decode_legacy(bytes: &[u8], no_signature: Vec<u8>) -> (TransactionRequest, Address) {
     let r = Rlp::new(bytes);
 
     let nonce = u256_from_bytes(r.at(0).unwrap().data().unwrap_or_default());
@@ -121,6 +140,8 @@ fn decode_legacy(bytes: &[u8], no_signature: Vec<u8>) {
     let to = parse_to_address(to_b);
     let value = u256_from_bytes(r.at(4).unwrap().data().unwrap_or_default());
     let data = r.at(5).unwrap().data().unwrap_or_default();
+
+    let mut caller = Address::default();
 
     println!("# Legacy (type 0)");
     println!("nonce                : {}", nonce);
@@ -138,50 +159,63 @@ fn decode_legacy(bytes: &[u8], no_signature: Vec<u8>) {
         println!("r                    : 0x{:064x}", r_sig);
         println!("s                    : 0x{:064x}", s_sig);
 
-        recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
+        caller = recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
     }
+
+    // Construct LegacyTransactionRequest
+    (TransactionRequest {
+        from: Some(caller),
+        to: to.map(NameOrAddress::Address),
+        gas: Some(gas_limit),
+        gas_price: Some(gas_price),
+        value: Some(value),
+        data: Some(Bytes::from(data.to_vec())),
+        nonce: Some(nonce),
+        ..Default::default()
+    }, caller)
+
 }
 
-fn decode_eip2930(inner: &[u8], no_signature: Vec<u8>) {
-    // RLP: [chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, v?, r?, s?]
-    let r = Rlp::new(inner);
-    let chain_id = u256_from_bytes(r.at(0).unwrap().data().unwrap_or_default());
-    let nonce = u256_from_bytes(r.at(1).unwrap().data().unwrap_or_default());
-    let gas_price = u256_from_bytes(r.at(2).unwrap().data().unwrap_or_default());
-    let gas_limit = u256_from_bytes(r.at(3).unwrap().data().unwrap_or_default());
-    let to = parse_to_address(r.at(4).unwrap().data().unwrap_or_default());
-    let value = u256_from_bytes(r.at(5).unwrap().data().unwrap_or_default());
-    let data = r.at(6).unwrap().data().unwrap_or_default();
-    let access_list = parse_access_list(&r, 7);
+// fn decode_eip2930(inner: &[u8], no_signature: Vec<u8>) {
+//     // RLP: [chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, v?, r?, s?]
+//     let r = Rlp::new(inner);
+//     let chain_id = u256_from_bytes(r.at(0).unwrap().data().unwrap_or_default());
+//     let nonce = u256_from_bytes(r.at(1).unwrap().data().unwrap_or_default());
+//     let gas_price = u256_from_bytes(r.at(2).unwrap().data().unwrap_or_default());
+//     let gas_limit = u256_from_bytes(r.at(3).unwrap().data().unwrap_or_default());
+//     let to = parse_to_address(r.at(4).unwrap().data().unwrap_or_default());
+//     let value = u256_from_bytes(r.at(5).unwrap().data().unwrap_or_default());
+//     let data = r.at(6).unwrap().data().unwrap_or_default();
+//     let access_list = parse_access_list(&r, 7);
     
 
-    println!("# EIP-2930 (type 0x01)");
-    println!("chainId              : {}", chain_id);
-    println!("nonce                : {}", nonce);
-    println!("gasPrice (wei)       : {}", gas_price);
-    println!("gasLimit             : {}", gas_limit);
-    println!("to                   : {}", to.map(|a| format!("{a:?}")).unwrap_or_else(|| "<create>".into()));
-    println!("value (wei)          : {}", value);
-    println!("data                 : {}", hexify(data));
-    println!("accessList           : [{} items]", access_list.len());
+//     println!("# EIP-2930 (type 0x01)");
+//     println!("chainId              : {}", chain_id);
+//     println!("nonce                : {}", nonce);
+//     println!("gasPrice (wei)       : {}", gas_price);
+//     println!("gasLimit             : {}", gas_limit);
+//     println!("to                   : {}", to.map(|a| format!("{a:?}")).unwrap_or_else(|| "<create>".into()));
+//     println!("value (wei)          : {}", value);
+//     println!("data                 : {}", hexify(data));
+//     println!("accessList           : [{} items]", access_list.len());
 
-    if r.item_count().unwrap_or(0) >= 10 {
-        let v = u256_from_bytes(r.at(8).unwrap().data().unwrap_or_default());
-        let r_sig = u256_from_bytes(r.at(9).unwrap().data().unwrap_or_default());
-        let s_sig = u256_from_bytes(r.at(10).unwrap().data().unwrap_or_default());
-        println!("v                    : {}", v);
-        println!("r                    : 0x{:064x}", r_sig);
-        println!("s                    : 0x{:064x}", s_sig);
+//     if r.item_count().unwrap_or(0) >= 10 {
+//         let v = u256_from_bytes(r.at(8).unwrap().data().unwrap_or_default());
+//         let r_sig = u256_from_bytes(r.at(9).unwrap().data().unwrap_or_default());
+//         let s_sig = u256_from_bytes(r.at(10).unwrap().data().unwrap_or_default());
+//         println!("v                    : {}", v);
+//         println!("r                    : 0x{:064x}", r_sig);
+//         println!("s                    : 0x{:064x}", s_sig);
 
-        let sig = Signature {
-            r: r_sig,
-            s: s_sig,
-            v: v.as_u64(),
-        };
+//         let sig = Signature {
+//             r: r_sig,
+//             s: s_sig,
+//             v: v.as_u64(),
+//         };
 
-        recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
-    }
-}
+//         recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
+//     }
+// }
 
 fn u256_to_h256(val: U256) -> H256 {
     let mut bytes = [0u8; 32];
@@ -189,10 +223,10 @@ fn u256_to_h256(val: U256) -> H256 {
     H256::from(bytes)
 }
 
-fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) {
+fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) -> (Eip1559TransactionRequest, Address) {
     // RLP: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, v?, r?, s?]
     let r = Rlp::new(inner);
-    let chain_id = u256_from_bytes(r.at(0).unwrap().data().unwrap_or_default());
+    let chain_id = u64_from_bytes(r.at(0).unwrap().data().unwrap_or_default());
     let nonce = u256_from_bytes(r.at(1).unwrap().data().unwrap_or_default());
     let max_priority = u256_from_bytes(r.at(2).unwrap().data().unwrap_or_default());
     let max_fee = u256_from_bytes(r.at(3).unwrap().data().unwrap_or_default());
@@ -201,6 +235,8 @@ fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) {
     let value = u256_from_bytes(r.at(6).unwrap().data().unwrap_or_default());
     let data = r.at(7).unwrap().data().unwrap_or_default();
     let access_list = parse_access_list(&r, 8);
+
+    let mut caller = Address::default();
 
     println!("# EIP-1559 (type 0x02)");
     println!("chainId              : {}", chain_id);
@@ -222,9 +258,25 @@ fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) {
         println!("r                    : 0x{:064x}", r_sig);
         println!("s                    : 0x{:064x}", s_sig);
         
-        recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
+        caller = recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
     }
 
+    let access_list = AccessList::from(access_list.into_iter()
+    .map(|(address, storage_keys)| AccessListItem { address, storage_keys })
+    .collect::<Vec<AccessListItem>>());
+
+    (Eip1559TransactionRequest {
+        chain_id: Some(chain_id),
+        nonce: Some(nonce),
+        max_priority_fee_per_gas: Some(max_priority),
+        max_fee_per_gas: Some(max_fee),
+        gas: Some(gas_limit),
+        to: to.map(NameOrAddress::Address),
+        value: Some(value),
+        data: Some(Bytes::from(data.to_vec())),
+        access_list: access_list,
+        ..Default::default()
+    }, caller)
 }
 
 fn strip_signature(raw_bytes: &[u8]) -> Vec<u8> {
@@ -259,42 +311,45 @@ fn strip_signature(raw_bytes: &[u8]) -> Vec<u8> {
 }
 
 
-pub fn decode_hex(raw_hex: &str) {
+pub fn decode_hex(raw_hex: &str) -> DecodedTransaction {
     // Remove "0x" prefix if present
     let h = raw_hex.trim_start_matches("0x");
     let bytes = Vec::from_hex(h).expect("invalid hex");
 
     if bytes.is_empty() {
         eprintln!("empty bytes");
-        return;
+        return DecodedTransaction::Unknown(String::from("Error: Empty Bytes"))
     }
 
     let no_signature = strip_signature(bytes.as_slice());
     println!("raw bytes without signature: {}", hexify(&no_signature));
 
     match bytes[0] {
-        0x01 => {
-            // EIP-2930
-            if bytes.len() < 2 {
-                eprintln!("malformed 2930");
-                return;
-            }
-            decode_eip2930(&bytes[1..], no_signature);
-        }
+        // 0x01 => {
+        //     // EIP-2930
+        //     if bytes.len() < 2 {
+        //         eprintln!("malformed 2930");
+        //         return;
+        //     }
+        //     let eip2930 = decode_eip2930(&bytes[1..], no_signature);
+        //     // eip2930
+        // }
         0x02 => {
             // EIP-1559
             if bytes.len() < 2 {
                 eprintln!("malformed 1559");
-                return;
+                return DecodedTransaction::Unknown(String::from("Error: malformed 1559"))
             }
-            decode_eip1559(&bytes[1..], no_signature);
+            let (eip1559, caller) = decode_eip1559(&bytes[1..], no_signature);
+            DecodedTransaction::Eip1559(eip1559, caller)
         }
         b if b >= 0xc0 => {
             // Legacy
-            decode_legacy(&bytes, no_signature);
+            let (legacy, caller) = decode_legacy(&bytes, no_signature);
+            DecodedTransaction::Legacy(legacy, caller)
         }
         _ => {
-            decode_legacy(&bytes, no_signature);
+            DecodedTransaction::Unknown(String::from("Error: Unknown transaction type"))
         }
     }
 }
