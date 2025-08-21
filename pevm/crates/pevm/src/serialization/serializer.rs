@@ -8,6 +8,63 @@ use ethers::signers::{LocalWallet, Signer};
 use rlp::Encodable;
 use std::str::FromStr;
 use rand;
+use super::adapter;
+use std::fs::OpenOptions;
+use std::fs::File;
+use std::io::Write;
+
+use revm::{
+    primitives::{AuthorizationList, BlockEnv, SpecId, TxEnv, ruint::Uint},
+    Handler,
+};
+
+pub async fn write_to_file(
+    tx_env: TxEnv,
+    file_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (tx, caller) = adapter::adapt_tx_env(tx_env);
+    println!("caller: {:?}", caller);
+    let encoded_tx = encode_tx_unsigned(tx).await?;
+    let hex_and_caller = format!("{} {:?}", encoded_tx, caller);
+
+    // Open file in append mode (create if not exists)
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(file_path)?;
+    // Write the result into the file
+    writeln!(file, "{}", hex_and_caller)?;
+    Ok(())
+}
+
+
+pub async fn encode_tx_unsigned<T>(
+    tx: T
+) -> Result<String, Box<dyn std::error::Error>> 
+where 
+    T: Into<TypedTransaction>,
+{
+    let typed_tx: TypedTransaction = tx.into();
+    let raw_bytes = typed_tx.rlp();
+    let raw_tx_hex = format!("0x{}", hex::encode(raw_bytes));
+    println!("unsigned raw tx: {}", raw_tx_hex);
+    Ok(raw_tx_hex)
+}
+
+pub async fn encode_tx_signed<T>(
+    tx: T,
+    wallet: &LocalWallet,
+) -> Result<String, Box<dyn std::error::Error>> 
+where 
+    T: Into<TypedTransaction>,
+{
+    let typed_tx: TypedTransaction = tx.into();
+    let sig: Signature = wallet.sign_transaction(&typed_tx).await?;
+    let signed_tx = typed_tx.clone().rlp_signed(&sig);
+    let raw_tx_hex = format!("0x{}", hex::encode(signed_tx));
+    println!("signed raw tx: {}", raw_tx_hex);
+    Ok(raw_tx_hex)
+}
 
 /// Generate and sign a transaction, either EIP-1559 or Legacy
 pub async fn build_and_sign_tx(

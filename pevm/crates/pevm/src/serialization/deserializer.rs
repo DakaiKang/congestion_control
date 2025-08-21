@@ -10,11 +10,20 @@ pub use ethers::core::k256::{
     elliptic_curve::sec1::ToEncodedPoint,
 };
 
+use revm::{
+    primitives::{AuthorizationList, BlockEnv, SpecId, TxEnv, ruint::Uint},
+    Handler,
+};
+
 pub use ethers::utils::keccak256;
 
 pub use hex::FromHex;
 pub use rlp::{Rlp, RlpStream};
 pub use std::env;
+pub use super::adapter;
+
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
 
 #[derive(Debug)]
 pub enum DecodedTransaction {
@@ -238,25 +247,25 @@ fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) -> (Eip1559TransactionReq
 
     let mut caller = Address::default();
 
-    println!("# EIP-1559 (type 0x02)");
-    println!("chainId              : {}", chain_id);
-    println!("nonce                : {}", nonce);
-    println!("maxPriorityFeePerGas : {}", max_priority);
-    println!("maxFeePerGas         : {}", max_fee);
-    println!("gasLimit             : {}", gas_limit);
-    println!("to                   : {}", to.map(|a| format!("{a:?}")).unwrap_or_else(|| "<create>".into()));
-    println!("value (wei)          : {}", value);
-    println!("data                 : {}", hexify(data));
-    println!("accessList           : [{} items]", access_list.len());
+    // println!("# EIP-1559 (type 0x02)");
+    // println!("chainId              : {}", chain_id);
+    // println!("nonce                : {}", nonce);
+    // println!("maxPriorityFeePerGas : {}", max_priority);
+    // println!("maxFeePerGas         : {}", max_fee);
+    // println!("gasLimit             : {}", gas_limit);
+    // println!("to                   : {}", to.map(|a| format!("{a:?}")).unwrap_or_else(|| "<create>".into()));
+    // println!("value (wei)          : {}", value);
+    // println!("data                 : {}", hexify(data));
+    // println!("accessList           : [{} items]", access_list.len());
     
     // Recover sender address if available
     if r.item_count().unwrap_or(0) >= 11 {
         let v = u256_from_bytes(r.at(9).unwrap().data().unwrap_or_default());
         let r_sig = u256_from_bytes(r.at(10).unwrap().data().unwrap_or_default());
         let s_sig = u256_from_bytes(r.at(11).unwrap().data().unwrap_or_default());
-        println!("v                    : {}", v);
-        println!("r                    : 0x{:064x}", r_sig);
-        println!("s                    : 0x{:064x}", s_sig);
+        // println!("v                    : {}", v);
+        // println!("r                    : 0x{:064x}", r_sig);
+        // println!("s                    : 0x{:064x}", s_sig);
         
         caller = recover_address(r_sig, s_sig, v, no_signature).expect("Failed to recover address");
     }
@@ -266,6 +275,7 @@ fn decode_eip1559(inner: &[u8], no_signature: Vec<u8>) -> (Eip1559TransactionReq
     .collect::<Vec<AccessListItem>>());
 
     (Eip1559TransactionRequest {
+        from: Some(caller),
         chain_id: Some(chain_id),
         nonce: Some(nonce),
         max_priority_fee_per_gas: Some(max_priority),
@@ -322,7 +332,7 @@ pub fn decode_hex(raw_hex: &str) -> DecodedTransaction {
     }
 
     let no_signature = strip_signature(bytes.as_slice());
-    println!("raw bytes without signature: {}", hexify(&no_signature));
+    // println!("raw bytes without signature: {}", hexify(&no_signature));
 
     match bytes[0] {
         // 0x01 => {
@@ -352,4 +362,88 @@ pub fn decode_hex(raw_hex: &str) -> DecodedTransaction {
             DecodedTransaction::Unknown(String::from("Error: Unknown transaction type"))
         }
     }
+}
+
+
+pub fn decode_hex_with_known_addr(raw_hex: &str, addr: Address) -> DecodedTransaction {
+    // Remove "0x" prefix if present
+    let h = raw_hex.trim_start_matches("0x");
+    let bytes = Vec::from_hex(h).expect("invalid hex");
+
+    if bytes.is_empty() {
+        eprintln!("empty bytes");
+        return DecodedTransaction::Unknown(String::from("Error: Empty Bytes"))
+    }
+
+    let no_signature = strip_signature(bytes.as_slice());
+
+    match bytes[0] {
+        0x02 => {
+            // EIP-1559
+            if bytes.len() < 2 {
+                eprintln!("malformed 1559");
+                return DecodedTransaction::Unknown(String::from("Error: malformed 1559"))
+            }
+            let (eip1559, caller) = decode_eip1559(&bytes[1..], no_signature);
+            DecodedTransaction::Eip1559(eip1559, addr)
+        }
+        b if b >= 0xc0 => {
+            // Legacy
+            let (legacy, caller) = decode_legacy(&bytes, no_signature);
+            DecodedTransaction::Legacy(legacy, addr)
+        }
+        _ => {
+            DecodedTransaction::Unknown(String::from("Error: Unknown transaction type"))
+        }
+    }
+}
+
+
+pub fn read_from_file(file_path: &str) -> io::Result<Vec<(String, Address)>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+
+    let mut results = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 2 {
+            eprintln!("Skipping malformed line: {}", line);
+            continue;
+        }
+
+        let hexcode = parts[0].to_string();
+        let address: Address = parts[1].parse().expect("Invalid Ethereum address");
+
+        results.push((hexcode, address));
+    }
+
+    Ok(results)
+}
+
+
+pub fn decode_batch_hex(
+    hex_address: Vec<(String, Address)>,
+) -> Vec<TxEnv> {
+    let mut results = Vec::new();
+
+    for (hex, addr) in hex_address {
+        let deserialized_tx = decode_hex_with_known_addr(&hex, addr);
+        match deserialized_tx {
+            DecodedTransaction::Legacy(_, _) => {
+                let tx_env = adapter::adapt_transaction(deserialized_tx);
+                results.push(tx_env);
+            },
+            DecodedTransaction::Eip1559(_, _) => {
+                let tx_env = adapter::adapt_transaction(deserialized_tx);
+                results.push(tx_env);
+            },
+            _ => {
+                eprintln!("Skipping unsupported transaction type for hex: {}", hex);
+                continue;
+            }
+        }
+    }
+
+    results
 }
