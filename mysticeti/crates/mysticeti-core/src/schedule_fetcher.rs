@@ -11,7 +11,7 @@ use tokio::time::{sleep, Duration};
 use crate::{
     runtime::{self, timestamp_utc},
 };
-use pevm::api::{PevmAPI, APIError};
+use pevm::api::{PevmAPI, APIError, TransactionWithHint};
 
 pub struct ScheduleFetcher {
     // This struct can hold any necessary state for fetching scheduled tasks.
@@ -49,4 +49,18 @@ impl ScheduleFetcher {
             });
         }
     }
+
+    // pub async fn try_one_fetch(self, pevm_api: Arc<Mutex<PevmAPI>>) -> Result<TransactionWithHint, APIError> {
+    //     let mut guard = pevm_api.lock().await;
+    //     let result = guard.fetch_one_scheduled_txn().await;
+    //     match result {
+    //         Ok(task) => {
+    //             tracing::info!("Fetched scheduled task {:?}", &task);
+    //         }
+    //         Err(_) => {
+    //             tracing::error!("Error fetching scheduled task: {}", &result.err().unwrap());
+    //         }
+    //     }
+    //     result
+    // }
 }

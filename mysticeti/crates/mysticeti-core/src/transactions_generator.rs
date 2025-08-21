@@ -73,15 +73,6 @@ impl TransactionGenerator {
 
 
     pub async fn run(mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
-        tracing::info!("Pushing three TransactionWithHint into pevm_api");
-        // let mut txns_to_push = vec![TransactionWithHint{raw_hex: String::from("0x0"), hint: String::from(""),}; 3];
-        let mut txns_to_push = vec![TransactionWithHint::default(); 3];
-        {
-            let mut guard = pevm_api.lock().await;
-            tracing::info!("Got Lock");
-            guard.add_transactions(txns_to_push).await;
-        }
-
         let load = self.client_parameters.load;
         let transactions_per_block_interval = (load + 9) / 10;
         tracing::info!(
@@ -105,12 +96,31 @@ impl TransactionGenerator {
             let mut block = Vec::with_capacity(target_block_size);
             let mut block_size = 0;
             for _ in 0..transactions_per_block_interval {
+                let mut guard = pevm_api.lock().await;
+                let fetched_txn = guard.fetch_one_scheduled_txn().await;
+                match &fetched_txn {
+                    Ok(task) => {
+                        // tracing::info!("Fetched scheduled task {:?}", task);
+                    }
+                    Err(e) => {
+                        tracing::error!("Error fetching scheduled task: {}", e);
+                        continue;
+                    }
+                }
+
+                let fetched_txn = fetched_txn.unwrap();
+
                 random += counter;
 
                 let mut transaction = Vec::with_capacity(self.client_parameters.transaction_size);
                 transaction.extend_from_slice(&timestamp); // 8 bytes
-                transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
-                transaction.extend_from_slice(&zeros[..]);
+                // transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
+                // transaction.extend_from_slice(&zeros[..]);
+                transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
+                transaction.push(b'|');
+                transaction.extend_from_slice(fetched_txn.caller.as_bytes());
+                transaction.push(b'|');
+                transaction.extend_from_slice(fetched_txn.hint.as_bytes());
 
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;
@@ -118,14 +128,6 @@ impl TransactionGenerator {
                 tx_to_report += 1;
 
                 if block_size >= max_block_size {
-                    // [DK TODO]We need a scheduler to pick up transaction before sending
-                    // to boost parallel execution.
-                    // Possible solution:
-                    // (1) Send a batch of transactions to the pevm scheduler,
-                    // which returns a set of transactions and the specific execution path.
-                    // (2) Keep sending a batch of transactions to the scheduler; 
-                    // use a different thread to receive the generated blocks 
-                    
                     if self.sender.send(block.clone()).await.is_err() {
                         return;
                     }

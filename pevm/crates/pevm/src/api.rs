@@ -1,6 +1,4 @@
 // Provide Pevm API for transaction scheduling and execution, used by Mysticeti.
-
-
 use std::fmt;
 use std::error::Error;
 // #[cfg(feature = "with-tokio")]
@@ -15,12 +13,16 @@ use crate::{
     Pevm,
 };
 
+use ethers::types::{
+    Address, 
+};
+
 #[derive(Debug, Clone, Default)]
 pub struct TransactionWithHint {
-    raw_hex: String,
-    hint: String, // [TODO] The type 'String' is a placeholder for now
+    pub raw_hex: String,
+    pub caller: Address,
+    pub hint: String, // [TODO] The type 'String' is a placeholder for now
 }
-
 
 /// A list of Error types that can be returned by the Pevm API.
 #[derive(Debug, Clone)]
