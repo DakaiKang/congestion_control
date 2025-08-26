@@ -8,12 +8,19 @@ pub mod common;
 #[path = "./mod.rs"]
 pub mod erc20;
 
+#[path = "./workload_generation.rs"]
+pub mod workload_generation;
+
 use common::test_execute_revm;
 use erc20::generate_cluster;
 use pevm::chain::PevmEthereum;
+use pevm::api;
+use pevm::serialization::deserializer;
 use pevm::{Bytecodes, ChainState, EvmAccount, InMemoryStorage};
 use revm::primitives::{Address, TxEnv};
 use std::sync::Arc;
+
+pub use ethers::types::Address as EthAddress;
 
 #[test]
 fn erc20_independent() {
@@ -53,4 +60,26 @@ fn erc20_clusters() {
         InMemoryStorage::new(final_state, Arc::new(final_bytecodes), Default::default()),
         final_txs,
     )
+}
+
+
+#[tokio::test]
+async fn test_workload_generation() -> Result<(), Box<dyn std::error::Error>> {
+    workload_generation::generate_workload().await;
+    Ok(())
+}
+
+#[test]
+fn split_test() -> std::io::Result<()> {
+    workload_generation::split_file_round_robin("erc_20_workload", 4);
+    Ok(())
+}
+
+#[test]
+fn read_output_test() {
+    let code_callers = api::PevmAPI::read_workload_from_file("workload_0.txt").unwrap();
+    let first_ten: Vec<(String, EthAddress)> = code_callers.iter().take(1).cloned().collect();
+    println!("First ten entries: {:?}", first_ten);
+    let result = deserializer::decode_batch_hex(first_ten);
+    println!("result: {:#?}", result);
 }

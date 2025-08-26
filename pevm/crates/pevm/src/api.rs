@@ -17,6 +17,12 @@ use ethers::types::{
     Address, 
 };
 
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
+
+use super::serialization::deserializer;
+
 #[derive(Debug, Clone, Default)]
 pub struct TransactionWithHint {
     pub raw_hex: String,
@@ -55,6 +61,7 @@ impl PevmAPI {
             scheduled_txns: Mutex::new(VecDeque::new()),
         }
     }
+
     pub async fn add_transactions(&mut self, transactions: Vec<TransactionWithHint>) {
         tracing::info!("Waiting queue lock");
         let mut queue = self.txns_queue.lock().await;
@@ -95,5 +102,10 @@ impl PevmAPI {
             .pop_front()
             .ok_or(APIError::NoScheduledTransactions)
     }
+
+    pub fn read_workload_from_file(file_path: &str) -> io::Result<Vec<(String, Address)>> {
+        deserializer::read_from_file(file_path)
+    }
+
 }
 

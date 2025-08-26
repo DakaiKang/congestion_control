@@ -23,7 +23,7 @@ pub async fn write_to_file(
     file_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tx, caller) = adapter::adapt_tx_env(tx_env);
-    println!("caller: {:?}", caller);
+    // println!("caller: {:?}", caller);
     let encoded_tx = encode_tx_unsigned(tx).await?;
     let hex_and_caller = format!("{} {:?}", encoded_tx, caller);
 
@@ -47,7 +47,7 @@ where
     let typed_tx: TypedTransaction = tx.into();
     let raw_bytes = typed_tx.rlp();
     let raw_tx_hex = format!("0x{}", hex::encode(raw_bytes));
-    println!("unsigned raw tx: {}", raw_tx_hex);
+    // println!("unsigned raw tx: {}", raw_tx_hex);
     Ok(raw_tx_hex)
 }
 
@@ -62,7 +62,7 @@ where
     let sig: Signature = wallet.sign_transaction(&typed_tx).await?;
     let signed_tx = typed_tx.clone().rlp_signed(&sig);
     let raw_tx_hex = format!("0x{}", hex::encode(signed_tx));
-    println!("signed raw tx: {}", raw_tx_hex);
+    // println!("signed raw tx: {}", raw_tx_hex);
     Ok(raw_tx_hex)
 }
 
