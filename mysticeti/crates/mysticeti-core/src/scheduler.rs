@@ -4,7 +4,7 @@
 // ScheduleFetcher is responsible for fetching scheduled tasks from the PevmAPI.
 // The fetched tasks can then be proposed as a Mysticeti Vertex.
 
-use std::{cmp::min, sync::{Arc}};
+use std::{cmp::min, sync::Arc};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 

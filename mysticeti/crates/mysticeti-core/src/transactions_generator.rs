@@ -96,31 +96,31 @@ impl TransactionGenerator {
             let mut block = Vec::with_capacity(target_block_size);
             let mut block_size = 0;
             for _ in 0..transactions_per_block_interval {
-                let mut guard = pevm_api.lock().await;
-                let fetched_txn = guard.fetch_one_scheduled_txn().await;
-                match &fetched_txn {
-                    Ok(task) => {
-                        // tracing::info!("Fetched scheduled task {:?}", task);
-                    }
-                    Err(e) => {
-                        tracing::error!("Error fetching scheduled task: {}", e);
-                        continue;
-                    }
-                }
+                // let mut guard = pevm_api.lock().await;
+                // let fetched_txn = guard.fetch_one_scheduled_txn().await;
+                // match &fetched_txn {
+                //     Ok(task) => {
+                //         // tracing::info!("Fetched scheduled task {:?}", task);
+                //     }
+                //     Err(e) => {
+                //         tracing::error!("Error fetching scheduled task: {}", e);
+                //         continue;
+                //     }
+                // }
 
-                let fetched_txn = fetched_txn.unwrap();
+                // let fetched_txn = fetched_txn.unwrap();
 
                 random += counter;
 
                 let mut transaction = Vec::with_capacity(self.client_parameters.transaction_size);
                 transaction.extend_from_slice(&timestamp); // 8 bytes
-                // transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
-                // transaction.extend_from_slice(&zeros[..]);
-                transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
-                transaction.push(b'|');
-                transaction.extend_from_slice(fetched_txn.caller.as_bytes());
-                transaction.push(b'|');
-                transaction.extend_from_slice(fetched_txn.hint.as_bytes());
+                transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
+                transaction.extend_from_slice(&zeros[..]);
+                // transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
+                // transaction.push(b'|');
+                // transaction.extend_from_slice(fetched_txn.caller.as_bytes());
+                // transaction.push(b'|');
+                // transaction.extend_from_slice(fetched_txn.hint.as_bytes());
 
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;

@@ -45,7 +45,7 @@ fn option_u256_to_uint_or_zero(opt: Option<U256>) -> Uint<256, 4> {
 }
 
 
-fn alloy_U256_to_ethers_U256(u: Uint<256, 4>) -> U256 {
+fn alloy_u256_to_ethers_u256(u: Uint<256, 4>) -> U256 {
     let bytes: [u8; 32] = u.to_be_bytes::<32>();   // Alloy → big-endian [u8; 32]
     U256::from_big_endian(&bytes)                  // [u8;32] → ethers::U256
 }
@@ -145,13 +145,13 @@ pub fn adapt_tx_env(tx_env: TxEnv) -> (Eip1559TransactionRequest, Address) {
         chain_id: Some(U64::from(tx_env.chain_id.unwrap_or_default())),
         nonce: Some(U256::from(tx_env.nonce.unwrap_or_default())),
         gas: Some(U256::from(tx_env.gas_limit)),
-        max_fee_per_gas: Some(alloy_U256_to_ethers_U256(tx_env.gas_price)),
+        max_fee_per_gas: Some(alloy_u256_to_ethers_u256(tx_env.gas_price)),
         to: match tx_env.transact_to {
             TxKind::Call(addr) => Some(NameOrAddress::Address(Address::from_slice(addr.as_slice()))),
             TxKind::Create => None,
             _ => unimplemented!("Unsupported transaction kind for adaptation"),
         },
-        value: Some(alloy_U256_to_ethers_U256(tx_env.value)),
+        value: Some(alloy_u256_to_ethers_u256(tx_env.value)),
         data: Some(Bytes::from(tx_env.data.to_vec())),
         access_list: alloy_to_ethers_access_list(tx_env.access_list),
         ..Default::default()
