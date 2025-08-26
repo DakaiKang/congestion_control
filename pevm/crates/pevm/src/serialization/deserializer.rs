@@ -447,3 +447,69 @@ pub fn decode_batch_hex(
 
     results
 }
+
+
+pub struct ChunkFileReader {
+    reader: BufReader<File>,
+}
+
+impl ChunkFileReader {
+    /// Open a file for reading
+    pub fn open(path: &str) -> io::Result<Self> {
+        let file = File::open(path)?;
+        Ok(Self {
+            reader: BufReader::new(file),
+        })
+    }
+
+    /// Read the next `n` lines from the file, returning a vector of (hexcode, address) tuples.
+    /// Start from the current position in the file.
+    pub fn read_next(&mut self, n: usize) -> io::Result<Vec<(String, Address)>> {
+        let mut out = Vec::with_capacity(n);
+        let mut buf = String::new();
+
+        while out.len() < n {
+            buf.clear();
+            let bytes = self.reader.read_line(&mut buf)?;
+            if bytes == 0 {
+                // EOF
+                break;
+            }
+
+            let line = buf.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut parts = line.split_whitespace();
+            let hexcode = match parts.next() {
+                Some(s) => s,
+                None => {
+                    eprintln!("Skipping malformed line: {}", line);
+                    continue;
+                }
+            };
+            let addr_str = match parts.next() {
+                Some(s) => s,
+                None => {
+                    eprintln!("Skipping malformed line: {}", line);
+                    continue;
+                }
+            };
+            // 如果有多余字段也视为格式不对（保持你原来的逻辑）
+            if parts.next().is_some() {
+                eprintln!("Skipping malformed line: {}", line);
+                continue;
+            }
+
+            match addr_str.parse::<Address>() {
+                Ok(addr) => out.push((hexcode.to_string(), addr)),
+                Err(_) => {
+                    eprintln!("Invalid Ethereum address: {}", addr_str);
+                }
+            }
+        }
+
+        Ok(out)
+    }
+}

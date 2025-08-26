@@ -103,9 +103,20 @@ impl PevmAPI {
             .ok_or(APIError::NoScheduledTransactions)
     }
 
-    pub fn read_workload_from_file(file_path: &str) -> io::Result<Vec<(String, Address)>> {
-        deserializer::read_from_file(file_path)
+    pub fn read_workload_from_file(&mut self, file_path: &str) -> io::Result<Vec<(String, Address)>> {
+        let mut reader = deserializer::ChunkFileReader::open(file_path)?;
+        let mut result = Vec::new();
+
+        // Read two chunks of 10 lines each
+        for _ in 0..2 {
+            let batch = reader.read_next(10)?;
+            result.extend(batch);
+            
+        }
+
+        Ok(result)
     }
+
 
 }
 

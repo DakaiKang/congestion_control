@@ -77,7 +77,8 @@ fn split_test() -> std::io::Result<()> {
 
 #[test]
 fn read_output_test() {
-    let code_callers = api::PevmAPI::read_workload_from_file("workload_0.txt").unwrap();
+    let mut pevm_api = api::PevmAPI::new();
+    let code_callers = pevm_api.read_workload_from_file("workload_0.txt").unwrap();
     let first_ten: Vec<(String, EthAddress)> = code_callers.iter().take(1).cloned().collect();
     println!("First ten entries: {:?}", first_ten);
     let result = deserializer::decode_batch_hex(first_ten);
