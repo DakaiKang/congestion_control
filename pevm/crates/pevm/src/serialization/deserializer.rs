@@ -496,7 +496,7 @@ impl ChunkFileReader {
                     continue;
                 }
             };
-            // 如果有多余字段也视为格式不对（保持你原来的逻辑）
+            
             if parts.next().is_some() {
                 eprintln!("Skipping malformed line: {}", line);
                 continue;

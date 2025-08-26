@@ -342,6 +342,8 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
             .protocol_commands
             .node_command(instances.clone(), parameters);
 
+        display::action(&format!("\n {:?}", targets));
+
         let repo = self.settings.repository_name();
         let context = CommandContext::new()
             .run_background("node".into())
@@ -366,10 +368,12 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
 
         // Select the instances to run.
         let (_, nodes, _) = self.select_instances(parameters)?;
-
+        
+        display::action("\nvalidators selected");
         // Boot one node per instance.
         self.boot_nodes(nodes, parameters).await?;
 
+        display::action("\n booting is done");
         display::done();
         Ok(())
     }
