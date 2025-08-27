@@ -89,8 +89,8 @@ impl Validator {
 
         let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
 
-        ScheduleFetcher::start(pevm_api.clone());
-        Scheduler::start(pevm_api.clone());
+        // ScheduleFetcher::start(pevm_api.clone());
+        // Scheduler::start(pevm_api.clone());
 
         TransactionGenerator::start(
             block_sender,

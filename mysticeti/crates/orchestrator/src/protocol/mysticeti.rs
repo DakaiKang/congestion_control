@@ -170,7 +170,7 @@ impl ProtocolCommands for MysticetiProtocol {
                 ]
                 .join(" ");
 
-                let command = ["source $HOME/.cargo/env", &run].join(" && ");
+                let command = ["cd mysticeti", "source $HOME/.cargo/env", &run].join(" && ");
                 (instance, command)
             })
             .collect()

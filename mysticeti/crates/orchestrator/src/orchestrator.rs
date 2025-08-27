@@ -225,6 +225,7 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
         let command = [
             &format!("git fetch origin {commit}"),
             &format!("(git checkout -b {commit} || git checkout -f origin/{commit})"),
+            "cd mysticeti",
             "source $HOME/.cargo/env",
             "RUSTFLAGS=-Ctarget-cpu=native cargo build --release",
         ]
@@ -270,7 +271,7 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
             .await;
 
         let id = "configure";
-        let repo_name = self.settings.repository_name();
+        let repo_name = self.settings.repository_name() + "/mysticeti";
         let context = CommandContext::new()
             .run_background(id.into())
             .with_log_file(format!("~/{id}.log").into())
