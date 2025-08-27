@@ -76,7 +76,7 @@ impl PevmAPI {
         loop {
                 let mut queue = self.txns_queue.lock().await;
                 let Some(transaction) = queue.pop_front() else {
-                    tracing::info!("No more transactions to schedule");
+                    // tracing::info!("No more transactions to schedule");
                     // #[cfg(feature = "with-tokio")]
                     sleep(Duration::from_millis(1000)).await;
                     continue;

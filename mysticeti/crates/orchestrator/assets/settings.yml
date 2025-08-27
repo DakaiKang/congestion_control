@@ -1,6 +1,5 @@
 ---
 testbed_id: "dakai-mysticeti"
-monitoring: false
 cloud_provider: aws
 token_file: "/home/ubuntu/.aws/credentials"
 ssh_private_key_file: "/home/ubuntu/.ssh/dakai_dev.pem"

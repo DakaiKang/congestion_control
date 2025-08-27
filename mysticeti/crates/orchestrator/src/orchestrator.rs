@@ -396,7 +396,7 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
             .protocol_commands
             .client_command(clients.clone(), parameters);
 
-        let repo = self.settings.repository_name();
+        let repo = self.settings.repository_name() + "/mysticeti";
         let context = CommandContext::new()
             .run_background("client".into())
             .with_log_file("~/client.log".into())
