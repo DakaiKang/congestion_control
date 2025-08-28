@@ -114,7 +114,6 @@ impl TransactionGenerator {
         loop {
             interval.tick().await;
             let timestamp = (timestamp_utc().as_millis() as u64).to_le_bytes();
-
             let mut block = Vec::with_capacity(target_block_size);
             let mut block_size = 0;
             for _ in 0..transactions_per_block_interval {
@@ -151,6 +150,9 @@ impl TransactionGenerator {
 
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;
+
+                tracing::debug!("Block_size = {}, max_block_size = {}", block_size, max_block_size);
+
                 counter += 1;
                 tx_to_report += 1;
 
