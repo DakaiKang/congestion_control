@@ -38,10 +38,10 @@ impl UniversalCommitter {
                 let Some(leader) = committer.elect_leader(round) else {
                     continue;
                 };
-                tracing::debug!(
-                    // "[H] Trying to decide {} with {committer}",
-                    format_authority_round(leader, round)
-                );
+                // tracing::debug!(
+                //     "[H] Trying to decide {} with {committer}",
+                //     format_authority_round(leader, round)
+                // );
 
                 // Try to directly decide the leader.
                 let mut status = committer.try_direct_decide(leader, round);
