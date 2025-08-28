@@ -157,6 +157,7 @@ impl ProtocolCommands for MysticetiProtocol {
                 let client_parameters_path = self.working_dir.join("client-parameters.yaml");
 
                 let run = [
+                    "RUST_LOG=debug",
                     &format!("./{BINARY_PATH}/mysticeti"),
                     "run",
                     &format!("--authority {authority}"),

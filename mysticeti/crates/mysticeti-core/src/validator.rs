@@ -27,7 +27,7 @@ use crate::{
     types::AuthorityIndex,
     wal::{self, walf},
     schedule_fetcher::ScheduleFetcher,
-    scheduler::Scheduler,
+    // scheduler::Scheduler,
 };
 
 pub struct Validator {

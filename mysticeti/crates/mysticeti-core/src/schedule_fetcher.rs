@@ -32,7 +32,6 @@ impl ScheduleFetcher {
     pub async fn run(self, pevm_api: Arc<Mutex<PevmAPI>>) {
         loop {
             // Periodically fetch scheduled tasks
-            sleep(Duration::from_millis(100)).await;
             let pevm_api_clone = pevm_api.clone();
             tokio::spawn(async move {
                 let mut guard = pevm_api_clone.lock().await;

@@ -34,12 +34,14 @@ pub struct TransactionWithHint {
 #[derive(Debug, Clone)]
 pub enum APIError {
     NoScheduledTransactions,
+    NoWorkloadFile,
 }
 
 impl fmt::Display for APIError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             APIError::NoScheduledTransactions => write!(f, "No scheduled transactions available"),
+            APIError::NoWorkloadFile => write!(f, "No workload file available"),
         }
     }
 }
@@ -48,9 +50,9 @@ impl Error for APIError {}
 
 #[derive(Debug)]
 pub struct PevmAPI {
-    pevm: Pevm,
-    txns_queue: Mutex<VecDeque<TransactionWithHint>>,
-    scheduled_txns: Mutex<VecDeque<TransactionWithHint>>,
+    pub pevm: Pevm,
+    pub txns_queue: Mutex<VecDeque<TransactionWithHint>>,
+    pub scheduled_txns: Mutex<VecDeque<TransactionWithHint>>,
 }
 
 impl PevmAPI {
@@ -70,24 +72,7 @@ impl PevmAPI {
             queue.push_back(txn);
         }
     }
-
-    // Continously run the transaction scheduling logic
-    pub async fn schedule(&mut self) {
-        loop {
-                let mut queue = self.txns_queue.lock().await;
-                let Some(transaction) = queue.pop_front() else {
-                    // tracing::info!("No more transactions to schedule");
-                    // #[cfg(feature = "with-tokio")]
-                    sleep(Duration::from_millis(1000)).await;
-                    continue;
-                };
-                tracing::info!("Scheduling transaction: {:?}", transaction);
-                // Here we would schedule the transaction for execution
-                // For now, we just log it
-                let mut scheduled_queue = self.scheduled_txns.lock().await;
-                scheduled_queue.push_back(transaction);
-        }
-    }
+    
 
     pub async fn fetch_one_scheduled_txn(&mut self) -> Result<TransactionWithHint, APIError> {
         let mut scheduled_queue = self.scheduled_txns.lock().await;
@@ -103,20 +88,6 @@ impl PevmAPI {
             .ok_or(APIError::NoScheduledTransactions)
     }
 
-    pub fn read_workload_from_file(&mut self, file_path: &str) -> io::Result<Vec<(String, Address)>> {
-        let mut reader = deserializer::ChunkFileReader::open(file_path)?;
-        let mut result = Vec::new();
-
-        // Read two chunks of 10 lines each
-        for _ in 0..2 {
-            let batch = reader.read_next(10)?;
-            result.extend(batch);
-            
-        }
-
-        Ok(result)
-    }
-
-
 }
+
 
