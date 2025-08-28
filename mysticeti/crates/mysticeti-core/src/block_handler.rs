@@ -158,6 +158,7 @@ impl BlockHandler for RealBlockHandler {
             .utilization_timer
             .utilization_timer("BlockHandler::handle_blocks");
         let mut response = vec![];
+        tracing::debug!("require_response = {} , consensus_only = {}", require_response, consensus_only);
         if require_response {
             while let Some(data) = self.receive_with_limit() {
                 for tx in data {

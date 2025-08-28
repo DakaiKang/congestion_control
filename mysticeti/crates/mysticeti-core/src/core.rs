@@ -403,6 +403,20 @@ impl<H: BlockHandler> Core<H> {
         }
     }
 
+    // pub fn handle_committed_subdag_with_pevm(
+    //     &mut self,
+    //     committed: Vec<CommittedSubDag>,
+    //     state: &Bytes,
+    // ) {
+    //     for commit in &committed {
+    //         for block in &commit.blocks {
+    //             self.epoch_manager
+    //                 .observe_committed_block(block, &self.committee);
+    //         }
+    //         commit_data.push(CommitData::from(commit));
+    //     }
+    // }
+
     pub fn handle_committed_subdag(
         &mut self,
         committed: Vec<CommittedSubDag>,
