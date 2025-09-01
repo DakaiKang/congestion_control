@@ -73,7 +73,7 @@ async fn test_serializer() -> Result<(), Box<dyn std::error::Error>> {
         access_list: access_list,
     };
 
-    let raw_1559_unsigned = serializer::encode_tx_unsigned(txn).await?;
+    let raw_1559_unsigned = serializer::encode_tx_unsigned(txn)?;
 
     println!("");
     println!("unsigend EIP-1559 raw tx: {}", raw_1559_unsigned);
@@ -124,7 +124,7 @@ async fn txenv_2_eip1559_2_hex_eip1559_2_txenv() -> Result<(), Box<dyn std::erro
 
     let (txn, caller) = adapter::adapt_tx_env(tx_env);
 
-    let raw_1559_unsigned = serializer::encode_tx_unsigned(txn).await?;
+    let raw_1559_unsigned = serializer::encode_tx_unsigned(txn)?;
 
     println!("");
     println!("unsigend EIP-1559 raw tx: {}", raw_1559_unsigned);

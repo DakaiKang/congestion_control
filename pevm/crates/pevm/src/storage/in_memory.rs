@@ -6,13 +6,20 @@ use alloy_primitives::{keccak256, Address, B256, U256};
 use super::{BlockHashes, Bytecodes, ChainState, EvmCode};
 use crate::{AccountBasic, Storage};
 
+use serde_with::serde_as;
+use serde::{Serialize, Deserialize};
+
 /// A storage that stores chain data in memory.
-#[derive(Debug, Clone, Default)]
+#[serde_as]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InMemoryStorage {
     accounts: ChainState,
+    #[serde_as(as = "Arc<_>")]
     bytecodes: Arc<Bytecodes>,
+    #[serde_as(as = "Arc<_>")]
     block_hashes: Arc<BlockHashes>,
 }
+
 
 impl InMemoryStorage {
     /// Construct a new [`InMemoryStorage`]

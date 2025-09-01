@@ -38,6 +38,12 @@ use crate::{
     wal::{WalPosition, WalSyncer, WalWriter},
 };
 
+use pevm::api::{PevmAPI, APIError, TransactionWithHint, PevmExecutor, ExecutionMode, WorkloadType};
+use pevm::serialization::deserializer;
+pub use ethers::types::Address;
+use pevm::{Bytecodes, ChainState, EvmAccount, InMemoryStorage};
+use pevm::chain::PevmEthereum;
+
 pub struct Core<H: BlockHandler> {
     block_manager: BlockManager,
     pending: VecDeque<(WalPosition, MetaStatement)>,
@@ -57,6 +63,7 @@ pub struct Core<H: BlockHandler> {
     epoch_manager: EpochManager,
     rounds_in_epoch: RoundNumber,
     committer: UniversalCommitter,
+    pevm_executor: Option<PevmExecutor>,
 }
 
 pub struct CoreOptions {
@@ -143,6 +150,10 @@ impl<H: BlockHandler> Core<H> {
             "Number of leaders: {}",
             public_config.parameters.number_of_leaders
         );
+        tracing::info!(
+            "Pevm Executor Enable: {}",
+            public_config.parameters.enable_pevm_executor
+        );
 
         let mut this = Self {
             block_manager,
@@ -162,6 +173,13 @@ impl<H: BlockHandler> Core<H> {
             epoch_manager,
             rounds_in_epoch: public_config.parameters.rounds_in_epoch,
             committer,
+            pevm_executor: if public_config.parameters.enable_pevm_executor {
+                Some(PevmExecutor::new(
+                    ExecutionMode::Sequential
+                ))
+            } else {
+                None
+            },
         };
 
         if !unprocessed_blocks.is_empty() {
@@ -403,19 +421,32 @@ impl<H: BlockHandler> Core<H> {
         }
     }
 
-    // pub fn handle_committed_subdag_with_pevm(
-    //     &mut self,
-    //     committed: Vec<CommittedSubDag>,
-    //     state: &Bytes,
-    // ) {
-    //     for commit in &committed {
-    //         for block in &commit.blocks {
-    //             self.epoch_manager
-    //                 .observe_committed_block(block, &self.committee);
-    //         }
-    //         commit_data.push(CommitData::from(commit));
-    //     }
-    // }
+    pub fn handle_committed_subdag_with_pevm(
+        &mut self,
+        committed: Vec<CommittedSubDag>,
+        state: &Bytes,
+    ) {
+        for commit in &committed {
+            for block in &commit.blocks {
+                self.epoch_manager
+                    .observe_committed_block(block, &self.committee);
+                self.execute_block_in_pevm(block.statements());
+            }
+        }
+    }
+
+    pub fn execute_block_in_pevm(&mut self, statements: &[BaseStatement]) {
+        let in_parallel = true;
+        let mut txs = Vec::<(String, Address)>::new();
+        for statement in statements {
+            if let BaseStatement::Share(share) = statement {
+                let (raw_hex, caller) = decode_share_base_statement(share.data());
+                txs.push((raw_hex, caller));
+            }
+        }
+        tracing::debug!("Executing {} transactions in pevm", txs.len());
+        self.pevm_executor.as_ref().expect("executor missing").execute(txs);
+    }
 
     pub fn handle_committed_subdag(
         &mut self,
@@ -506,6 +537,20 @@ impl<H: BlockHandler> Core<H> {
     pub fn epoch_closing_time(&self) -> Arc<AtomicU64> {
         self.epoch_manager.closing_time()
     }
+}
+
+fn decode_share_base_statement(data: &[u8]) -> (String, Address) {
+    let parts: Vec<Vec<u8>> = data.split(|&b| b == b'|')
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    let timestamp = u64::from_le_bytes(parts[0].as_slice().try_into().expect("timestamp must be exactly 8 bytes"));
+    let raw_hex = String::from_utf8_lossy(&parts[1]).to_string();
+    let caller: Address = String::from_utf8_lossy(&parts[2])
+        .parse()
+        .expect("Invalid address");
+
+    (raw_hex, caller)
 }
 
 impl Default for CoreOptions {

@@ -45,12 +45,16 @@ dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
+serde_with = "3.8.1"
 smallvec.workspace = true
 thiserror.workspace = true
 
 revm.workspace = true
 
 tracing.workspace = true
+flate2.workspace = true
+bincode.workspace = true
+serde_json.workspace = true
 
 # OP dependencies
 op-alloy-consensus = { workspace = true, optional = true }
@@ -69,14 +73,11 @@ snmalloc-rs = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
-bincode.workspace = true
 criterion.workspace = true
-flate2.workspace = true
 rand.workspace = true
 rayon.workspace = true
 reqwest.workspace = true
 revme.workspace = true
-serde_json.workspace = true
 walkdir.workspace = true
 
 [lints]

@@ -9,7 +9,7 @@ use std::{
 use ::prometheus::Registry;
 use eyre::{eyre, Context, Result};
 use tokio::sync::Mutex;
-use pevm::api::{PevmAPI, APIError};
+use pevm::api::{PevmAPI, APIError, PevmExecutor, ExecutionMode, WorkloadType};
 
 use crate::{
     block_handler::{RealBlockHandler, TestCommitHandler},
@@ -87,6 +87,14 @@ impl Validator {
             public_config.parameters.consensus_only,
         );
 
+        let num_clusters = 1;
+        let num_families_per_cluster = 1;
+        let num_people_per_family = 1;
+        let workload_type = WorkloadType::ERC20(num_clusters, num_families_per_cluster, num_people_per_family);
+
+        let (in_memory_storage, account_addresses)  = pevm::api::PevmAPI::get_erc20_state_and_bytecode(num_clusters, num_families_per_cluster, num_people_per_family);
+
+        // let pevm_api = Arc::new(Mutex::new(PevmAPI::new(account_addresses, workload_type)));
         let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
 
         // ScheduleFetcher::start(pevm_api.clone());
@@ -98,7 +106,7 @@ impl Validator {
             client_parameters,
             public_config.clone(),
             metrics.clone(),
-            pevm_api.clone(),   
+            pevm_api.clone(),
         );
         let committed_transaction_log =
             TransactionLog::start(private_config.committed_transactions_log())

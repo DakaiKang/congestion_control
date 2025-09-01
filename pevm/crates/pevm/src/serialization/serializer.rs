@@ -18,13 +18,25 @@ use revm::{
     Handler,
 };
 
+pub fn encode_batch_to_hex(
+    tx_envs: Vec<TxEnv>,
+) -> Vec<(String, Address)> {
+    let mut codes_and_callers = Vec::new();
+    for tx_env in tx_envs {
+        let (tx, caller) = adapter::adapt_tx_env(tx_env);
+        let encoded_tx = encode_tx_unsigned(tx).unwrap_or_default();
+        codes_and_callers.push((encoded_tx, caller));
+    }
+    codes_and_callers
+}
+
 pub async fn write_to_file(
     tx_env: TxEnv,
     file_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tx, caller) = adapter::adapt_tx_env(tx_env);
     // println!("caller: {:?}", caller);
-    let encoded_tx = encode_tx_unsigned(tx).await?;
+    let encoded_tx = encode_tx_unsigned(tx).unwrap_or_default();
     let hex_and_caller = format!("{} {:?}", encoded_tx, caller);
 
     // Open file in append mode (create if not exists)
@@ -38,7 +50,7 @@ pub async fn write_to_file(
 }
 
 
-pub async fn encode_tx_unsigned<T>(
+pub fn encode_tx_unsigned<T>(
     tx: T
 ) -> Result<String, Box<dyn std::error::Error>> 
 where 

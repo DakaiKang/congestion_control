@@ -9,6 +9,7 @@ use tokio::time::sleep;
 use tokio::task;
 use pevm::api::{PevmAPI, APIError, TransactionWithHint};
 use pevm::serialization::deserializer;
+pub use ethers::types::Address;
 
 use crate::{
     config::{ClientParameters, NodePublicConfig},
@@ -147,6 +148,7 @@ impl TransactionGenerator {
                 transaction.extend_from_slice(fetched_txn.caller.as_bytes());
                 transaction.push(b'|');
                 transaction.extend_from_slice(fetched_txn.hint.as_bytes());
+                transaction.push(b'|');
 
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;
@@ -264,8 +266,11 @@ impl TransactionGenerator {
 }
 
 
-
-
+fn split_bytes_by_pipe(data: Vec<u8>) -> Vec<Vec<u8>> {
+        data.split(|&b| b == b'|')
+            .map(|chunk| chunk.to_vec())
+            .collect()
+}
 
 
 
@@ -286,5 +291,27 @@ mod tests {
             }
         );
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_decode_transaction() {
+        let mut transaction = Vec::with_capacity(512);
+            transaction.extend_from_slice(&123u64.to_be_bytes()); // 8 bytes
+            transaction.push(b'|');
+            let raw_hex = String::from("0x1234567890abcdef");
+            transaction.extend_from_slice(raw_hex.as_bytes());
+            transaction.push(b'|');
+            let caller: Address = "0xabcdef1234567890abcdef1234567890abcdef12"
+                .parse()
+                .expect("Invalid address");
+            transaction.extend_from_slice(caller.as_bytes());
+            transaction.push(b'|');
+            let parts = split_bytes_by_pipe(transaction);
+            let raw_hex = String::from_utf8_lossy(&parts[1]);
+            println!("Raw hex: {}", raw_hex);
+            let caller_str = String::from_utf8_lossy(&parts[2]);
+            println!("Caller: {:?}", caller_str);
+            let caller: Address = caller_str.parse().expect("Invalid address");
+            println!("Caller: {:?}", caller);
     }
 }

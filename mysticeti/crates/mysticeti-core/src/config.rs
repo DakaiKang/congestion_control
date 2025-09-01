@@ -51,6 +51,8 @@ pub struct NodeParameters {
     pub consensus_only: bool,
     #[serde(default = "node_defaults::default_enable_synchronizer")]
     pub enable_synchronizer: bool,
+    #[serde(default = "node_defaults::default_enable_pevm_executor")]
+    pub enable_pevm_executor: bool,
 }
 
 pub mod node_defaults {
@@ -89,6 +91,10 @@ pub mod node_defaults {
     pub fn default_enable_synchronizer() -> bool {
         false
     }
+
+    pub fn default_enable_pevm_executor() -> bool {
+        true
+    }
 }
 
 impl Default for NodeParameters {
@@ -103,6 +109,7 @@ impl Default for NodeParameters {
             enable_pipelining: node_defaults::default_enable_pipelining(),
             consensus_only: node_defaults::default_consensus_only(),
             enable_synchronizer: node_defaults::default_enable_synchronizer(),
+            enable_pevm_executor: node_defaults::default_enable_pevm_executor(),
         }
     }
 }
