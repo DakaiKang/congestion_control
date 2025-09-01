@@ -76,14 +76,14 @@ impl TransactionGenerator {
             Self::TARGET_BLOCK_INTERVAL.as_millis()
         );
         
-        let file_path = "/home/ubuntu/congestion_control/pevm/crates/pevm/workload_{}.txt".replace("{}", &id.to_string());
-        let pevm_api_clone = pevm_api.clone();
+        // let file_path = "/home/ubuntu/congestion_control/pevm/crates/pevm/workload_{}.txt".replace("{}", &id.to_string());
+        // let pevm_api_clone = pevm_api.clone();
         let pevm_api_clone_2 = pevm_api.clone();
 
-        let workload_handle = task::spawn( async move {
-                TransactionGenerator::read_workload_from_file(pevm_api_clone, &file_path).await;
-            }
-        );
+        // let workload_handle = task::spawn( async move {
+        //         TransactionGenerator::read_workload_from_file(pevm_api_clone, &file_path).await;
+        //     }
+        // );
         let scheduler_handle = task::spawn( async move {
                 TransactionGenerator::schedule(pevm_api_clone_2).await;
             }
