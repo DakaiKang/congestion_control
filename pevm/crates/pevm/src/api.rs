@@ -272,20 +272,48 @@ impl PevmTransactionGenerator {
 
     pub async fn run(&mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
         loop{
-            let mut guard = pevm_api.lock().await;
-            let pending_tx_num = guard.num_pending_txns().await;
-            if pending_tx_num < 100 {
-                let batch = self.generate_transactions();
-                tracing::info!("Generated {} transctions: ", batch.len());
-                let txs = batch.into_iter().map(|(raw_hex, caller)| {
-                    TransactionWithHint {
-                        raw_hex,
-                        caller,
-                        hint: String::new(), // [TODO] Placeholder
-                    }
-                }).collect();
-                guard.add_transactions(txs);
+            // 1) Read queue length in a short, non-awaiting lock
+            let pending = {
+                let guard = pevm_api.lock().await;
+                // Prefer a sync method; if you must use async, let it lock internally.
+                guard.num_pending_txns().await // e.g., &VecDeque::len() or atomic gauge
+            };
+
+            tracing::debug!(pending, "pending txs");
+
+            // 2) Back off if full
+            if pending >= 100 {
+                sleep(Duration::from_millis(10)).await;
+                continue;
             }
+
+            // 3) Generate outside the lock
+            let batch = self.generate_transactions();
+            tracing::debug!(batch_len = batch.len(), "generated batch");
+            if batch.is_empty() {
+                sleep(Duration::from_millis(5)).await;
+                continue;
+            }
+
+            let txs: Vec<TransactionWithHint> = batch
+                .into_iter()
+                .map(|(raw_hex, caller)| TransactionWithHint {
+                    raw_hex,
+                    caller,
+                    hint: String::new(),
+                })
+                .collect();
+
+            // 4) Push inside a short lock
+            {
+                let mut guard = pevm_api.lock().await;
+                tracing::debug!(n = txs.len(), "adding transactions");
+                guard.add_transactions(txs).await;
+                // no .await here
+            }
+
+            // Optional: yield
+            tokio::task::yield_now().await;
         }
     }
 
