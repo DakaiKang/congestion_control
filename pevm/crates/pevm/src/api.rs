@@ -276,6 +276,7 @@ impl PevmTransactionGenerator {
             let pending_tx_num = guard.num_pending_txns().await;
             if pending_tx_num < 100 {
                 let batch = self.generate_transactions();
+                tracing::info!("Generated {} transctions: ", batch.len());
                 let txs = batch.into_iter().map(|(raw_hex, caller)| {
                     TransactionWithHint {
                         raw_hex,
@@ -311,7 +312,7 @@ impl PevmTransactionGenerator {
                     }
                     let recipient = family[(rand::random::<usize>()) % (family.len())];
                     let calldata = ERC20Token::transfer(recipient, U256::from(rand::random::<u8>()));
-                    println!("Push one transaction");
+                    tracing:info!("Push one transaction");
                     transactions.push(TxEnv {
                         caller: *member,
                         gas_limit: GAS_LIMIT,
