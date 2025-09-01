@@ -1,0 +1,71 @@
+{
+  "parameters": {
+    "settings": {
+      "testbed_id": "dakai-mysticeti",
+      "cloud_provider": "Aws",
+      "ssh_public_key_file": null,
+      "regions": [
+        "us-east-1"
+      ],
+      "specs": "c4.4xlarge",
+      "repository": {
+        "url": "https://github.com/DakaiKang/congestion_control",
+        "commit": "stream"
+      },
+      "node_parameters_path": null,
+      "client_parameters_path": null,
+      "benchmark_duration": 30,
+      "faults": {
+        "Permanent": {
+          "faults": 0
+        }
+      },
+      "working_dir": "~/working_dir",
+      "results_dir": "./results",
+      "logs_dir": "./logs",
+      "nvme": true,
+      "scrape_interval": 15,
+      "log_processing": false,
+      "dedicated_clients": 0,
+      "monitoring": true,
+      "ssh_timeout": 30,
+      "ssh_retries": 3
+    },
+    "node_parameters": {
+      "wave_length": 3,
+      "leader_timeout": {
+        "secs": 2,
+        "nanos": 0
+      },
+      "max_block_size": 4194304,
+      "rounds_in_epoch": 18446744073709551615,
+      "shutdown_grace_period": {
+        "secs": 2,
+        "nanos": 0
+      },
+      "number_of_leaders": 2,
+      "enable_pipelining": true,
+      "consensus_only": false,
+      "enable_synchronizer": false,
+      "enable_pevm_executor": true,
+      "pevm_workload_type": {
+        "ERC20": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    "client_parameters": {
+      "load": 10,
+      "transaction_size": 512,
+      "initial_delay": {
+        "secs": 30,
+        "nanos": 0
+      }
+    },
+    "nodes": 4,
+    "load": 2000
+  },
+  "data": {}
+}

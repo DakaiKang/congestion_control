@@ -444,7 +444,9 @@ impl<H: BlockHandler> Core<H> {
                 txs.push((raw_hex, caller));
             }
         }
-        tracing::debug!("Executing {} transactions in pevm", txs.len());
+        if txs.len() > 0 {
+            tracing::debug!("Executing {} transactions in pevm", txs.len());
+        }
         self.pevm_executor.as_ref().expect("executor missing").execute(txs);
     }
 
