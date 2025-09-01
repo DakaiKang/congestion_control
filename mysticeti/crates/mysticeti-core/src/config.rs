@@ -53,6 +53,8 @@ pub struct NodeParameters {
     pub enable_synchronizer: bool,
     #[serde(default = "node_defaults::default_enable_pevm_executor")]
     pub enable_pevm_executor: bool,
+    #[serde(default = "node_defaults::default_pevm_workload_type")]
+    pub pevm_workload_type: pevm::api::WorkloadType,
 }
 
 pub mod node_defaults {
@@ -95,6 +97,10 @@ pub mod node_defaults {
     pub fn default_enable_pevm_executor() -> bool {
         true
     }
+
+    pub fn default_pevm_workload_type() -> pevm::api::WorkloadType {
+        pevm::api::WorkloadType::ERC20(1, 2, 3)
+    }
 }
 
 impl Default for NodeParameters {
@@ -110,6 +116,7 @@ impl Default for NodeParameters {
             consensus_only: node_defaults::default_consensus_only(),
             enable_synchronizer: node_defaults::default_enable_synchronizer(),
             enable_pevm_executor: node_defaults::default_enable_pevm_executor(),
+            pevm_workload_type: node_defaults::default_pevm_workload_type(),
         }
     }
 }

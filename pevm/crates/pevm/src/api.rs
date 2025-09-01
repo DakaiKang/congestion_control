@@ -30,6 +30,8 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter};
 use std::path::Path;
 
+use serde::{Serialize, Deserialize};
+
 use super::serialization::{deserializer, serializer};
 use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEthereum};
 use super::erc20;
@@ -48,6 +50,26 @@ fn load(path: &str) -> anyhow::Result<InMemoryStorage> {
     let reader = BufReader::new(file);
     let storage = serde_json::from_reader(reader)?;
     Ok(storage)
+}
+
+pub fn load_in_memory_storage(workload_type: &WorkloadType) -> InMemoryStorage {
+    match workload_type {
+        WorkloadType::ERC20(num_clusters, num_families_per_cluster, num_people_per_family) => {
+            let path = format!("/home/ubuntu/congestion_control/pevm/crates/pevm/storage_{}_{}_{}.json", num_clusters, num_families_per_cluster, num_people_per_family);
+            println!("in memory storage file path: {}", path);
+            load(&path).unwrap()
+        }
+    }
+}
+
+pub fn load_account_addresses(workload_type: &WorkloadType) -> Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)> {
+    match workload_type {
+        WorkloadType::ERC20(num_clusters, num_families_per_cluster, num_people_per_family) => {
+            let path = format!("/home/ubuntu/congestion_control/pevm/crates/pevm/account_addresses_{}_{}_{}.bin", num_clusters, num_families_per_cluster, num_people_per_family);
+            println!("account addresses file path: {}", path);
+            load_addresses(&path).unwrap()
+        }
+    }
 }
 
 type Addresses = Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)>;
@@ -95,26 +117,22 @@ pub struct PevmAPI {
     pub pevm: Pevm,
     pub txns_queue: Mutex<VecDeque<TransactionWithHint>>,
     pub scheduled_txns: Mutex<VecDeque<TransactionWithHint>>,
-    // pub addresses: Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)>, 
-    // pub workload_type: WorkloadType
+    pub addresses: Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)>, 
+    pub workload_type: WorkloadType,
+    pub in_memory_storage: InMemoryStorage,
 }
 
 impl PevmAPI {
-    // pub fn new(addresses: Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)>, workload_type: WorkloadType) -> Self {
-    //     Self {
-    //         pevm: Pevm::default(),
-    //         txns_queue: Mutex::new(VecDeque::new()),
-    //         scheduled_txns: Mutex::new(VecDeque::new()),
-    //         addresses,
-    //         workload_type,
-    //     }
-    // }
-
-    pub fn new() -> Self {
+    pub fn new(workload_type: WorkloadType) -> Self {
+        let addresses = load_account_addresses(&workload_type);
+        let in_memory_storage = load_in_memory_storage(&workload_type);
         Self {
             pevm: Pevm::default(),
             txns_queue: Mutex::new(VecDeque::new()),
             scheduled_txns: Mutex::new(VecDeque::new()),
+            workload_type,
+            addresses,
+            in_memory_storage,
         }
     }
 
@@ -166,7 +184,7 @@ pub enum ExecutionMode {
     Parallel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkloadType {
     ERC20(usize, usize, usize), // NUM_CLUSTERS, NUM_FAMILY_PER_CLUSTER, NUM_PEOPLE_PER_FAMILY
 }
@@ -375,4 +393,12 @@ pub fn test_load_both() {
 
     // println!("Results: {:?}", results);
 
+}
+
+#[test]
+pub fn test_load_in_memory_storage(){
+    let workload_type = WorkloadType::ERC20(1, 2, 3);
+    let storage = load_in_memory_storage(&workload_type);
+    let addresses = load_account_addresses(&workload_type);
+    println!("{:?}", addresses);
 }

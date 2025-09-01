@@ -90,12 +90,12 @@ impl Validator {
         let num_clusters = 1;
         let num_families_per_cluster = 1;
         let num_people_per_family = 1;
-        let workload_type = WorkloadType::ERC20(num_clusters, num_families_per_cluster, num_people_per_family);
+        let workload_type = public_config.parameters.pevm_workload_type.clone();
 
-        let (in_memory_storage, account_addresses)  = pevm::api::PevmAPI::get_erc20_state_and_bytecode(num_clusters, num_families_per_cluster, num_people_per_family);
+        let in_memory_storage = pevm::api::load_in_memory_storage(&workload_type);
+        let account_addresses = pevm::api::load_account_addresses(&workload_type);
 
-        // let pevm_api = Arc::new(Mutex::new(PevmAPI::new(account_addresses, workload_type)));
-        let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
+        let pevm_api = Arc::new(Mutex::new(PevmAPI::new(workload_type)));
 
         // ScheduleFetcher::start(pevm_api.clone());
         // Scheduler::start(pevm_api.clone());
