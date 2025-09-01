@@ -63,7 +63,7 @@ pub struct Core<H: BlockHandler> {
     epoch_manager: EpochManager,
     rounds_in_epoch: RoundNumber,
     committer: UniversalCommitter,
-    pevm_executor: Option<PevmExecutor>,
+    pub pevm_executor: Option<PevmExecutor>,
 }
 
 pub struct CoreOptions {
@@ -175,7 +175,8 @@ impl<H: BlockHandler> Core<H> {
             committer,
             pevm_executor: if public_config.parameters.enable_pevm_executor {
                 Some(PevmExecutor::new(
-                    ExecutionMode::Sequential
+                    ExecutionMode::Sequential,
+                    public_config.parameters.pevm_workload_type.clone()
                 ))
             } else {
                 None
@@ -424,7 +425,6 @@ impl<H: BlockHandler> Core<H> {
     pub fn handle_committed_subdag_with_pevm(
         &mut self,
         committed: Vec<CommittedSubDag>,
-        state: &Bytes,
     ) {
         for commit in &committed {
             for block in &commit.blocks {

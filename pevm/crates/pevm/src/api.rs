@@ -208,11 +208,11 @@ pub struct PevmExecutor {
 }
 
 impl PevmExecutor {
-    pub fn new(execution_mode: ExecutionMode) -> Self {
-        let path = "/home/ubuntu/congestion_control/pevm/crates/pevm/storage.json";
+    pub fn new(execution_mode: ExecutionMode, workload_type: WorkloadType) -> Self {
+        let storage = load_in_memory_storage(&workload_type);
         Self {
             execution_mode,
-            storage: Self::load_from_json("path"),
+            storage,
             chain: PevmEthereum::mainnet(),
         }
     }
