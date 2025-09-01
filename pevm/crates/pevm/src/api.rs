@@ -136,6 +136,12 @@ impl PevmAPI {
         }
     }
 
+    pub async fn num_pending_txns(&self) -> usize {
+        let queue = self.txns_queue.lock().await;
+        let scheduled = self.scheduled_txns.lock().await;
+        queue.len() + scheduled.len()
+    }
+
     pub async fn add_transactions(&mut self, transactions: Vec<TransactionWithHint>) {
         tracing::info!("Waiting queue lock");
         let mut queue = self.txns_queue.lock().await;
@@ -248,24 +254,39 @@ pub struct PevmTransactionGenerator {
     pub workload_type: WorkloadType,
     pub clusters: Vec::<(AlloyAddress, Vec<Vec<AlloyAddress>>)>,
     pub nonce: u64,
-    pub replica_id: usize,
-    pub replica_num: usize,
+    pub replica_id: u64,
+    pub replica_num: u64,
 }
 
 impl PevmTransactionGenerator {
-    pub fn new(workload_type: WorkloadType, clusters: Vec::<(AlloyAddress, Vec<Vec<AlloyAddress>>)>) -> Self {
+    pub fn new(workload_type: WorkloadType, replica_id: u64, replica_num: u64) -> Self {
+        let clusters = load_account_addresses(&workload_type);
         Self {
             workload_type,
             clusters,
             nonce: 0,
-            replica_id: 0,
-            replica_num: 4,
+            replica_id,
+            replica_num,
         }
     }
 
-    // pub fn load_clusters(path: &str) -> Vec<(AlloyAddress, Vec<Vec<AlloyAddress>>)> {
-    //     let storage = load(path).expect("Failed to load InMemoryStorage from JSON");
-    // }
+    pub async fn run(&mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
+        loop{
+            let mut guard = pevm_api.lock().await;
+            let pending_tx_num = guard.num_pending_txns().await;
+            if pending_tx_num < 100 {
+                let batch = self.generate_transactions();
+                let txs = batch.into_iter().map(|(raw_hex, caller)| {
+                    TransactionWithHint {
+                        raw_hex,
+                        caller,
+                        hint: String::new(), // [TODO] Placeholder
+                    }
+                }).collect();
+                guard.add_transactions(txs);
+            }
+        }
+    }
 
     pub fn generate_transactions(&mut self) -> Vec<(String, Address)> {
         match self.workload_type {

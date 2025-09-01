@@ -7,7 +7,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::sync::{mpsc,Mutex};
 use tokio::time::sleep;
 use tokio::task;
-use pevm::api::{PevmAPI, APIError, TransactionWithHint};
+use pevm::api::{PevmAPI, APIError, TransactionWithHint, PevmTransactionGenerator};
 use pevm::serialization::deserializer;
 pub use ethers::types::Address;
 
@@ -44,6 +44,17 @@ impl TransactionGenerator {
             client_parameters.load,
             client_parameters.initial_delay
         );
+        
+        let committee_size = *(&node_public_config.identifiers.len()) as u64;
+        let workload_type = node_public_config.parameters.pevm_workload_type.clone();
+
+        let mut pevm_txn_generator = PevmTransactionGenerator::new(workload_type, seed, committee_size);
+        let pevm_api_clone = pevm_api.clone();
+
+        runtime::Handle::current().spawn(async move {
+            pevm_txn_generator.run(pevm_api_clone).await;
+        });
+
         runtime::Handle::current().spawn(
             Self {
                 sender,
@@ -55,25 +66,6 @@ impl TransactionGenerator {
             .run(pevm_api, seed),
         );
     }
-
-    // pub async fn generate_evm_transactions(mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
-    //     let load = self.client_parameters.load;
-    //     let transactions_per_block_interval = (load + 9) / 10;
-    //     tracing::info!(
-    //         "Generating {transactions_per_block_interval} transactions per {} ms",
-    //         Self::TARGET_BLOCK_INTERVAL.as_millis()
-    //     );
-    //     let max_block_size = self.node_public_config.parameters.max_block_size;
-    //     let target_block_size = min(max_block_size, transactions_per_block_interval);
-
-    //     let mut interval = runtime::TimeInterval::new(Self::TARGET_BLOCK_INTERVAL);
-    //     runtime::sleep(self.client_parameters.initial_delay).await;
-    //     loop {
-    //         interval.tick().await;
-            
-    //     }
-
-    // }
 
 
     pub async fn run(mut self, pevm_api: Arc<Mutex<PevmAPI>>, id: AuthorityIndex) {
@@ -96,11 +88,6 @@ impl TransactionGenerator {
                 TransactionGenerator::schedule(pevm_api_clone_2).await;
             }
         );
-        // {let mut guard = pevm_api.lock().await;
-        //     let file_path = "../pevm/crats/pevm/workload_{}.txt".replace("{}", &id.to_string());
-        //     // guard.read_workload_from_file(&file_path).await.expect("Failed to read workload file");
-        //     panic!("Failed to load workload file");
-        // }
 
         let max_block_size = self.node_public_config.parameters.max_block_size;
         let target_block_size = min(max_block_size, transactions_per_block_interval);
