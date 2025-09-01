@@ -312,7 +312,7 @@ impl PevmTransactionGenerator {
                     }
                     let recipient = family[(rand::random::<usize>()) % (family.len())];
                     let calldata = ERC20Token::transfer(recipient, U256::from(rand::random::<u8>()));
-                    tracing:info!("Push one transaction");
+                    tracing::info!("Push one transaction");
                     transactions.push(TxEnv {
                         caller: *member,
                         gas_limit: GAS_LIMIT,
