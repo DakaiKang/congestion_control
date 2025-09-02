@@ -87,7 +87,7 @@ fn load_addresses(path: &str) -> anyhow::Result<Addresses> {
 }
 
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransactionWithHint {
     pub raw_hex: String,
     pub caller: Address,

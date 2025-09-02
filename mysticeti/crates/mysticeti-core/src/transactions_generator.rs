@@ -128,25 +128,27 @@ impl TransactionGenerator {
 
                 let fetched_txn = fetched_txn.unwrap();
 
-                random += counter;
+                // random += counter;
 
-                let mut transaction = Vec::with_capacity(self.client_parameters.transaction_size);
-                transaction.extend_from_slice(&timestamp); // 8 bytes
-                // transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
-                // transaction.extend_from_slice(&zeros[..]);
-                transaction.push(b'|');
-                transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
-                transaction.push(b'|');
-                let caller_bytes = fetched_txn.caller.as_bytes();
-                assert_eq!(
-                    caller_bytes.len(),
-                    20,
-                    "caller address must be exactly 20 bytes"
-                );
-                transaction.extend_from_slice(caller_bytes);
-                transaction.push(b'|');
-                transaction.extend_from_slice(fetched_txn.hint.as_bytes());
-                transaction.push(b'|');
+                // let mut transaction = Vec::with_capacity(self.client_parameters.transaction_size);
+                // transaction.extend_from_slice(&timestamp); // 8 bytes
+                // // transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
+                // // transaction.extend_from_slice(&zeros[..]);
+                // transaction.push(b'|');
+                // transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
+                // transaction.push(b'|');
+                // let caller_bytes = fetched_txn.caller.as_bytes();
+                // assert_eq!(
+                //     caller_bytes.len(),
+                //     20,
+                //     "caller address must be exactly 20 bytes"
+                // );
+                // transaction.extend_from_slice(caller_bytes);
+                // transaction.push(b'|');
+                // transaction.extend_from_slice(fetched_txn.hint.as_bytes());
+                // transaction.push(b'|');
+
+                let transaction: Vec<u8> = bincode::serialize(&fetched_txn).unwrap();
 
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;
@@ -316,5 +318,17 @@ mod tests {
                 println!("Caller: {:?}", caller);
             }
             
+    }
+
+    #[test]
+    fn test_decode_txn_with_hint() {
+        let tx = TransactionWithHint{
+            raw_hex: String::from("0x1234567890abcdef"),
+            caller: "0xabcdef1234567890abcdef1234567890abcdef12".parse().expect("Invalid address"),
+            hint: String::from(""),
+        };
+        let encoded: Vec<u8> = bincode::serialize(&tx).unwrap();
+        let decoded: TransactionWithHint = bincode::deserialize(&encoded).unwrap();
+        println!("decoded: {:?}", decoded);
     }
 }

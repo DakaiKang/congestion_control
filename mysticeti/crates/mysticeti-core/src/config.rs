@@ -95,7 +95,7 @@ pub mod node_defaults {
     }
 
     pub fn default_enable_pevm_executor() -> bool {
-        true
+        false
     }
 
     pub fn default_pevm_workload_type() -> pevm::api::WorkloadType {
