@@ -100,15 +100,20 @@ impl TransactionGenerator {
         let mut interval = runtime::TimeInterval::new(Self::TARGET_BLOCK_INTERVAL);
         runtime::sleep(self.client_parameters.initial_delay).await;
         loop {
+            tracing::info!("Ticking...");
             interval.tick().await;
+            tracing::info!("After tick");
             let timestamp = (timestamp_utc().as_millis() as u64).to_le_bytes();
             let mut block = Vec::with_capacity(target_block_size);
             let mut block_size = 0;
             for _ in 0..transactions_per_block_interval {
                 let mut fetched_txn = {
+                    tracing::info!("Locking pevm_api...");
                     let mut guard = pevm_api.lock().await;
+                    tracing::info!("Got lock, fetching txn...");
                     guard.fetch_one_scheduled_txn().await
                 }; 
+                tracing::info!("Got txn = {:?}", fetched_txn);
 
                 match &fetched_txn {
                     Ok(txn) => {
