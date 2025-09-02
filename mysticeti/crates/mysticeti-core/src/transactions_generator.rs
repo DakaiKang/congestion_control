@@ -137,7 +137,13 @@ impl TransactionGenerator {
                 transaction.push(b'|');
                 transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
                 transaction.push(b'|');
-                transaction.extend_from_slice(fetched_txn.caller.as_bytes());
+                let caller_bytes = fetched_txn.caller.as_bytes();
+                assert_eq!(
+                    caller_bytes.len(),
+                    20,
+                    "caller address must be exactly 20 bytes"
+                );
+                transaction.extend_from_slice(caller_bytes);
                 transaction.push(b'|');
                 transaction.extend_from_slice(fetched_txn.hint.as_bytes());
                 transaction.push(b'|');
@@ -305,9 +311,6 @@ mod tests {
                 let parts = split_bytes_by_pipe(data.data());
                 let raw_hex = String::from_utf8_lossy(&parts[1]);
                 println!("Raw hex: {}", raw_hex);
-                // let caller_str = String::from_utf8_lossy(&parts[2]);
-                // println!("Caller: {:?}", caller_str);
-                // let caller: Address = caller_str.parse().expect("Invalid address");
                 let caller_bytes: [u8; 20] = parts[2].as_slice().try_into().expect("address must be 20 bytes");
                 let caller = Address::from(caller_bytes);
                 println!("Caller: {:?}", caller);
