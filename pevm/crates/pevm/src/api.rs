@@ -159,8 +159,6 @@ impl PevmAPI {
             return Err(APIError::NoScheduledTransactions);
         }
 
-        tracing::info!("Scheduled transactions: {:?}", scheduled_queue);
-
         scheduled_queue
             .pop_front()
             .ok_or(APIError::NoScheduledTransactions)

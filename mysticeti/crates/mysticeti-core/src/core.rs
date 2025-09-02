@@ -430,6 +430,7 @@ impl<H: BlockHandler> Core<H> {
             for block in &commit.blocks {
                 self.epoch_manager
                     .observe_committed_block(block, &self.committee);
+                tracing::info!("executing block of round {} from replica {}", block.reference().round, block.reference().authority);
                 self.execute_block_in_pevm(block.statements());
             }
         }
@@ -551,7 +552,6 @@ fn decode_share_base_statement(data: &[u8]) -> (String, Address) {
     if let Some(part2) = parts.get(2) {
         println!("part2 length = {}", part2.len());
         println!("part2 bytes  = {:?}", part2);
-        // If you expect it to be UTF-8:
         println!("part2 as string = {}", String::from_utf8_lossy(part2));
     } else {
         println!("part2 does not exist, total parts = {}", parts.len());
