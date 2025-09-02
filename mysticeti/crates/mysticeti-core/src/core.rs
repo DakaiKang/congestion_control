@@ -436,7 +436,6 @@ impl<H: BlockHandler> Core<H> {
     }
 
     pub fn execute_block_in_pevm(&mut self, statements: &[BaseStatement]) {
-        let in_parallel = true;
         let mut txs = Vec::<(String, Address)>::new();
         for statement in statements {
             if let BaseStatement::Share(share) = statement {
@@ -548,9 +547,8 @@ fn decode_share_base_statement(data: &[u8]) -> (String, Address) {
 
     let timestamp = u64::from_le_bytes(parts[0].as_slice().try_into().expect("timestamp must be exactly 8 bytes"));
     let raw_hex = String::from_utf8_lossy(&parts[1]).to_string();
-    let caller: Address = String::from_utf8_lossy(&parts[2])
-        .parse()
-        .expect("Invalid address");
+    let caller_bytes: [u8; 20] = parts[2].as_slice().try_into().expect("address must be 20 bytes");
+    let caller = Address::from(caller_bytes);
 
     (raw_hex, caller)
 }

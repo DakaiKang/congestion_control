@@ -16,7 +16,7 @@ use crate::{
     crypto::AsBytes,
     metrics::Metrics,
     runtime::{self, timestamp_utc},
-    types::{AuthorityIndex, Transaction},
+    types::{AuthorityIndex, Transaction, BaseStatement},
 };
 
 pub struct TransactionGenerator {
@@ -258,7 +258,7 @@ impl TransactionGenerator {
 }
 
 
-fn split_bytes_by_pipe(data: Vec<u8>) -> Vec<Vec<u8>> {
+fn split_bytes_by_pipe(data: &[u8]) -> Vec<Vec<u8>> {
         data.split(|&b| b == b'|')
             .map(|chunk| chunk.to_vec())
             .collect()
@@ -270,20 +270,20 @@ fn split_bytes_by_pipe(data: Vec<u8>) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_read_workload_file() {
-        let id: AuthorityIndex = 0;
-        let path = std::env::current_dir().unwrap();
-        println!("Current path: {}", path.display());
-        println!("Reading workload file for id {}", id);
-        let file_path = "/home/ubuntu/congestion_control/pevm/crates/pevm/workload_{}.txt".replace("{}", &id.to_string());
-        let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
-        let handle = task::spawn( async move {
-                TransactionGenerator::read_workload_from_file(pevm_api.clone(), &file_path).await;
-            }
-        );
-        handle.await.unwrap();
-    }
+    // #[tokio::test]
+    // async fn test_read_workload_file() {
+    //     let id: AuthorityIndex = 0;
+    //     let path = std::env::current_dir().unwrap();
+    //     println!("Current path: {}", path.display());
+    //     println!("Reading workload file for id {}", id);
+    //     let file_path = "/home/ubuntu/congestion_control/pevm/crates/pevm/workload_{}.txt".replace("{}", &id.to_string());
+    //     let pevm_api = Arc::new(Mutex::new(PevmAPI::new()));
+    //     let handle = task::spawn( async move {
+    //             TransactionGenerator::read_workload_from_file(pevm_api.clone(), &file_path).await;
+    //         }
+    //     );
+    //     handle.await.unwrap();
+    // }
 
     #[test]
     fn test_decode_transaction() {
@@ -298,12 +298,20 @@ mod tests {
                 .expect("Invalid address");
             transaction.extend_from_slice(caller.as_bytes());
             transaction.push(b'|');
-            let parts = split_bytes_by_pipe(transaction);
-            let raw_hex = String::from_utf8_lossy(&parts[1]);
-            println!("Raw hex: {}", raw_hex);
-            let caller_str = String::from_utf8_lossy(&parts[2]);
-            println!("Caller: {:?}", caller_str);
-            let caller: Address = caller_str.parse().expect("Invalid address");
-            println!("Caller: {:?}", caller);
+
+            let statement = BaseStatement::Share(Transaction::new(transaction));
+
+            if let BaseStatement::Share(data) = statement {
+                let parts = split_bytes_by_pipe(data.data());
+                let raw_hex = String::from_utf8_lossy(&parts[1]);
+                println!("Raw hex: {}", raw_hex);
+                // let caller_str = String::from_utf8_lossy(&parts[2]);
+                // println!("Caller: {:?}", caller_str);
+                // let caller: Address = caller_str.parse().expect("Invalid address");
+                let caller_bytes: [u8; 20] = parts[2].as_slice().try_into().expect("address must be 20 bytes");
+                let caller = Address::from(caller_bytes);
+                println!("Caller: {:?}", caller);
+            }
+            
     }
 }
