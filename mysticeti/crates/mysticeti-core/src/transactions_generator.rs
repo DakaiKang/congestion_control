@@ -7,7 +7,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::sync::{mpsc,Mutex};
 use tokio::time::sleep;
 use tokio::task;
-use pevm::api::{PevmAPI, APIError, TransactionWithHint, PevmTransactionGenerator};
+use pevm::api::{PevmAPI, APIError, TransactionWithHint, PevmTransactionGenerator, PevmScheduler};
 use pevm::serialization::deserializer;
 pub use ethers::types::Address;
 
@@ -36,7 +36,8 @@ impl TransactionGenerator {
         client_parameters: ClientParameters,
         node_public_config: NodePublicConfig,
         metrics: Arc<Metrics>,
-        pevm_api: Arc<Mutex<PevmAPI>>,
+        pevm_scheduler: Arc<PevmScheduler>,
+        insufficient_txn_signal_sender: mpsc::Sender<usize>,
     ) {
         assert!(client_parameters.transaction_size > 8 + 8); // 8 bytes timestamp + 8 bytes random
         tracing::info!(
@@ -48,13 +49,6 @@ impl TransactionGenerator {
         let committee_size = *(&node_public_config.identifiers.len()) as u64;
         let workload_type = node_public_config.parameters.pevm_workload_type.clone();
 
-        let mut pevm_txn_generator = PevmTransactionGenerator::new(workload_type, seed, committee_size);
-        let pevm_api_clone = pevm_api.clone();
-
-        runtime::Handle::current().spawn(async move {
-            pevm_txn_generator.run(pevm_api_clone).await;
-        });
-
         runtime::Handle::current().spawn(
             Self {
                 sender,
@@ -63,30 +57,17 @@ impl TransactionGenerator {
                 node_public_config,
                 metrics,
             }
-            .run(pevm_api, seed),
+            .run(pevm_scheduler, seed, insufficient_txn_signal_sender),
         );
     }
 
 
-    pub async fn run(mut self, pevm_api: Arc<Mutex<PevmAPI>>, id: AuthorityIndex) {
+    pub async fn run(mut self, pevm_scheduler: Arc<PevmScheduler>, id: AuthorityIndex, insufficient_txn_signal_sender: mpsc::Sender<usize>) {
         let load = self.client_parameters.load;
         let transactions_per_block_interval = (load + 9) / 10;
         tracing::info!(
             "Generating {transactions_per_block_interval} transactions per {} ms",
             Self::TARGET_BLOCK_INTERVAL.as_millis()
-        );
-        
-        // let file_path = "/home/ubuntu/congestion_control/pevm/crates/pevm/workload_{}.txt".replace("{}", &id.to_string());
-        // let pevm_api_clone = pevm_api.clone();
-        let pevm_api_clone_2 = pevm_api.clone();
-
-        // let workload_handle = task::spawn( async move {
-        //         TransactionGenerator::read_workload_from_file(pevm_api_clone, &file_path).await;
-        //     }
-        // );
-        let scheduler_handle = task::spawn( async move {
-                TransactionGenerator::schedule(pevm_api_clone_2).await;
-            }
         );
 
         let max_block_size = self.node_public_config.parameters.max_block_size;
@@ -100,53 +81,20 @@ impl TransactionGenerator {
         let mut interval = runtime::TimeInterval::new(Self::TARGET_BLOCK_INTERVAL);
         runtime::sleep(self.client_parameters.initial_delay).await;
         loop {
-            tracing::info!("Ticking...");
             interval.tick().await;
-            tracing::info!("After tick");
             let timestamp = (timestamp_utc().as_millis() as u64).to_le_bytes();
             let mut block = Vec::with_capacity(target_block_size);
             let mut block_size = 0;
+            let mut x = 0;
             for _ in 0..transactions_per_block_interval {
-                let mut fetched_txn = {
-                    tracing::info!("Locking pevm_api...");
-                    let mut guard = pevm_api.lock().await;
-                    tracing::info!("Got lock, fetching txn...");
-                    guard.fetch_one_scheduled_txn().await
-                }; 
-                tracing::info!("Got txn = {:?}", fetched_txn);
-
-                match &fetched_txn {
-                    Ok(txn) => {
-                        tracing::debug!("Fetched scheduled txn: {:?}", txn);
-                    }
-                    Err(e) => {
-                        sleep(Duration::from_millis(10)).await;
-                        // tracing::error!("Error fetching scheduled txn: {}", e);
-                        continue;
-                    }
-                }
-
-                let fetched_txn = fetched_txn.unwrap();
-
-                // random += counter;
-
-                // let mut transaction = Vec::with_capacity(self.client_parameters.transaction_size);
-                // transaction.extend_from_slice(&timestamp); // 8 bytes
-                // // transaction.extend_from_slice(&random.to_le_bytes()); // 8 bytes
-                // // transaction.extend_from_slice(&zeros[..]);
-                // transaction.push(b'|');
-                // transaction.extend_from_slice(fetched_txn.raw_hex.as_bytes());
-                // transaction.push(b'|');
-                // let caller_bytes = fetched_txn.caller.as_bytes();
-                // assert_eq!(
-                //     caller_bytes.len(),
-                //     20,
-                //     "caller address must be exactly 20 bytes"
-                // );
-                // transaction.extend_from_slice(caller_bytes);
-                // transaction.push(b'|');
-                // transaction.extend_from_slice(fetched_txn.hint.as_bytes());
-                // transaction.push(b'|');
+                let batch = pevm_scheduler.fetch_batch(1).await;
+                let fetched_txn = if let Some(txn) = batch.into_iter().next() {
+                    tracing::info!("fetched {}-th txn: {:?}", &x, &txn);
+                    x += 1;
+                    txn
+                } else {
+                    continue;
+                };
 
                 let transaction: Vec<u8> = bincode::serialize(&fetched_txn).unwrap();
 
@@ -159,6 +107,7 @@ impl TransactionGenerator {
                 tx_to_report += 1;
 
                 if block_size >= max_block_size {
+                    insufficient_txn_signal_sender.send(block.len()).await;
                     if self.sender.send(block.clone()).await.is_err() {
                         return;
                     }
@@ -167,6 +116,9 @@ impl TransactionGenerator {
                 }
             }
 
+            tracing::info!("ABC1");
+            insufficient_txn_signal_sender.send(block.len()).await;
+            tracing::info!("ABC2");
             if !block.is_empty() && self.sender.send(block).await.is_err() {
                 return;
             }

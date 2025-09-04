@@ -5,6 +5,7 @@ use std::error::Error;
 use tokio::time::{sleep, Duration};
 // #[cfg(feature = "with-tokio")]
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 
 use std::{
     collections::{VecDeque},
@@ -254,10 +255,12 @@ pub struct PevmTransactionGenerator {
     pub nonce: u64,
     pub replica_id: u64,
     pub replica_num: u64,
+    pub pevm_txn_sender: mpsc::Sender<Vec<(String, Address)>>,
+    pub insufficient_txn_signal_receiver: mpsc::Receiver<usize>,
 }
 
 impl PevmTransactionGenerator {
-    pub fn new(workload_type: WorkloadType, replica_id: u64, replica_num: u64) -> Self {
+    pub fn new(workload_type: WorkloadType, replica_id: u64, replica_num: u64, pevm_txn_sender: mpsc::Sender<Vec<(String, Address)>>, insufficient_txn_signal_receiver: mpsc::Receiver<usize>) -> Self {
         let clusters = load_account_addresses(&workload_type);
         Self {
             workload_type,
@@ -265,53 +268,39 @@ impl PevmTransactionGenerator {
             nonce: 0,
             replica_id,
             replica_num,
+            pevm_txn_sender,
+            insufficient_txn_signal_receiver,
         }
     }
 
-    pub async fn run(&mut self, pevm_api: Arc<Mutex<PevmAPI>>) {
-        loop{
-            // 1) Read queue length in a short, non-awaiting lock
-            let pending = {
-                let guard = pevm_api.lock().await;
-                // Prefer a sync method; if you must use async, let it lock internally.
-                guard.num_pending_txns().await // e.g., &VecDeque::len() or atomic gauge
-            };
-
-            tracing::debug!(pending, "pending txs");
-
-            // 2) Back off if full
-            if pending >= 100 {
-                sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-
-            // 3) Generate outside the lock
+    pub async fn run(&mut self) {
+        const MAX_PENDING_TRANSACTION_NUM:usize = 1000;
+        let mut new_transactions = Vec::new();
+        tracing::info!("Start Running PEVM");
+        loop {
             let batch = self.generate_transactions();
-            tracing::debug!(batch_len = batch.len(), "generated batch");
-            if batch.is_empty() {
-                sleep(Duration::from_millis(5)).await;
-                continue;
+            new_transactions.extend(batch);
+            if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM + 500 {
+                let initial_batch_to_schedule = new_transactions.drain(..500).collect();
+                tracing::info!("Sending 500");
+                self.pevm_txn_sender.send(initial_batch_to_schedule).await;
+                tracing::info!("Sent 500");
+                break;
             }
+        }
 
-            let txs: Vec<TransactionWithHint> = batch
-                .into_iter()
-                .map(|(raw_hex, caller)| TransactionWithHint {
-                    raw_hex,
-                    caller,
-                    hint: String::new(),
-                })
-                .collect();
-
-            // 4) Push inside a short lock
-            {
-                let mut guard = pevm_api.lock().await;
-                tracing::debug!(n = txs.len(), "adding transactions");
-                guard.add_transactions(txs).await;
-                // no .await here
+        loop{
+            let txn_needed = self.insufficient_txn_signal_receiver.recv().await.unwrap();
+            tracing::info!("txn_needed = {}", txn_needed);
+            let batch_to_schedule: Vec<(String, Address)> = new_transactions.drain(..txn_needed).collect();
+            self.pevm_txn_sender.send(batch_to_schedule).await;
+            loop{
+                let batch = self.generate_transactions();
+                new_transactions.extend(batch);
+                if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM {
+                    break;
+                }
             }
-
-            // Optional: yield
-            tokio::task::yield_now().await;
         }
     }
 
@@ -338,7 +327,6 @@ impl PevmTransactionGenerator {
                     }
                     let recipient = family[(rand::random::<usize>()) % (family.len())];
                     let calldata = ERC20Token::transfer(recipient, U256::from(rand::random::<u8>()));
-                    tracing::info!("Push one transaction");
                     transactions.push(TxEnv {
                         caller: *member,
                         gas_limit: GAS_LIMIT,
@@ -359,6 +347,56 @@ impl PevmTransactionGenerator {
         self.nonce += 1;
 
         hex_codes
+    }
+}
+
+
+pub struct PevmScheduler {
+    scheduled_txns: Arc<Mutex<Vec<TransactionWithHint>>>,
+    pevm_txn_receiver: Mutex<mpsc::Receiver<Vec<(String, Address)>>>,
+}
+
+impl PevmScheduler {
+    pub fn new(
+        pevm_txn_receiver: mpsc::Receiver<Vec<(String, Address)>>,
+    ) -> Self {
+        Self {
+            scheduled_txns: Arc::new(Mutex::new(Vec::new())),
+            pevm_txn_receiver: Mutex::new(pevm_txn_receiver),
+        }
+    }
+
+    pub async fn run(self: Arc<Self>) {
+        tracing::info!("starting running PevmScheduler");
+        // Take the receiver exactly once
+        let mut rx = self.pevm_txn_receiver
+            .lock().await;
+
+        tracing::info!("Got rx");
+        while let Some(batch) = rx.recv().await {
+            tracing::info!("scheduling {} txns", batch.len());
+            self.schedule(batch).await;
+        }
+        tracing::info!("receiver closed, exiting scheduler");
+    }
+
+    pub async fn schedule(&self, batch: Vec<(String, Address)>) {
+        let batch: Vec<TransactionWithHint> = batch
+            .into_iter()
+            .map(|(raw_hex, caller)| TransactionWithHint {
+                raw_hex,
+                caller,
+                hint: String::new(), // or some default value
+            }).collect();
+        let mut lock = self.scheduled_txns.lock().await;
+        lock.extend(batch);
+    }
+
+    pub async fn fetch_batch(&self, n: usize) -> Vec<TransactionWithHint> {
+        let mut lock = self.scheduled_txns.lock().await;
+        let len = lock.len();
+        let batch: Vec<TransactionWithHint> = lock.drain(..n.min(len)).collect();
+        batch
     }
 }
 
