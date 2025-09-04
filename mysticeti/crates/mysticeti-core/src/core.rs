@@ -178,7 +178,7 @@ impl<H: BlockHandler> Core<H> {
             committer,
             pevm_executor: if public_config.parameters.enable_pevm_executor {
                 Some(PevmExecutor::new(
-                    ExecutionMode::Parallel,
+                    ExecutionMode::Sequential,
                     public_config.parameters.pevm_workload_type.clone()
                 ))
             } else {

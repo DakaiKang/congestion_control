@@ -208,10 +208,9 @@ pub struct PevmExecutor {
 
 impl PevmExecutor {
     pub fn new(execution_mode: ExecutionMode, workload_type: WorkloadType) -> Self {
-        let storage = load_in_memory_storage(&workload_type);
         Self {
             execution_mode,
-            storage,
+            storage: load_in_memory_storage(&workload_type),
             chain: PevmEthereum::mainnet(),
         }
     }
@@ -236,10 +235,6 @@ impl PevmExecutor {
             ExecutionMode::Parallel => {
                 let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
                 tracing::info!("Starting Executing {} transactions in parallel with {} threads", &txs.len(), concurrency_level);
-
-                let first_five = &txs[..5];
-
-                println!("first_five = {:?}", first_five);
 
                 Pevm::default().execute_revm_parallel(
                     &self.chain,
