@@ -236,6 +236,11 @@ impl PevmExecutor {
             ExecutionMode::Parallel => {
                 let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
                 tracing::info!("Starting Executing {} transactions in parallel with {} threads", &txs.len(), concurrency_level);
+
+                let first_five = &txs[..5];
+
+                println!("first_five = {:?}", first_five);
+
                 Pevm::default().execute_revm_parallel(
                     &self.chain,
                     &self.storage,
@@ -483,15 +488,16 @@ pub fn test_load_both() {
     println!("tx_envs: {:?}", tx_envs);
 
     let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-        tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
-        let results = Pevm::default().execute_revm_parallel(
-            &chain,
-            &restored_storage,
-            SpecId::LATEST,
-            BlockEnv::default(),
-            tx_envs,
-            concurrency_level,
-        );
+    
+    tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
+    let results = Pevm::default().execute_revm_parallel(
+        &chain,
+        &restored_storage,
+        SpecId::LATEST,
+        BlockEnv::default(),
+        tx_envs,
+        concurrency_level,
+    );
 
     // println!("Results: {:?}", results);
 
