@@ -275,14 +275,15 @@ impl PevmTransactionGenerator {
     }
 
     pub async fn run(&mut self) {
-        const MAX_PENDING_TRANSACTION_NUM:usize = 10000;
+        const MAX_PENDING_TRANSACTION_NUM:usize = 40000;
+        const INITIAL_BATCH:usize = 20000;
         let mut new_transactions = Vec::new();
         tracing::info!("Start Running PEVM");
         loop {
             let batch = self.generate_transactions();
             new_transactions.extend(batch);
-            if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM + 5000 {
-                let initial_batch_to_schedule = new_transactions.drain(..5000).collect();
+            if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM + INITIAL_BATCH {
+                let initial_batch_to_schedule = new_transactions.drain(..INITIAL_BATCH).collect();
                 self.pevm_txn_sender.send(initial_batch_to_schedule).await;
                 break;
             }
@@ -424,18 +425,26 @@ pub fn store_account_address() {
 
 #[test]
 pub fn store_and_load_both() {
-    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(5, 5, 8);
-    // Save
-    save_addresses("account_addresses.bin", &account_addresses);
-    println!("Saved account addresses: {:?}", account_addresses);
+    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 1, 4);
 
-    save(&in_memory_storage, "storage.json");
+    let workload_type = WorkloadType::ERC20(1, 1, 4);
+
+    let a1 = 1;
+    let a2 = 1;
+    let a3 = 4;
+
+    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
+    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
+
+    // Save
+    save_addresses(&address_bin, &account_addresses);
+
+    save(&in_memory_storage, &storage_json);
     // println!("Saved in-memory storage: {:?}", in_memory_storage);
 
      // Load
-    let restored_addresses = load_addresses("account_addresses.bin");
-    println!("Restored: {:?}", restored_addresses);
-    let restored = load("storage.json");
+    let restored_addresses = load_addresses(&address_bin);
+    let restored = load(&storage_json);
     // println!("Restored: {:?}", restored);
 
     assert_eq!(restored.unwrap(), in_memory_storage);
@@ -446,7 +455,14 @@ pub fn store_and_load_both() {
 #[test]
 
 pub fn test_load_both() {
-    let workload_type = WorkloadType::ERC20(5, 5, 8);
+    let workload_type = WorkloadType::ERC20(1, 1, 4);
+
+    let a1 = 1;
+    let a2 = 1;
+    let a3 = 4;
+
+    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
+    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
 
     let restored_addresses = load_addresses("account_addresses.bin");
     println!("Restored: {:?}", restored_addresses);
@@ -492,11 +508,11 @@ pub fn test_load_in_memory_storage(){
 
 #[test]
 pub fn test_max_throughput() {
-    let workload_type = WorkloadType::ERC20(5, 5, 8);
+    let workload_type = WorkloadType::ERC20(1, 1, 4);
 
-    let a1 = 5;
-    let a2 = 5;
-    let a3 = 8;
+    let a1 = 1;
+    let a2 = 1;
+    let a3 = 4;
 
     let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
     let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);

@@ -99,7 +99,7 @@ pub mod node_defaults {
     }
 
     pub fn default_pevm_workload_type() -> pevm::api::WorkloadType {
-        pevm::api::WorkloadType::ERC20(5, 5, 8)
+        pevm::api::WorkloadType::ERC20(1, 1, 4)
     }
 }
 
