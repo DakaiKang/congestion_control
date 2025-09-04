@@ -459,10 +459,7 @@ impl<H: BlockHandler> Core<H> {
             self.executed_txns += txs.len();
             self.pevm_executor.as_ref().expect("executor missing").execute(txs);
             let elapsed: Duration = self.start_time_point.elapsed();
-
-            // As f64 seconds
             let secs_f64: f64 = elapsed.as_secs_f64();
-
             tracing::error!("Throughput = {}", self.executed_txns as f64/secs_f64);
         }
         

@@ -235,7 +235,7 @@ impl PevmExecutor {
             }
             ExecutionMode::Parallel => {
                 let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-                tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
+                tracing::info!("Starting Executing {} transactions in parallel with {} threads", &txs.len(), concurrency_level);
                 Pevm::default().execute_revm_parallel(
                     &self.chain,
                     &self.storage,
@@ -244,6 +244,7 @@ impl PevmExecutor {
                     txs,
                     concurrency_level,
                 );
+                tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
             }
         }
     }
@@ -515,7 +516,7 @@ pub fn test_max_throughput() {
         let transactions = generator.generate_transactions();
         let tx_envs = deserializer::decode_batch_hex(transactions);
         all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 10000 {
+        if all_tx_env.len() >= 100000 {
             break;
         }
     }
@@ -524,13 +525,13 @@ pub fn test_max_throughput() {
 
     let chain = PevmEthereum::mainnet();
 
-    let start = Instant::now();
-
     let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
 
     let concurrency_level = NonZeroUsize::new(8).unwrap();
 
     println!("Executed transactions in parallel with {} threads", concurrency_level);
+
+    let start = Instant::now();
     let results = Pevm::default().execute_revm_parallel(
             &chain,
             &restored_storage,
