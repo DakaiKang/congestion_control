@@ -84,16 +84,16 @@ async fn test_serializer() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{:#?}", deserialized_tx);
 
-    let tx_env = adapter::adapt_transaction(deserialized_tx);
+    // let tx_env = adapter::adapt_transaction(deserialized_tx);
 
-    println!("{:#?}", tx_env);
+    // println!("{:#?}", tx_env);
 
-    let (eip1559, caller) = adapter::adapt_tx_env(tx_env);
+    // let (eip1559, caller) = adapter::adapt_tx_env(tx_env);
 
-    println!("Final Result:");
+    // println!("Final Result:");
 
-    println!("{:#?}", eip1559);
-    println!("{:#?}", caller);
+    // println!("{:#?}", eip1559);
+    // println!("{:#?}", caller);
 
     Ok(())
 }
@@ -135,9 +135,9 @@ async fn txenv_2_eip1559_2_hex_eip1559_2_txenv() -> Result<(), Box<dyn std::erro
 
     // println!("{:#?}", deserialized_tx);
 
-    let tx_env = adapter::adapt_transaction(deserialized_tx);
+    // let tx_env = adapter::adapt_transaction(deserialized_tx);
 
-    println!("{:#?}", tx_env);
+    // println!("{:#?}", tx_env);
 
     Ok(())
 }

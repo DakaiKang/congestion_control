@@ -509,7 +509,7 @@ pub fn test_load_in_memory_storage(){
 
 
 #[test]
-pub fn test_max_throughput() {
+pub fn test_max_throughput_parallel() {
     let workload_type = WorkloadType::ERC20(1, 1, 4);
 
     let a1 = 1;
