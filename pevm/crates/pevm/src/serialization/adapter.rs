@@ -100,8 +100,8 @@ fn legacy_transaction_2_tx_env(tx: TransactionRequest, caller_addr: Address, non
         transact_to: to_tx_kind(tx.to),
         value: option_u256_to_uint_or_zero(tx.value),
         data: tx.data.map(|b| AlloyBytes::from(b.to_vec())).unwrap_or_default(), 
-        // nonce: tx.nonce.map(|v| v.as_u64()),
-        nonce: Some(nonce),
+        nonce: tx.nonce.map(|v| v.as_u64()),
+        // nonce: Some(nonce),
         ..Default::default()
     }
 }
@@ -119,8 +119,8 @@ fn eip1559_transaction_2_tx_env(tx: Eip1559TransactionRequest, caller_addr: Addr
     TxEnv {
         caller: AlloyAddress::new(get_address_slice(&caller_addr)),
         chain_id: Some(tx.chain_id.unwrap_or_default().as_u64()),
-        // nonce: tx.nonce.map(|v| v.as_u64()),
-        nonce: Some(nonce),
+        nonce: tx.nonce.map(|v| v.as_u64()),
+        // nonce: Some(nonce),
         gas_limit: tx.gas.map(|v| v.as_u64()).unwrap_or(0),  
         gas_price: option_u256_to_uint_or_zero(gas_price),
         transact_to: to_tx_kind(tx.to),

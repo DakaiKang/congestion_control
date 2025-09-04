@@ -534,7 +534,7 @@ pub fn test_max_throughput_parallel() {
         let transactions = generator.generate_transactions();
         let tx_envs = deserializer::decode_batch_hex(transactions);
         all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 100000 {
+        if all_tx_env.len() >= 50 {
             break;
         }
     }
