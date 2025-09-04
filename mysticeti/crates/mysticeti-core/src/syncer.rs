@@ -67,6 +67,7 @@ impl<H: BlockHandler, S: SyncerSignals, C: CommitObserver> Syncer<H, S, C> {
             .metrics
             .utilization_timer
             .utilization_timer("Syncer::add_blocks");
+        // [DK] 
         self.core.add_blocks(blocks);
         self.try_new_block();
     }
@@ -82,6 +83,7 @@ impl<H: BlockHandler, S: SyncerSignals, C: CommitObserver> Syncer<H, S, C> {
         }
     }
 
+    // [DK] Try to create a new block and commit existing blocks in the DAG
     fn try_new_block(&mut self) {
         let _timer = self
             .metrics
@@ -187,6 +189,7 @@ mod tests {
                         // eprintln!("[{:06} {}] Proposal timeout for {round}", scheduler.time_ms(), self.core.authority());
                     }
                 }
+                // [DK] After receiving a block, add the block into DAG
                 SyncerEvent::DeliverBlock(block) => {
                     // eprintln!("[{:06} {}] Deliver {block}", scheduler.time_ms(), self.core.authority());
                     self.add_blocks(vec![block]);

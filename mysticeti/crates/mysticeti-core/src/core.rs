@@ -205,11 +205,13 @@ impl<H: BlockHandler> Core<H> {
             .metrics
             .utilization_timer
             .utilization_timer("Core::add_blocks");
+        // [DK] processed: the blocks that are processed after adding blocks into the DAG
         let processed = self
             .block_manager
             .add_blocks(blocks, &mut (&mut self.wal_writer, &self.block_store));
         let mut result = Vec::with_capacity(processed.len());
         for (position, processed) in processed.into_iter() {
+            // [DK] Move to the next round if 2f+1 blocks to the current round is received
             self.threshold_clock
                 .add_block(*processed.reference(), &self.committee);
             self.pending
@@ -227,7 +229,7 @@ impl<H: BlockHandler> Core<H> {
             .utilization_timer("Core::run_block_handler");
         let statements = self
             .block_handler
-            .handle_blocks(processed, !self.epoch_changing());
+            .handle_blocks(processed, !self.epoch_changing());  // [DK] Fecth transactions from the transaction generator
         let serialized_statements =
             bincode::serialize(&statements).expect("Payload serialization failed");
         let position = self
@@ -238,6 +240,7 @@ impl<H: BlockHandler> Core<H> {
             .push_back((position, MetaStatement::Payload(statements)));
     }
 
+    // [DK] Build a new block
     pub fn try_new_block(&mut self) -> Option<Data<StatementBlock>> {
         let _timer = self
             .metrics
@@ -290,6 +293,8 @@ impl<H: BlockHandler> Core<H> {
                 }
             }
         }
+
+        tracing::debug!("For round {}, the length of statements is {}", clock_round, statements.len());
 
         assert!(!includes.is_empty());
         let time_ns = timestamp_utc().as_nanos();

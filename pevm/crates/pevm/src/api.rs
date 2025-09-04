@@ -389,7 +389,7 @@ pub fn store_account_address() {
 
 #[test]
 pub fn store_and_load_both() {
-    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 2, 3);
+    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 4, 4);
     // Save
     save_addresses("account_addresses.bin", &account_addresses);
     println!("Saved account addresses: {:?}", account_addresses);
