@@ -313,6 +313,7 @@ impl PevmTransactionGenerator {
     }
 
     pub fn generate_erc20_transactions(&mut self) -> Vec<(String, Address)> {
+        self.nonce = 0;
         const GAS_LIMIT: u64 = 35_000;
         let mut transactions = Vec::new();
         let mut rng = rand::thread_rng();
