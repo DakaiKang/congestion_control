@@ -92,7 +92,7 @@ fn alloy_to_ethers_access_list(list: Vec<AlloyAccessListItem>) -> AccessList {
     )
 }
 
-fn legacy_transaction_2_tx_env(tx: TransactionRequest, caller_addr: Address) -> TxEnv {
+fn legacy_transaction_2_tx_env(tx: TransactionRequest, caller_addr: Address, nonce:u64) -> TxEnv {
     TxEnv {
         caller: AlloyAddress::new(get_address_slice(&caller_addr)),
         gas_limit: tx.gas.map(|v| v.as_u64()).unwrap_or(0),  
@@ -100,12 +100,13 @@ fn legacy_transaction_2_tx_env(tx: TransactionRequest, caller_addr: Address) -> 
         transact_to: to_tx_kind(tx.to),
         value: option_u256_to_uint_or_zero(tx.value),
         data: tx.data.map(|b| AlloyBytes::from(b.to_vec())).unwrap_or_default(), 
-        nonce: tx.nonce.map(|v| v.as_u64()),
+        // nonce: tx.nonce.map(|v| v.as_u64()),
+        nonce: Some(nonce),
         ..Default::default()
     }
 }
 
-fn eip1559_transaction_2_tx_env(tx: Eip1559TransactionRequest, caller_addr: Address) -> TxEnv {
+fn eip1559_transaction_2_tx_env(tx: Eip1559TransactionRequest, caller_addr: Address, nonce:u64) -> TxEnv {
     let base_fee = U256::default();
     let max_priority_fee_per_gas = tx.max_priority_fee_per_gas.unwrap_or_default();
     let max_fee_per_gas = tx.max_fee_per_gas.unwrap_or_default();
@@ -118,7 +119,8 @@ fn eip1559_transaction_2_tx_env(tx: Eip1559TransactionRequest, caller_addr: Addr
     TxEnv {
         caller: AlloyAddress::new(get_address_slice(&caller_addr)),
         chain_id: Some(tx.chain_id.unwrap_or_default().as_u64()),
-        nonce: tx.nonce.map(|v| v.as_u64()),
+        // nonce: tx.nonce.map(|v| v.as_u64()),
+        nonce: Some(nonce),
         gas_limit: tx.gas.map(|v| v.as_u64()).unwrap_or(0),  
         gas_price: option_u256_to_uint_or_zero(gas_price),
         transact_to: to_tx_kind(tx.to),
@@ -130,10 +132,10 @@ fn eip1559_transaction_2_tx_env(tx: Eip1559TransactionRequest, caller_addr: Addr
 }
 
 
-pub fn adapt_transaction(decoded_tx: DecodedTransaction) -> TxEnv {
+pub fn adapt_transaction(decoded_tx: DecodedTransaction, nonce:u64) -> TxEnv {
     match decoded_tx {
-        DecodedTransaction::Legacy(tx, caller) => legacy_transaction_2_tx_env(tx, caller),
-        DecodedTransaction::Eip1559(tx, caller) => eip1559_transaction_2_tx_env(tx, caller),
+        DecodedTransaction::Legacy(tx, caller) => legacy_transaction_2_tx_env(tx, caller, nonce),
+        DecodedTransaction::Eip1559(tx, caller) => eip1559_transaction_2_tx_env(tx, caller, nonce),
         _ => {
             panic!("Unsupported transaction type for adaptation: {:?}", decoded_tx);
         }

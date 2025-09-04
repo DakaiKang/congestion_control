@@ -220,7 +220,8 @@ impl PevmExecutor {
     }
 
     pub fn execute(&self, txs: Vec<(String, Address)>) {
-        let txs = deserializer::decode_batch_hex(txs);
+        let mut txs = deserializer::decode_batch_hex(txs);
+
         match self.execution_mode {
             ExecutionMode::Sequential => {
                 tracing::info!("Executed transactions sequentially");
@@ -345,10 +346,6 @@ impl PevmTransactionGenerator {
         let hex_codes = serializer::encode_batch_to_hex(transactions);
         
         self.nonce += 1;
-
-        if self.nonce == 500 {
-            self.nonce = 0;
-        }
 
         hex_codes
     }

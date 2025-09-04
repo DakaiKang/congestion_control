@@ -454,6 +454,7 @@ impl<H: BlockHandler> Core<H> {
                 txs.push((raw_hex, caller));
             }
         }
+
         if txs.len() > 0 {
             tracing::info!("Executing {} transactions in pevm", txs.len());
             self.executed_txns += txs.len();

@@ -426,16 +426,16 @@ pub fn decode_batch_hex(
     hex_address: Vec<(String, Address)>,
 ) -> Vec<TxEnv> {
     let mut results = Vec::new();
-
+    let mut nonce = 0;
     for (hex, addr) in hex_address {
         let deserialized_tx = decode_hex_with_known_addr(&hex, addr);
         match deserialized_tx {
             DecodedTransaction::Legacy(_, _) => {
-                let tx_env = adapter::adapt_transaction(deserialized_tx);
+                let tx_env = adapter::adapt_transaction(deserialized_tx, nonce);
                 results.push(tx_env);
             },
             DecodedTransaction::Eip1559(_, _) => {
-                let tx_env = adapter::adapt_transaction(deserialized_tx);
+                let tx_env = adapter::adapt_transaction(deserialized_tx, nonce);
                 results.push(tx_env);
             },
             _ => {
@@ -443,6 +443,7 @@ pub fn decode_batch_hex(
                 continue;
             }
         }
+        nonce += 1;
     }
 
     results
