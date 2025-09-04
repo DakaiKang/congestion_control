@@ -99,7 +99,7 @@ pub mod node_defaults {
     }
 
     pub fn default_pevm_workload_type() -> pevm::api::WorkloadType {
-        pevm::api::WorkloadType::ERC20(1, 2, 3)
+        pevm::api::WorkloadType::ERC20(5, 5, 8)
     }
 }
 
@@ -287,7 +287,7 @@ mod client_defaults {
     use super::Duration;
 
     pub fn default_load() -> usize {
-        1000
+        2000
     }
 
     pub fn default_transaction_size() -> usize {

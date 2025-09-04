@@ -2,7 +2,7 @@
 use std::{fmt, fs};
 use std::error::Error;
 // #[cfg(feature = "with-tokio")]
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 // #[cfg(feature = "with-tokio")]
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
@@ -274,17 +274,15 @@ impl PevmTransactionGenerator {
     }
 
     pub async fn run(&mut self) {
-        const MAX_PENDING_TRANSACTION_NUM:usize = 1000;
+        const MAX_PENDING_TRANSACTION_NUM:usize = 10000;
         let mut new_transactions = Vec::new();
         tracing::info!("Start Running PEVM");
         loop {
             let batch = self.generate_transactions();
             new_transactions.extend(batch);
-            if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM + 500 {
-                let initial_batch_to_schedule = new_transactions.drain(..500).collect();
-                tracing::info!("Sending 500");
+            if new_transactions.len() >= MAX_PENDING_TRANSACTION_NUM + 5000 {
+                let initial_batch_to_schedule = new_transactions.drain(..5000).collect();
                 self.pevm_txn_sender.send(initial_batch_to_schedule).await;
-                tracing::info!("Sent 500");
                 break;
             }
         }
@@ -372,12 +370,10 @@ impl PevmScheduler {
         let mut rx = self.pevm_txn_receiver
             .lock().await;
 
-        tracing::info!("Got rx");
         while let Some(batch) = rx.recv().await {
-            tracing::info!("scheduling {} txns", batch.len());
+            // tracing::info!("scheduling {} txns", batch.len());
             self.schedule(batch).await;
         }
-        tracing::info!("receiver closed, exiting scheduler");
     }
 
     pub async fn schedule(&self, batch: Vec<(String, Address)>) {
@@ -427,7 +423,7 @@ pub fn store_account_address() {
 
 #[test]
 pub fn store_and_load_both() {
-    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 4, 4);
+    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(5, 5, 8);
     // Save
     save_addresses("account_addresses.bin", &account_addresses);
     println!("Saved account addresses: {:?}", account_addresses);
@@ -449,14 +445,17 @@ pub fn store_and_load_both() {
 #[test]
 
 pub fn test_load_both() {
-    let workload_type = WorkloadType::ERC20(1, 2, 3);
+    let workload_type = WorkloadType::ERC20(5, 5, 8);
 
     let restored_addresses = load_addresses("account_addresses.bin");
     println!("Restored: {:?}", restored_addresses);
     let restored_storage = load("storage.json").unwrap();
     // println!("Restored: {:?}", restored);
 
-    let mut generator = PevmTransactionGenerator::new(workload_type, restored_addresses.unwrap());
+    let (tx1, rx1) = mpsc::channel(100);
+    let (tx2, rx2) = mpsc::channel(100);
+
+    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
 
     let transactions = generator.generate_transactions();
 
@@ -487,4 +486,68 @@ pub fn test_load_in_memory_storage(){
     let storage = load_in_memory_storage(&workload_type);
     let addresses = load_account_addresses(&workload_type);
     println!("{:?}", addresses);
+}
+
+
+#[test]
+pub fn test_max_throughput() {
+    let workload_type = WorkloadType::ERC20(5, 5, 8);
+
+    let a1 = 5;
+    let a2 = 5;
+    let a3 = 8;
+
+    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
+    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
+
+    let restored_addresses = load_addresses(&address_bin);
+    // println!("Restored: {:?}", restored_addresses);
+    let restored_storage = load(&storage_json).unwrap();
+
+    let (tx1, rx1) = mpsc::channel(100);
+    let (tx2, rx2) = mpsc::channel(100);
+
+    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
+
+    let mut all_tx_env = Vec::new();
+
+    loop {
+        let transactions = generator.generate_transactions();
+        let tx_envs = deserializer::decode_batch_hex(transactions);
+        all_tx_env.extend(tx_envs);
+        if all_tx_env.len() >= 10000 {
+            break;
+        }
+    }
+
+    let num_tx_env = all_tx_env.len();
+
+    let chain = PevmEthereum::mainnet();
+
+    let start = Instant::now();
+
+    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+
+    let concurrency_level = NonZeroUsize::new(8).unwrap();
+
+    println!("Executed transactions in parallel with {} threads", concurrency_level);
+    let results = Pevm::default().execute_revm_parallel(
+            &chain,
+            &restored_storage,
+            SpecId::LATEST,
+            BlockEnv::default(),
+            all_tx_env,
+            concurrency_level,
+        );
+
+    
+
+    let elapsed: Duration = start.elapsed();
+
+    let secs_f64: f64 = elapsed.as_secs_f64();
+
+    println!("Elapsed = {} seconds (f64)", secs_f64);
+
+    println!("Throughput = {}", num_tx_env as f64 / secs_f64);
+
 }

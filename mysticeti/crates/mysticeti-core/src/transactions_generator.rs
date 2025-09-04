@@ -89,7 +89,7 @@ impl TransactionGenerator {
             for _ in 0..transactions_per_block_interval {
                 let batch = pevm_scheduler.fetch_batch(1).await;
                 let fetched_txn = if let Some(txn) = batch.into_iter().next() {
-                    tracing::info!("fetched {}-th txn: {:?}", &x, &txn);
+                    // tracing::info!("fetched {}-th txn: {:?}", &x, &txn);
                     x += 1;
                     txn
                 } else {
@@ -101,7 +101,7 @@ impl TransactionGenerator {
                 block.push(Transaction::new(transaction));
                 block_size += self.client_parameters.transaction_size;
 
-                tracing::debug!("Block_size = {}, max_block_size = {}", block_size, max_block_size);
+                // tracing::debug!("Block_size = {}, max_block_size = {}", block_size, max_block_size);
 
                 counter += 1;
                 tx_to_report += 1;
@@ -116,9 +116,7 @@ impl TransactionGenerator {
                 }
             }
 
-            tracing::info!("ABC1");
             insufficient_txn_signal_sender.send(block.len()).await;
-            tracing::info!("ABC2");
             if !block.is_empty() && self.sender.send(block).await.is_err() {
                 return;
             }
@@ -201,7 +199,7 @@ impl TransactionGenerator {
 
         if let Some(transaction) = front_item {
             empty = false;
-            tracing::info!("Scheduling transaction: {:?}", transaction);
+            // tracing::info!("Scheduling transaction: {:?}", transaction);
             // do_some_scheduling_work(transaction).await;
             let guard = pevm_api.lock().await;
             // TODO: Wrap scheduled_txns in a Arc<Mutex<>> to release the guard earlier

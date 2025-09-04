@@ -5,6 +5,7 @@ use std::{
     collections::{HashSet, VecDeque},
     mem,
     sync::{atomic::AtomicU64, Arc},
+    time::{Instant, Duration},
 };
 
 use minibytes::Bytes;
@@ -64,6 +65,8 @@ pub struct Core<H: BlockHandler> {
     rounds_in_epoch: RoundNumber,
     committer: UniversalCommitter,
     pub pevm_executor: Option<PevmExecutor>,
+    executed_txns: usize,
+    start_time_point: Instant,
 }
 
 pub struct CoreOptions {
@@ -175,12 +178,14 @@ impl<H: BlockHandler> Core<H> {
             committer,
             pevm_executor: if public_config.parameters.enable_pevm_executor {
                 Some(PevmExecutor::new(
-                    ExecutionMode::Sequential,
+                    ExecutionMode::Parallel,
                     public_config.parameters.pevm_workload_type.clone()
                 ))
             } else {
                 None
             },
+            executed_txns: 0,
+            start_time_point: Instant::now(),
         };
 
         if !unprocessed_blocks.is_empty() {
@@ -343,7 +348,7 @@ impl<H: BlockHandler> Core<H> {
             self.wal_writer.sync().expect("Wal sync failed");
         }
 
-        tracing::debug!("Created block {block:?}");
+        // tracing::debug!("Created block {block:?}");
         Some(block)
     }
 
@@ -450,9 +455,17 @@ impl<H: BlockHandler> Core<H> {
             }
         }
         if txs.len() > 0 {
-            tracing::debug!("Executing {} transactions in pevm", txs.len());
+            tracing::info!("Executing {} transactions in pevm", txs.len());
+            self.executed_txns += txs.len();
+            self.pevm_executor.as_ref().expect("executor missing").execute(txs);
+            let elapsed: Duration = self.start_time_point.elapsed();
+
+            // As f64 seconds
+            let secs_f64: f64 = elapsed.as_secs_f64();
+
+            tracing::error!("Throughput = {}", self.executed_txns as f64/secs_f64);
         }
-        self.pevm_executor.as_ref().expect("executor missing").execute(txs);
+        
     }
 
     pub fn handle_committed_subdag(
