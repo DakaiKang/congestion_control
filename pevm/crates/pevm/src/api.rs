@@ -15,6 +15,7 @@ use std::{
 use crate::{
     Pevm,
     erc20::contract::ERC20Token,
+    vm::PevmTxExecutionResult,
 };
 
 use revm::primitives::{alloy_primitives::U160, BlockEnv, SpecId, TxEnv, U256, TransactTo};
@@ -219,25 +220,43 @@ impl PevmExecutor {
         load(path).expect("Failed to load InMemoryStorage from JSON")
     }
 
-    pub fn execute(&self, txs: Vec<(String, Address)>) {
+    fn update_storage(&mut self, results: Vec<PevmTxExecutionResult>) {
+        let mut state = self.storage.accounts_clone();
+        for changed_state in results.iter() {
+            for (addr, acc) in changed_state.state.iter() {
+                match acc {
+                    Some(account) => {
+                        state.insert(*addr, account.clone());
+                    }
+                    None => {
+                        state.remove(addr);
+                    }
+                }
+            }
+        }
+        self.storage.update_accounts(state);
+    }
+
+    pub fn execute(&mut self, txs: Vec<(String, Address)>) {
         let mut txs = deserializer::decode_batch_hex(txs);
 
         match self.execution_mode {
             ExecutionMode::Sequential => {
                 tracing::info!("Executed transactions sequentially");
-                crate::execute_revm_sequential(
+                let result = crate::execute_revm_sequential(
                     &self.chain,
                     &self.storage,
                     SpecId::LATEST,
                     BlockEnv::default(),
                     txs,
                 );
+                self.update_storage(result.unwrap());
             }
             ExecutionMode::Parallel => {
                 let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
                 tracing::info!("Starting Executing {} transactions in parallel with {} threads", &txs.len(), concurrency_level);
 
-                Pevm::default().execute_revm_parallel(
+                let result = Pevm::default().execute_revm_parallel(
                     &self.chain,
                     &self.storage,
                     SpecId::LATEST,
@@ -246,10 +265,19 @@ impl PevmExecutor {
                     concurrency_level,
                 );
                 tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
+
+                match &result {
+                    Ok(res) => tracing::info!("Execution successful with {} results", res.len()),
+                    Err(e) => tracing::error!("Execution failed: {:?}", e),
+                }
+
+                self.update_storage(result.unwrap());
             }
         }
     }
 }
+
+
 
 pub struct PevmTransactionGenerator {
     pub workload_type: WorkloadType,
@@ -276,8 +304,8 @@ impl PevmTransactionGenerator {
     }
 
     pub async fn run(&mut self) {
-        const MAX_PENDING_TRANSACTION_NUM:usize = 40000;
-        const INITIAL_BATCH:usize = 20000;
+        const MAX_PENDING_TRANSACTION_NUM:usize = 1000;
+        const INITIAL_BATCH:usize = 100;
         let mut new_transactions = Vec::new();
         tracing::info!("Start Running PEVM");
         loop {
@@ -534,7 +562,7 @@ pub fn test_max_throughput_parallel() {
         let transactions = generator.generate_transactions();
         let tx_envs = deserializer::decode_batch_hex(transactions);
         all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 50 {
+        if all_tx_env.len() >= 10000 {
             break;
         }
     }
@@ -597,7 +625,48 @@ pub fn test_max_throughput_sequential() {
         let transactions = generator.generate_transactions();
         let tx_envs = deserializer::decode_batch_hex(transactions);
         all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 100000 {
+        if all_tx_env.len() >= 10000 {
+            break;
+        }
+    }
+
+    let num_tx_env = all_tx_env.len();
+
+    let chain = PevmEthereum::mainnet();
+
+    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+
+    let start = Instant::now();
+    let results = super::pevm::execute_revm_sequential(
+            &chain,
+            &restored_storage,
+            SpecId::LATEST,
+            BlockEnv::default(),
+            all_tx_env,
+        );
+
+    let elapsed: Duration = start.elapsed();
+
+    let secs_f64: f64 = elapsed.as_secs_f64();
+
+    println!("Elapsed = {} seconds (f64)", secs_f64);
+
+    println!("Throughput = {}", num_tx_env as f64 / secs_f64);
+
+    let (tx1, rx1) = mpsc::channel(100);
+    let (tx2, rx2) = mpsc::channel(100);
+
+    let workload_type = WorkloadType::ERC20(1, 1, 4);
+
+    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
+
+    let mut all_tx_env = Vec::new();
+
+    loop {
+        let transactions = generator.generate_transactions();
+        let tx_envs = deserializer::decode_batch_hex(transactions);
+        all_tx_env.extend(tx_envs);
+        if all_tx_env.len() >= 10000 {
             break;
         }
     }

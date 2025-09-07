@@ -287,7 +287,7 @@ mod client_defaults {
     use super::Duration;
 
     pub fn default_load() -> usize {
-        2000
+        200
     }
 
     pub fn default_transaction_size() -> usize {

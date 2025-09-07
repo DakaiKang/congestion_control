@@ -458,7 +458,7 @@ impl<H: BlockHandler> Core<H> {
         if txs.len() > 0 {
             tracing::info!("Executing {} transactions in pevm", txs.len());
             self.executed_txns += txs.len();
-            self.pevm_executor.as_ref().expect("executor missing").execute(txs);
+            self.pevm_executor.as_mut().expect("executor missing").execute(txs);
             let elapsed: Duration = self.start_time_point.elapsed();
             let secs_f64: f64 = elapsed.as_secs_f64();
             tracing::error!("Throughput = {}", self.executed_txns as f64/secs_f64);

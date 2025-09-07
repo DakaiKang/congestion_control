@@ -456,8 +456,7 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
     let mut x = 0;
     for tx in txs {
         *evm.tx_mut() = tx;
-        println!("x = {}", &x);
-        x += 1;
+        
         // TODO: More concrete type for `EVMError<StorageWrapperError<S>>`
         let result_and_state = evm
             .transact()

@@ -34,6 +34,14 @@ impl InMemoryStorage {
             block_hashes,
         }
     }
+
+    pub fn update_accounts(&mut self, accounts: ChainState) {
+        self.accounts = accounts;
+    }
+
+    pub fn accounts_clone(&self) -> ChainState {
+        self.accounts.clone()
+    }
 }
 
 impl Storage for InMemoryStorage {
