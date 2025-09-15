@@ -28,7 +28,7 @@ pub struct TransactionGenerator {
 }
 
 impl TransactionGenerator {
-    const TARGET_BLOCK_INTERVAL: Duration = Duration::from_millis(100);
+    const TARGET_BLOCK_INTERVAL: Duration = Duration::from_millis(10);
 
     pub fn start(
         sender: mpsc::Sender<Vec<Transaction>>,
@@ -64,7 +64,7 @@ impl TransactionGenerator {
 
     pub async fn run(mut self, pevm_scheduler: Arc<PevmScheduler>, id: AuthorityIndex, insufficient_txn_signal_sender: mpsc::Sender<usize>) {
         let load = self.client_parameters.load;
-        let transactions_per_block_interval = (load + 9) / 10;
+        let transactions_per_block_interval = (load + 9) / (100/Self::TARGET_BLOCK_INTERVAL.as_millis() as u64); // round up division
         tracing::info!(
             "Generating {transactions_per_block_interval} transactions per {} ms",
             Self::TARGET_BLOCK_INTERVAL.as_millis()

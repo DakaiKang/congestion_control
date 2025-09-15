@@ -421,21 +421,41 @@ pub fn read_from_file(file_path: &str) -> io::Result<Vec<(String, Address)>> {
     Ok(results)
 }
 
+pub fn decode_one_hex(
+    hex: String,
+    addr: Address,
+) -> Option<TxEnv> {
+    let deserialized_tx = decode_hex_with_known_addr(&hex, addr);
+    match deserialized_tx {
+        DecodedTransaction::Legacy(_, _) => {
+            let tx_env = adapter::adapt_transaction(deserialized_tx);
+            Some(tx_env)
+        },
+        DecodedTransaction::Eip1559(_, _) => {
+            let tx_env = adapter::adapt_transaction(deserialized_tx);
+            Some(tx_env)
+        },
+        _ => {
+            eprintln!("Skipping unsupported transaction type for hex: {}", hex);
+            None
+        }
+    }
+}
+
 
 pub fn decode_batch_hex(
     hex_address: Vec<(String, Address)>,
 ) -> Vec<TxEnv> {
     let mut results = Vec::new();
-    let mut nonce = 0;
     for (hex, addr) in hex_address {
         let deserialized_tx = decode_hex_with_known_addr(&hex, addr);
         match deserialized_tx {
             DecodedTransaction::Legacy(_, _) => {
-                let tx_env = adapter::adapt_transaction(deserialized_tx, nonce);
+                let tx_env = adapter::adapt_transaction(deserialized_tx);
                 results.push(tx_env);
             },
             DecodedTransaction::Eip1559(_, _) => {
-                let tx_env = adapter::adapt_transaction(deserialized_tx, nonce);
+                let tx_env = adapter::adapt_transaction(deserialized_tx);
                 results.push(tx_env);
             },
             _ => {
@@ -443,7 +463,6 @@ pub fn decode_batch_hex(
                 continue;
             }
         }
-        nonce += 1;
     }
 
     results
