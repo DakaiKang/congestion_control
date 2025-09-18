@@ -6,14 +6,23 @@ use std::error::Error;
 // #[cfg(feature = "with-tokio")]
 use tokio::time::{sleep, Duration, Instant};
 // #[cfg(feature = "with-tokio")]
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex};
 use tokio::sync::mpsc;
 
 use std::{
-    collections::{VecDeque, HashMap},
+    collections::{VecDeque, HashMap, HashSet},
     num::NonZeroUsize,
     thread,
+    sync::{Arc, Mutex as StdMutex},
 };
+
+use crossbeam_deque::{Injector, Stealer, Worker};
+use crossbeam_utils::Backoff;
+use crossbeam_channel::{bounded, Receiver, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use dashmap::DashMap;
+
 use crate::{
     Pevm,
     erc20::contract::ERC20Token,
@@ -21,8 +30,6 @@ use crate::{
 };
 
 use revm::primitives::{alloy_primitives::U160, BlockEnv, SpecId, TxEnv, U256, TransactTo};
-
-use std::sync::Arc;
 
 use ethers::types::{
     Address, 
@@ -525,7 +532,6 @@ impl PevmScheduler {
                             accessed_accounts.push(tx_env.caller);
                         }
                     }
-                    // println!("Transaction {} accesses accounts: {:?}", index, accessed_accounts);
 
                     let mut never_accessed = true;
                     let mut position_found = false;
@@ -599,6 +605,312 @@ impl PevmScheduler {
         let batch: Vec<TransactionWithHint> = lock.drain(..n.min(len)).collect();
         batch
     }
+
+// Fair round-robin scheduler with per-caller sequential ordering
+pub fn schedule_a_parallelizable_batch_fair_sequential(txns: &mut Vec<TransactionWithHint>) -> Vec<Option<TransactionWithHint>> {
+    let concurrency_level: usize = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN).get();
+    let TXNS_PER_BATCH: usize = concurrency_level * 4;
+    let num_threads = 8;
+
+    // Create per-caller queues for maintaining order
+    let caller_queues = Arc::new(DashMap::<Address, Arc<StdMutex<VecDeque<(usize, TransactionWithHint)>>>>::new());
+    let caller_processing = Arc::new(DashMap::<Address, bool>::new()); // Track which callers are being processed
+    
+
+    // Populate per-caller queues
+    for (index, txn) in txns.iter().enumerate() {
+        let queue = caller_queues
+            .entry(txn.caller)
+            .or_insert_with(|| Arc::new(StdMutex::new(VecDeque::new())))
+            .clone();
+        queue.lock().unwrap().push_back((index, txn.clone()));
+    }
+
+
+    // Round-robin work distribution: each "work item" is processing one transaction from one caller
+    let injector = Arc::new(Injector::new());
+    let workers: Vec<Worker<Address>> = (0..num_threads).map(|_| Worker::new_fifo()).collect();
+    let stealers: Vec<Stealer<Address>> = workers.iter().map(|w| w.stealer()).collect();
+
+    // Initially populate with all callers that have transactions
+    for caller_entry in caller_queues.iter() {
+        injector.push(*caller_entry.key());
+    }
+
+    // Shared scheduling state
+    let account_being_accessed = Arc::new(StdMutex::new(HashSet::new()));
+    let account_lock_mutex = Arc::new(StdMutex::new(()));
+    let account_last_position = Arc::new(DashMap::new());
+    let scheduled = Arc::new(StdMutex::new(vec![None; TXNS_PER_BATCH]));
+    let scheduled_indices = Arc::new(StdMutex::new(Vec::<usize>::new()));
+    let available_slots = Arc::new(AtomicUsize::new(TXNS_PER_BATCH));
+
+    let handles: Vec<_> = workers.into_iter().enumerate()
+        .map(|(thread_id, worker)| {
+            let stealers = stealers.clone();
+            let injector = injector.clone();
+            let caller_queues = caller_queues.clone();
+            let caller_processing = caller_processing.clone();
+            let account_last_position = account_last_position.clone();
+            let scheduled = scheduled.clone();
+            let scheduled_indices = scheduled_indices.clone();
+            let available_slots = available_slots.clone();
+            let account_being_accessed = account_being_accessed.clone();
+            let account_lock_mutex = account_lock_mutex.clone();
+
+            thread::spawn(move || {
+                let backoff = Backoff::new();
+                
+                loop {
+                    // Try to get a caller to process ONE transaction from
+                    let caller = worker.pop()
+                        .or_else(|| injector.steal().success())
+                        .or_else(|| {
+                            stealers.iter()
+                                .map(|s| s.steal())
+                                .find(|s| s.is_success())
+                                .and_then(|s| s.success())
+                        });
+
+                    match caller {
+                        Some(caller) => {
+                            // println!("📋 Thread {} processing caller {:?}", thread_id, caller);
+                            backoff.reset();
+                            
+                            // Try to mark this caller as being processed (prevents double-processing)
+                            if caller_processing.insert(caller, true).is_none() {
+                                // We got the lock on this caller
+                                let mut processed_transaction = false;
+                                
+                                if let Some(queue_ref) = caller_queues.get(&caller) {
+                                    let mut queue = queue_ref.lock().unwrap();
+                                    
+                                    // Process exactly ONE transaction from this caller
+                                    if let Some((index, txn)) = queue.pop_front() {
+                                        processed_transaction = true;
+                                        let mut position_found = false;
+
+                                        if available_slots.load(Ordering::Acquire) > 0 {
+                                            position_found = Self::process_transaction_sequential(
+                                                thread_id,
+                                                index,
+                                                &txn,
+                                                concurrency_level,
+                                                TXNS_PER_BATCH,
+                                                &account_last_position,
+                                                &scheduled,
+                                                &scheduled_indices,
+                                                &available_slots,
+                                                &account_being_accessed,
+                                                &account_lock_mutex,
+                                            );
+
+                                            if !position_found {
+                                                // println!("❌ [2] Thread {} could not schedule transaction {}", thread_id, index);
+                                                queue.push_front((index, txn)); // Re-queue if not scheduled
+                                            }
+                                        }
+                                        
+                                        // Check if this caller has more work - if so, re-queue it
+                                        if position_found && !queue.is_empty() && available_slots.load(Ordering::Acquire) > 0 {
+                                            injector.push(caller); // Put caller back for next round
+                                        }
+                                    }
+                                }
+                                
+                                // Release the caller processing lock
+                                caller_processing.remove(&caller);
+                                
+                                if !processed_transaction {
+                                    // Caller had no work, don't re-queue
+                                    continue;
+                                }
+                            } else {
+                                // Another thread is processing this caller, put it back
+                                injector.push(caller);
+                            }
+                        }
+                        None => {
+                            break;
+                            // No work available
+                            if available_slots.load(Ordering::Acquire) == 0 {
+                                break; // Batch is full
+                            }
+                            
+                            // Check if any caller has remaining work
+                            let has_remaining_work = caller_queues.iter()
+                                .any(|entry| !entry.lock().unwrap().is_empty());
+                            
+                            if !has_remaining_work {
+                                break; // No more work
+                            }
+                            
+                            backoff.snooze();
+                            if backoff.is_completed() {
+                                // Re-populate injector in case we missed something
+                                for caller_entry in caller_queues.iter() {
+                                    let queue = caller_entry.lock().unwrap();
+                                    if !queue.is_empty() && !caller_processing.contains_key(caller_entry.key()) {
+                                        injector.push(*caller_entry.key());
+                                    }
+                                }
+                                backoff.reset();
+                            }
+                        }
+
+                    }
+                }
+            })
+        })
+        .collect();
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Extract and return results
+    let scheduled_indices_result = scheduled_indices.lock().unwrap().clone();
+    // println!("Scheduled transaction indices: {:?}", scheduled_indices_result);
+
+    let mut sorted_indices = scheduled_indices_result.clone();
+    sorted_indices.sort_by(|a, b| b.cmp(a));
+    for idx in sorted_indices {
+        if idx < txns.len() {
+            txns.remove(idx);
+        }
+    }
+
+    let mut scheduled_result = scheduled.lock().unwrap().clone();
+    scheduled_result.retain(|x| x.is_some());
+    scheduled_result
+}
+
+
+fn process_transaction_sequential(
+    thread_id: usize,
+    index: usize,
+    txn: &TransactionWithHint,
+    concurrency_level: usize,
+    txns_per_batch: usize,
+    account_last_position: &Arc<DashMap<AlloyAddress, usize>>,
+    scheduled: &Arc<StdMutex<Vec<Option<TransactionWithHint>>>>,
+    scheduled_indices: &Arc<StdMutex<Vec<usize>>>,
+    available_slots: &AtomicUsize,
+    account_being_accessed: &Arc<StdMutex<HashSet<AlloyAddress>>>,
+    account_lock_mutex: &Arc<StdMutex<()>>,
+) -> bool{
+    let tx_env = deserializer::decode_one_hex(txn.raw_hex.clone(), txn.caller);
+    let mut position_found = false;
+
+    if let Some(tx_env) = tx_env {
+        let mut accessed_accounts = Vec::new();
+        
+        match tx_env.transact_to {
+            TransactTo::Call(to_addr) => {
+                accessed_accounts.push(tx_env.caller);
+                accessed_accounts.push(to_addr);
+            }
+            TransactTo::Create => {
+                accessed_accounts.push(tx_env.caller);
+            }
+        }
+
+        // println!("🔒 Thread {} processing transaction {} accessing accounts: {:?}", thread_id, index, accessed_accounts);
+
+        let mut never_accessed = true;
+        let mut out_of_bound = false;
+        let mut final_position = 0;
+
+        loop {
+            let mut guard = account_being_accessed.lock().unwrap();
+            if accessed_accounts.iter().all(|acc| !guard.contains(acc)) {
+                for acc in &accessed_accounts {
+                    guard.insert(*acc);
+                }
+                break; // No conflicts, proceed
+            }
+            drop(guard);
+            thread::sleep(Duration::from_micros(100));  // Backoff before retrying
+        }
+
+        // println!("🔒 Thread {} Got All Account Locks {:?}", thread_id, accessed_accounts);
+
+        // Find suitable position (same logic as original)
+        for account in &accessed_accounts {
+            if out_of_bound {
+                break;
+            }
+            if let Some(last_pos_entry) = account_last_position.get(account) {
+                never_accessed = false;
+                let last_pos = *last_pos_entry.value();
+                let mut new_position = last_pos + concurrency_level;
+
+                if new_position <= final_position {
+                    continue;
+                } else {
+                    position_found = false;
+                    let scheduled_guard = scheduled.lock().unwrap();
+                    while new_position < txns_per_batch {
+                        if scheduled_guard[new_position].is_none() {
+                            position_found = true;
+                            final_position = new_position;
+                            break;
+                        }
+                        new_position += 1;
+                    }
+                    if !position_found {
+                        out_of_bound = true;
+                    }
+                    drop(scheduled_guard);
+                }
+            }
+        }
+
+        if never_accessed || position_found {
+            let mut scheduled_guard = scheduled.lock().unwrap();
+            if never_accessed {
+                for i in 0..txns_per_batch {
+                if scheduled_guard[i].is_none() {
+                        position_found = true;
+                        final_position = i;
+                        break;
+                    }
+                }
+            }
+
+            if position_found {
+                let mut indices_guard = scheduled_indices.lock().unwrap();
+
+                if scheduled_guard[final_position].is_none() && 
+                   available_slots.load(Ordering::Acquire) > 0 {
+
+                    available_slots.fetch_sub(1, Ordering::AcqRel);
+                    indices_guard.push(index);
+                    scheduled_guard[final_position] = Some(txn.clone());
+                    drop(scheduled_guard);
+                    drop(indices_guard);
+                    // Update account positions
+                    for account in accessed_accounts.clone() {
+                        account_last_position.insert(account, final_position);
+                    }
+                // println!("✅ [2] Thread {} scheduled transaction {} at position {}", thread_id, index, final_position);
+                } else {
+                    position_found = false;
+                }
+            }
+        }
+        let mut guard = account_being_accessed.lock().unwrap();
+        for account in accessed_accounts.clone() {
+            guard.remove(&account);
+        }
+        // println!("🔓 Thread {} Released All Account Locks with accounts {:?}", thread_id, accessed_accounts);
+    } else {
+        println!("Failed to decode transaction: {:?}", txn);
+    }
+    position_found
+}
+
 }
 
 #[test]
@@ -880,10 +1192,10 @@ pub fn test_scheduling() {
     for i in 0..10 {
         let mut batch = generator.generate_contended_erc20_transactions();
         transactions.append(&mut batch);
-        // for j in 0..7 {
-        //     let mut batch = generator.generate_parallelizable_erc20_transactions();
-        //     transactions.append(&mut batch);
-        // }
+        for j in 0..1 {
+            let mut batch = generator.generate_parallelizable_erc20_transactions();
+            transactions.append(&mut batch);
+        }
     }
 
     let mut transactions_with_hint: Vec<TransactionWithHint> = transactions.iter().map(|(raw_hex, caller)| TransactionWithHint {
@@ -933,6 +1245,75 @@ pub fn test_scheduling() {
 
 
 #[test]
+pub fn test_parallel_scheduling() {
+    let workload_type = WorkloadType::ERC20(8, 1, 8);
+    let mut restored_storage = load_in_memory_storage(&workload_type);
+    let chain = PevmEthereum::mainnet();
+    let mut generator = PevmTransactionGenerator::new(workload_type, 0u64, 4u64, mpsc::channel(100).0, mpsc::channel(100).1);
+    let mut transactions = Vec::new();
+    for i in 0..10 {
+        let mut batch = generator.generate_contended_erc20_transactions();
+        transactions.append(&mut batch);
+        for j in 0..1 {
+            let mut batch = generator.generate_parallelizable_erc20_transactions();
+            transactions.append(&mut batch);
+        }
+    }
+
+    let mut transactions_with_hint: Vec<TransactionWithHint> = transactions.iter().map(|(raw_hex, caller)| TransactionWithHint {
+        raw_hex: raw_hex.clone(),
+        caller: *caller,
+        hint: String::new(),
+    }).collect();
+
+    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+     println!("Total number of transactions: {}", transactions_with_hint.len());
+    let start = Instant::now();
+    let mut total_execution_time = 0;
+    while !transactions_with_hint.is_empty() {
+         println!("Remaining number of transactions: {}", transactions_with_hint.len());
+        let batch = PevmScheduler::schedule_a_parallelizable_batch_fair_sequential(&mut transactions_with_hint);
+
+        println!("Batch size after fair scheduling: {}", batch.len());
+
+        let time1 = Instant::now();
+        let tx_envs: Vec<TxEnv> = batch.iter().filter_map(|opt_txn| {
+            if let Some(txn) = opt_txn {
+                deserializer::decode_one_hex(txn.raw_hex.clone(), txn.caller)
+            } else {
+                None
+            }
+        }).collect();
+
+
+        // for txn in tx_envs.iter() {
+            // println!("Decoded TxEnv: caller={:?}, nonce={}", txn.caller, txn.nonce.unwrap_or(0));
+        // }
+
+        let results = Pevm::default().execute_revm_parallel(
+            &chain,
+            &restored_storage,
+            SpecId::LATEST,
+            BlockEnv::default(),
+            tx_envs,
+            concurrency_level,
+        );
+
+        println!("Executed transactions in this batch");
+
+        let elapsed: Duration = time1.elapsed();
+
+        update_storage_with_results(&mut restored_storage, results.unwrap());
+        
+        total_execution_time += elapsed.as_millis();
+    }
+
+    let elapsed: Duration = start.elapsed();
+    println!("Elapsed = {} seconds (f64)", elapsed.as_secs_f64());
+    println!("Total execution time in ms = {}", total_execution_time);
+}
+
+#[test]
 
 pub fn test_no_scheduling() {
     let workload_type = WorkloadType::ERC20(8, 1, 8);
@@ -944,10 +1325,10 @@ pub fn test_no_scheduling() {
     for i in 0..10 {
         let mut batch = generator.generate_contended_erc20_transactions();
         transactions.append(&mut batch);
-        // for j in 0..3 {
-            // let mut batch = generator.generate_parallelizable_erc20_transactions();
-            // transactions.append(&mut batch);
-        // }
+        for j in 0..1 {
+            let mut batch = generator.generate_parallelizable_erc20_transactions();
+            transactions.append(&mut batch);
+        }
     }
 
     let mut transactions_with_hint: Vec<TransactionWithHint> = transactions.iter().map(|(raw_hex, caller)| TransactionWithHint {

@@ -91,3 +91,6 @@ tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
 walkdir = "2.5.0"
 tracing = "0.1.37"
 ethers = "2.0"
+crossbeam-deque = "0.8"
+crossbeam-channel = "0.5" 
+crossbeam-utils = "0.8"
