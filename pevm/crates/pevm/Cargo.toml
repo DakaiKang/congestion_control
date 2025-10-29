@@ -59,6 +59,7 @@ serde_json.workspace = true
 crossbeam-deque.workspace = true
 crossbeam-channel.workspace = true
 crossbeam-utils.workspace = true
+revme.workspace = true
 
 # OP dependencies
 op-alloy-consensus = { workspace = true, optional = true }
@@ -81,7 +82,6 @@ criterion.workspace = true
 rand.workspace = true
 rayon.workspace = true
 reqwest.workspace = true
-revme.workspace = true
 walkdir.workspace = true
 
 [lints]

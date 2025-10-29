@@ -5,13 +5,17 @@ use std::{
     thread,
 };
 
+use std::collections::{HashSet};
+
 use alloy_primitives::{TxNonce, U256};
 use alloy_rpc_types_eth::{Block, BlockTransactions};
 use hashbrown::HashMap;
 use revm::{
     db::CacheDB,
-    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv},
+    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState},
     DatabaseCommit,
+    Database,
+    Evm,
 };
 
 use crate::{
@@ -475,3 +479,112 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
     }
     Ok(results)
 }
+
+#[derive(Debug, Clone)]
+pub struct AccessSets {
+    pub pure_reads: HashMap<Address, HashSet<U256>>,
+    pub read_writes: HashMap<Address, HashSet<U256>>,
+    pub account_reads: HashSet<Address>,
+}
+
+pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
+        chain: &C,
+        storage: &S,
+        spec_id: SpecId,
+        block_env: BlockEnv,
+        txs: Vec<TxEnv>,
+    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<AccessSets>), PevmError<C>> {
+        let mut db = CacheDB::new(StorageWrapper(storage));
+        let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
+        let mut results = Vec::with_capacity(txs.len());
+        let mut access_sets = Vec::with_capacity(txs.len());
+        let mut cumulative_gas_used: u64 = 0;
+        
+        for tx in txs {
+            *evm.tx_mut() = tx;
+            
+            let result_and_state = evm
+                .transact()
+                .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+    
+            // Extract access sets from result_and_state and journaled_state
+            let tx_access_sets = extract_access_sets_from_result(&evm, &result_and_state);
+            access_sets.push(tx_access_sets);
+    
+            evm.db_mut().commit(result_and_state.state.clone());
+    
+            let mut execution_result =
+                PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
+    
+            cumulative_gas_used =
+                cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+            execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+    
+            results.push(execution_result);
+        }
+        
+        Ok((results, access_sets))
+    }
+    
+    fn extract_access_sets_from_result<DB: Database>(
+        evm: &Evm<'_, (), DB>,
+        result_and_state: &ResultAndState
+    ) -> AccessSets {
+        let mut pure_reads = HashMap::new();
+        let mut read_writes = HashMap::new();
+        let mut account_reads = HashSet::new();
+        
+        // Try to get journaled state
+        let journaled_state = &evm.context.evm.journaled_state;
+        
+        println!("Debug: journaled_state has {} accounts", journaled_state.state.len());
+        
+        // Extract from journaled state
+        for (address, account) in &journaled_state.state {
+            account_reads.insert(*address);
+            
+            println!("  Account {:?}: {} storage slots", address, account.storage.len());
+            
+            for (slot, storage_slot) in &account.storage {
+                println!("    Slot {:?}: original={:?}, present={:?}, changed={}", 
+                    slot, 
+                    storage_slot.original_value(), 
+                    storage_slot.present_value,
+                    storage_slot.is_changed()
+                );
+                
+                if storage_slot.is_changed() {
+                    read_writes
+                        .entry(*address)
+                        .or_insert_with(HashSet::new)
+                        .insert(*slot);
+                } else {
+                    pure_reads
+                        .entry(*address)
+                        .or_insert_with(HashSet::new)
+                        .insert(*slot);
+                }
+            }
+        }
+        
+        // Also check result_and_state for write information
+        println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
+        for (address, account) in &result_and_state.state {
+            account_reads.insert(*address);
+            
+            println!("  Result account {:?}: {} storage slots", address, account.storage.len());
+            
+            for (slot, _) in &account.storage {
+                read_writes
+                    .entry(*address)
+                    .or_insert_with(HashSet::new)
+                    .insert(*slot);
+            }
+        }
+        
+        AccessSets {
+            pure_reads,
+            read_writes,
+            account_reads,
+        }
+    }

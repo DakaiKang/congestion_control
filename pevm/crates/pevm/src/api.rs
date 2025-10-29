@@ -16,6 +16,8 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
 };
 
+
+use alloy_primitives::FixedBytes;
 use crossbeam_deque::{Injector, Stealer, Worker};
 use crossbeam_utils::Backoff;
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -29,7 +31,12 @@ use crate::{
     vm::PevmTxExecutionResult,
 };
 
-use revm::primitives::{alloy_primitives::U160, BlockEnv, SpecId, TxEnv, U256, TransactTo};
+use revm::db::PlainAccount;
+
+use revm::primitives::{
+    calc_excess_blob_gas, AccountInfo, BlobExcessGasAndPrice, BlockEnv, Bytecode, SpecId,
+    TransactTo, TxEnv, KECCAK_EMPTY, U256,
+};
 
 use ethers::types::{
     Address, 
@@ -48,6 +55,11 @@ use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEther
 use super::erc20;
 
 use serde_json;
+
+use revme::cmd::statetest::{
+    merkle_trie::{log_rlp_hash, state_merkle_trie_root},
+    utils::recover_address,
+};
 
 fn save(storage: &InMemoryStorage, path: &str) -> anyhow::Result<()> {
     let file = File::create(path)?;
@@ -706,7 +718,6 @@ pub fn schedule_a_parallelizable_batch_fair_sequential(txns: &mut Vec<Transactio
                                             );
 
                                             if !position_found {
-                                                // println!("❌ [2] Thread {} could not schedule transaction {}", thread_id, index);
                                                 queue.push_front((index, txn)); // Re-queue if not scheduled
                                             }
                                         }
@@ -914,31 +925,6 @@ fn process_transaction_sequential(
 }
 
 #[test]
-pub fn store_in_memory_storage() {
-    let (in_memory_storage, _account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 2, 3);
-    // Save
-    save(&in_memory_storage, "storage.json");
-
-    // Load
-    let restored = load("storage.json");
-    println!("Restored: {:?}", restored);
-}
-
-#[test]
-
-pub fn store_account_address() {
-    let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(1, 2, 3);
-    // Save
-    save_addresses("account_addresses.bin", &account_addresses);
-    println!("Saved account addresses: {:?}", account_addresses);
-
-    // Load
-    let restored = load_addresses("account_addresses.bin");
-    println!("Restored: {:?}", restored);
-    
-}
-
-#[test]
 pub fn store_and_load_both() {
     let (in_memory_storage, account_addresses) = PevmAPI::get_erc20_state_and_bytecode(8, 1, 8);
 
@@ -968,221 +954,6 @@ pub fn store_and_load_both() {
 
 
 #[test]
-
-pub fn test_load_both() {
-    let workload_type = WorkloadType::ERC20(1, 1, 4);
-
-    let a1 = 1;
-    let a2 = 1;
-    let a3 = 4;
-
-    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
-    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
-
-    let restored_addresses = load_addresses("account_addresses.bin");
-    println!("Restored: {:?}", restored_addresses);
-    let restored_storage = load("storage.json").unwrap();
-    // println!("Restored: {:?}", restored);
-
-    let (tx1, rx1) = mpsc::channel(100);
-    let (tx2, rx2) = mpsc::channel(100);
-
-    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
-
-    let transactions = generator.generate_transactions();
-
-    let tx_envs = deserializer::decode_batch_hex(transactions);
-
-    let chain = PevmEthereum::mainnet();
-
-    println!("tx_envs: {:?}", tx_envs);
-
-    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    
-    tracing::info!("Executed transactions in parallel with {} threads", concurrency_level);
-    let results = Pevm::default().execute_revm_parallel(
-        &chain,
-        &restored_storage,
-        SpecId::LATEST,
-        BlockEnv::default(),
-        tx_envs,
-        concurrency_level,
-    );
-
-    // println!("Results: {:?}", results);
-
-}
-
-#[test]
-pub fn test_load_in_memory_storage(){
-    let workload_type = WorkloadType::ERC20(1, 2, 3);
-    let storage = load_in_memory_storage(&workload_type);
-    let addresses = load_account_addresses(&workload_type);
-    println!("{:?}", addresses);
-}
-
-
-#[test]
-pub fn test_max_throughput_parallel() {
-    let workload_type = WorkloadType::ERC20(1, 1, 4);
-
-    let a1 = 1;
-    let a2 = 1;
-    let a3 = 4;
-
-    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
-    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
-
-    let restored_addresses = load_addresses(&address_bin);
-    // println!("Restored: {:?}", restored_addresses);
-    let restored_storage = load(&storage_json).unwrap();
-
-    let (tx1, rx1) = mpsc::channel(100);
-    let (tx2, rx2) = mpsc::channel(100);
-
-    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
-
-    let mut all_tx_env = Vec::new();
-
-    loop {
-        let transactions = generator.generate_transactions();
-        let tx_envs = deserializer::decode_batch_hex(transactions);
-        all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 10000 {
-            break;
-        }
-    }
-
-    let num_tx_env = all_tx_env.len();
-
-    let chain = PevmEthereum::mainnet();
-
-    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-
-    let concurrency_level = NonZeroUsize::new(8).unwrap();
-
-    println!("Executed transactions in parallel with {} threads", concurrency_level);
-
-    let start = Instant::now();
-    let results = Pevm::default().execute_revm_parallel(
-            &chain,
-            &restored_storage,
-            SpecId::LATEST,
-            BlockEnv::default(),
-            all_tx_env,
-            concurrency_level,
-        );
-
-    
-
-    let elapsed: Duration = start.elapsed();
-
-    let secs_f64: f64 = elapsed.as_secs_f64();
-
-    println!("Elapsed = {} seconds (f64)", secs_f64);
-
-    println!("Throughput = {}", num_tx_env as f64 / secs_f64);
-
-}
-
-#[test]
-pub fn test_max_throughput_sequential() {
-    let workload_type = WorkloadType::ERC20(1, 1, 4);
-
-    let a1 = 1;
-    let a2 = 1;
-    let a3 = 4;
-
-    let address_bin = format!("account_addresses_{}_{}_{}.bin", a1, a2, a3);
-    let storage_json = format!("storage_{}_{}_{}.json", a1, a2, a3);
-
-    let restored_addresses = load_addresses(&address_bin);
-    // println!("Restored: {:?}", restored_addresses);
-    let restored_storage = load(&storage_json).unwrap();
-
-    let (tx1, rx1) = mpsc::channel(100);
-    let (tx2, rx2) = mpsc::channel(100);
-
-    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
-
-    let mut all_tx_env = Vec::new();
-
-    loop {
-        let transactions = generator.generate_transactions();
-        let tx_envs = deserializer::decode_batch_hex(transactions);
-        all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 10000 {
-            break;
-        }
-    }
-
-    let num_tx_env = all_tx_env.len();
-
-    let chain = PevmEthereum::mainnet();
-
-    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-
-    let start = Instant::now();
-    let results = super::pevm::execute_revm_sequential(
-            &chain,
-            &restored_storage,
-            SpecId::LATEST,
-            BlockEnv::default(),
-            all_tx_env,
-        );
-
-    let elapsed: Duration = start.elapsed();
-
-    let secs_f64: f64 = elapsed.as_secs_f64();
-
-    println!("Elapsed = {} seconds (f64)", secs_f64);
-
-    println!("Throughput = {}", num_tx_env as f64 / secs_f64);
-
-    let (tx1, rx1) = mpsc::channel(100);
-    let (tx2, rx2) = mpsc::channel(100);
-
-    let workload_type = WorkloadType::ERC20(1, 1, 4);
-
-    let mut generator = PevmTransactionGenerator::new(workload_type, 1u64, 4u64, tx1, rx2);
-
-    let mut all_tx_env = Vec::new();
-
-    loop {
-        let transactions = generator.generate_transactions();
-        let tx_envs = deserializer::decode_batch_hex(transactions);
-        all_tx_env.extend(tx_envs);
-        if all_tx_env.len() >= 10000 {
-            break;
-        }
-    }
-
-    let num_tx_env = all_tx_env.len();
-
-    let chain = PevmEthereum::mainnet();
-
-    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-
-    let start = Instant::now();
-    let results = super::pevm::execute_revm_sequential(
-            &chain,
-            &restored_storage,
-            SpecId::LATEST,
-            BlockEnv::default(),
-            all_tx_env,
-        );
-
-    let elapsed: Duration = start.elapsed();
-
-    let secs_f64: f64 = elapsed.as_secs_f64();
-
-    println!("Elapsed = {} seconds (f64)", secs_f64);
-
-    println!("Throughput = {}", num_tx_env as f64 / secs_f64);
-
-}
-
-#[test]
 pub fn test_scheduling() {
     let workload_type = WorkloadType::ERC20(8, 1, 8);
     let mut restored_storage = load_in_memory_storage(&workload_type);
@@ -1192,7 +963,7 @@ pub fn test_scheduling() {
     for i in 0..10 {
         let mut batch = generator.generate_contended_erc20_transactions();
         transactions.append(&mut batch);
-        for j in 0..1 {
+        for j in 0..5 {
             let mut batch = generator.generate_parallelizable_erc20_transactions();
             transactions.append(&mut batch);
         }
@@ -1254,7 +1025,7 @@ pub fn test_parallel_scheduling() {
     for i in 0..10 {
         let mut batch = generator.generate_contended_erc20_transactions();
         transactions.append(&mut batch);
-        for j in 0..1 {
+        for j in 0..5 {
             let mut batch = generator.generate_parallelizable_erc20_transactions();
             transactions.append(&mut batch);
         }
@@ -1284,6 +1055,9 @@ pub fn test_parallel_scheduling() {
                 None
             }
         }).collect();
+
+        let first_tx_env = tx_envs.first();
+        println!("First TxEnv in this batch: {:#?}", first_tx_env);
 
 
         // for txn in tx_envs.iter() {
@@ -1325,7 +1099,7 @@ pub fn test_no_scheduling() {
     for i in 0..10 {
         let mut batch = generator.generate_contended_erc20_transactions();
         transactions.append(&mut batch);
-        for j in 0..1 {
+        for j in 0..5 {
             let mut batch = generator.generate_parallelizable_erc20_transactions();
             transactions.append(&mut batch);
         }
@@ -1393,39 +1167,255 @@ pub fn update_storage_with_results(storage: &mut InMemoryStorage, results: Vec<P
         storage.update_accounts(state);
 }
 
+pub fn get_delta_state(results: &Vec<PevmTxExecutionResult>) -> HashMap<AlloyAddress, EvmAccount> {
+    let mut delta_state = HashMap::new();
+    for changed_state in results.iter() {
+        for (addr, acc) in changed_state.state.iter() {
+            match acc {
+                Some(account) => {
+                    delta_state.insert(*addr, account.clone());
+                }
+                None => {
+                    delta_state.remove(addr);
+                }
+            }
+        }
+    }
+    delta_state
+}
+
+
 #[test]
 
-pub fn test_contended_workload() {
-    let workload_type = WorkloadType::ERC20(5, 5, 8);
-    let restored_storage = load_in_memory_storage(&workload_type);
+pub fn during_consensus_execution() {
+    // First parallel execute batches of transactions with an assumed order
+    // If any batch is contended, mark it
+    // For each batch, record the delta state and root hash
+    // Then, get the real order
+    // If the two orders match, great, use the latest state
+    // If not, apply the delta states in order to the initial state, until we reach the point where the orders diverge
+    // From that point onwards, re-execute the remaining transactions in parallel, except for the contended batches which must be executed sequentially
+
+    let workload_type = WorkloadType::ERC20(8, 1, 8);
+    let mut restored_storage = load_in_memory_storage(&workload_type);
+    let mut restored_storage_clone = restored_storage.clone();
     let chain = PevmEthereum::mainnet();
     let mut generator = PevmTransactionGenerator::new(workload_type, 0u64, 4u64, mpsc::channel(100).0, mpsc::channel(100).1);
-    let mut transactions = generator.generate_contended_erc20_transactions();
-    let mut parallelizable_transactions = generator.generate_parallelizable_erc20_transactions();
+    let mut transactions = Vec::new();
 
-    let tx_envs = deserializer::decode_batch_hex(transactions);
-    let parallelizable_tx_envs = deserializer::decode_batch_hex(parallelizable_transactions);
+    let assumed_order: Vec<usize> = (0..10).collect();
+    let real_order: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+    for i in 0..10 {
+        if i == 5 {
+            let mut batch = generator.generate_contended_erc20_transactions();
+            transactions.push(batch);
+        } else {
+            let mut batch = generator.generate_parallelizable_erc20_transactions();
+            transactions.push(batch);
+        }
+    }
 
     let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    println!("Total number of transactions: {}", transactions.len());
+
+    let mut delta_states = Vec::new();
+    let mut state_roots = Vec::new();
+    let mut total_time = 0;
     
-    println!("Executed trasactions in parallel with {} threads", concurrency_level);
+    let mut i = 0;
+    for batch in transactions.iter() {
+        let tx_envs: Vec<TxEnv> = batch.iter().map(|(raw_hex, caller)| deserializer::decode_one_hex(raw_hex.clone(), *caller).unwrap()).collect();
+        let start = Instant::now();
 
-    println!("Executing {} transactions", tx_envs.len());
+        let results = {
+            if false {
+                crate::execute_revm_sequential(
+                    &chain,
+                    &restored_storage,
+                    SpecId::LATEST,
+                    BlockEnv::default(),
+                    tx_envs.clone(),
+                )
+            } else {
+                Pevm::default().execute_revm_parallel(
+                    &chain,
+                    &restored_storage,
+                    SpecId::LATEST,
+                    BlockEnv::default(),
+                    tx_envs.clone(),
+                    concurrency_level,
+                )
+            }
+        };
+        i = i + 1;
+       
+        let elapsed: Duration = start.elapsed();
+        total_time += elapsed.as_micros();
+        delta_states.push(get_delta_state(results.as_ref().unwrap()));
+        println!("Batch of size {} executed in {} seconds (f64)", batch.len(), elapsed.as_secs_f64());
+        // println!("Batch results: {:?}", results);
+        update_storage_with_results(&mut restored_storage, results.unwrap());
 
-    // println!("{:#?}", tx_envs);
+        let state_root = get_state_root(&restored_storage);
+        println!("State root after batch {}: {:?}", i, state_root);
 
-    let start = Instant::now();
+        state_roots.push(state_root); 
 
-    let results = Pevm::default().execute_revm_parallel(
-        &chain,
-        &restored_storage,
-        SpecId::LATEST,
-        BlockEnv::default(),
-        tx_envs,
-        concurrency_level,
+    }
+    println!("Total execution time in ms = {}", total_time);
+
+
+    let mut fast_path = false;
+    let mut total_time = 0;
+    for i in 0..real_order.len() {
+        // if assumed_order[i] != real_order[i] || fast_path == false {
+        if i>=5 && fast_path == false {
+            println!("Divergence at position {}: assumed {}, real {}", i, assumed_order[i], real_order[i]);
+            let tx_envs: Vec<TxEnv> = transactions[real_order[i]].iter().map(|(raw_hex, caller)| deserializer::decode_one_hex(raw_hex.clone(), *caller).unwrap()).collect();
+            let start = Instant::now();
+            let results = {
+                if false {
+                    crate::execute_revm_sequential(
+                        &chain,
+                        &restored_storage_clone,
+                        SpecId::LATEST,
+                        BlockEnv::default(),
+                        tx_envs.clone(),
+                    )
+                } else {
+                    Pevm::default().execute_revm_parallel(
+                        &chain,
+                        &restored_storage_clone,
+                        SpecId::LATEST,
+                        BlockEnv::default(),
+                        tx_envs.clone(),
+                        concurrency_level,
+                    )
+                }
+            };
+            let elapsed: Duration = start.elapsed();
+            total_time += elapsed.as_micros();
+            println!("Batch of size {} executed in {} seconds (f64)", transactions[real_order[i]].len(), elapsed.as_secs_f64());
+            update_storage_with_results(&mut restored_storage_clone, results.unwrap());
+            let state_root = get_state_root(&restored_storage_clone);
+            println!("State root after batch {}: {:?}", i, state_root);
+            if state_root == state_roots[i] && i>=7 {
+                fast_path = true;
+                println!("Fast path restored at batch {}", i);
+            }
+
+        } else {
+            // Apply delta state
+            let start = Instant::now();
+
+            let delta_state = &delta_states[i];
+            let mut state = restored_storage_clone.accounts_clone();
+            for (addr, acc) in delta_state.iter() {
+                state.insert(*addr, acc.clone());
+            }
+            restored_storage_clone.update_accounts(state);
+            let elapsed: Duration = start.elapsed();
+            total_time += elapsed.as_micros();
+
+            println!("Applied delta state for batch {} in {} seconds (f64)", i, elapsed.as_secs_f64());
+        }
+    }
+
+    println!("Total delta application time in ms = {}", total_time);
+    
+}
+
+pub fn get_state_root(storage: &InMemoryStorage) -> FixedBytes<32> {
+    let current_state = storage.accounts_clone();
+    let plain_chain_state = current_state.into_iter().map(|(address, account)| {
+                        (address, PlainAccount {
+                            info: AccountInfo {
+                                balance: account.balance,
+                                nonce: account.nonce,
+                                code_hash: account.code_hash.unwrap_or(KECCAK_EMPTY),
+                                code: account.code.map(|evm_code| Bytecode::try_from(evm_code).unwrap()),
+                            },
+                            storage: account.storage.into_iter().collect(),
+                        })}).collect::<Vec<_>>();
+    let state_root = state_merkle_trie_root(plain_chain_state.iter().map(|(address, account)| (*address, account)));
+    state_root
+}
+
+
+
+#[test]
+
+pub fn test_read_write_set() -> Result<(), Box<dyn std::error::Error>> {
+    let workload_type = WorkloadType::ERC20(8, 1, 8);
+    let mut restored_storage = load_in_memory_storage(&workload_type);
+    let chain = PevmEthereum::mainnet();
+    let mut generator = PevmTransactionGenerator::new(
+        workload_type, 
+        0u64, 
+        4u64, 
+        mpsc::channel(100).0, 
+        mpsc::channel(100).1
     );
+    let mut transactions = Vec::new();
+
+    for i in 0..1 {
+        let mut batch = generator.generate_contended_erc20_transactions();
+        transactions.append(&mut batch);
+        for j in 0..1 {
+            let mut batch = generator.generate_parallelizable_erc20_transactions();
+            transactions.append(&mut batch);
+        }
+    }
+
+    let mut transactions_with_hint: Vec<TransactionWithHint> = 
+        transactions.iter().map(|(raw_hex, caller)| TransactionWithHint {
+            raw_hex: raw_hex.clone(),
+            caller: *caller,
+            hint: String::new(),
+        }).collect();
+
+    let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    println!("Total number of transactions: {}", transactions_with_hint.len());
+    
+    let start = Instant::now();
+    let mut total_execution_time = 0;
+    
+    while !transactions_with_hint.is_empty() {
+        let batch: Vec<_> = transactions_with_hint
+            .drain(..32.min(transactions_with_hint.len()))
+            .collect();
+
+        let time1 = Instant::now();
+        
+        let tx_envs: Vec<TxEnv> = batch.iter().map(|txn| {
+            deserializer::decode_one_hex(txn.raw_hex.clone(), txn.caller).unwrap()
+        }).collect();
+
+        let (results, access_sets) = crate::pevm::execute_revm_sequential_with_access_sets(
+            &chain,
+            &restored_storage,
+            SpecId::LATEST,
+            BlockEnv::default(),
+            tx_envs,
+        )?;
+
+        // Simple debug print
+        for (i, access_set) in access_sets.iter().enumerate() {
+            println!("Transaction {}: {:?}", i, access_set);
+        }
+
+        let elapsed: Duration = time1.elapsed();
+
+        // Update storage with results if needed
+        // update_storage_with_results(&mut restored_storage, results);
+        
+        total_execution_time += elapsed.as_millis();
+    }
 
     let elapsed: Duration = start.elapsed();
     println!("Elapsed = {} seconds (f64)", elapsed.as_secs_f64());
-
+    println!("Total execution time in ms = {}", total_execution_time);
+    
+    Ok(())
 }
