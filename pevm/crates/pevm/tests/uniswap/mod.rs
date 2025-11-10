@@ -3,7 +3,10 @@
 /// contract module
 pub mod contract;
 
-use crate::erc20::contract::ERC20Token;
+#[path = "../erc20/mod.rs"]
+pub mod erc20;
+
+use erc20::contract::ERC20Token;
 use contract::{SingleSwap, SwapRouter, UniswapV3Factory, UniswapV3Pool, WETH9};
 use pevm::{Bytecodes, ChainState, EvmAccount};
 use revm::primitives::{fixed_bytes, uint, Address, Bytes, TransactTo, TxEnv, B256, U256};

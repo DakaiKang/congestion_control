@@ -1,4 +1,7 @@
-use crate::common::storage::{
+#[path = "../common/mod.rs"]
+pub mod common;
+
+use common::storage::{
     from_address, from_indices, from_short_string, from_tick, StorageBuilder,
 };
 use hashbrown::HashMap;
