@@ -681,8 +681,8 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                     FinishExecFlags::empty()
                 };
 
-                println!("REAL read sets of size {} : {:#?}", db.read_set.len(), &db.read_set);
-                println!("REAL write sets of size {} : {:#?}", write_set.len(), &write_set);
+                // println!("REAL read sets of size {} : {:#?}", db.read_set.len(), &db.read_set);
+                // println!("REAL write sets of size {} : {:#?}", write_set.len(), &write_set);
 
                 if self.mv_memory.record(tx_version, db.read_set, write_set) {
                     flags |= FinishExecFlags::WroteNewLocation;

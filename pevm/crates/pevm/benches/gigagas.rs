@@ -282,6 +282,23 @@ pub fn solana_sample_2_txns() -> (InMemoryStorage, Vec<TxEnv>) {
     (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs)
 }
 
+pub fn solana_sample_txns(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>) {
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+    let (state, bytecodes, txs, costs) = chiron::generate_loop_exchange_with_cost(block_size);
+    final_state.extend(state);
+
+    (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
+}
+
+pub fn solana_sample_txns_two_batch(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>, Vec<TxEnv>, Vec<u64>) {
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+    let (state, bytecodes, txs, costs, txs2, costs2) = chiron::generate_loop_exchange_with_cost_two_batch(block_size);
+    final_state.extend(state);
+
+    (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs, txs2, costs2)
+}
+
+
 
 /// Runs a series of benchmarks to evaluate the performance of different transaction types.
 pub fn benchmark_gigagas(c: &mut Criterion) {

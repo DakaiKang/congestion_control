@@ -492,7 +492,7 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
         spec_id: SpecId,
         block_env: BlockEnv,
         txs: Vec<TxEnv>,
-    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<AccessSets>), PevmError<C>> {
+    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<HashSet<u64>>), PevmError<C>> {
     let mut db = CacheDB::new(StorageWrapper(storage));
     let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
     let mut results = Vec::with_capacity(txs.len());
@@ -527,14 +527,17 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
 fn extract_access_sets_from_result<DB: Database>(
     evm: &Evm<'_, (), DB>,
     result_and_state: &ResultAndState
-) -> AccessSets {
+) -> HashSet<u64> {
     let mut read_writes = HashMap::new();
     let mut balance_updated_accounts = HashSet::new();
     
     // Also check result_and_state for write information
     println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
     for (address, account) in &result_and_state.state {
-        balance_updated_accounts.insert(*address);
+        if account.storage.len() == 0 {
+            balance_updated_accounts.insert(*address);
+            continue;
+        }
         
         println!("  Result account {:?}: {} storage slots", address, account.storage.len());
         
@@ -557,15 +560,14 @@ fn extract_access_sets_from_result<DB: Database>(
 
     for address in balance_updated_accounts.iter() {
         if let &Address::ZERO = address {
-            write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+            continue;
         }
+        println!("add basic: {} of address {}", hash_deterministic(MemoryLocation::Basic(*address)), address);
+        write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
     }
 
     // println!("read_set: {:#?}", read_set);
     println!("write_set: {:#?}", write_set);
 
-    AccessSets {
-        read_writes,
-        balance_updated_accounts,
-    }
+    write_set
 }

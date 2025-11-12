@@ -2,11 +2,6 @@ use std::collections::{HashSet, HashMap, BinaryHeap};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
-
-// Type alias for Ethereum addresses (20 bytes)
-use alloy_primitives::Address as AlloyAddress;
-
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TransactionId {
     pub id: u64,
@@ -32,8 +27,8 @@ pub struct TransactionNode {
     pub round: u64,
     pub execution_time: u64,
     pub children_indices: Vec<usize>,
-    pub read_set: HashSet<AlloyAddress>,
-    pub write_set: HashSet<AlloyAddress>,
+    pub read_set: HashSet<u64>,
+    pub write_set: HashSet<u64>,
     pub longest_suffix: u64,
 }
 
@@ -44,8 +39,8 @@ impl TransactionNode {
         replica: u64,
         round: u64,
         execution_time: u64,
-        read_set: HashSet<AlloyAddress>,
-        write_set: HashSet<AlloyAddress>,
+        read_set: HashSet<u64>,
+        write_set: HashSet<u64>,
     ) -> Self {
         Self {
             id,
@@ -101,12 +96,12 @@ impl PartialOrd for EstimatedCompletion {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TransactionGraph {
     nodes: Vec<TransactionNode>,
     id_to_index: HashMap<TransactionId, usize>,
-    head_txns: HashMap<AlloyAddress, TransactionId>,    // The Map from Address to the head Transaction Nodes in the graph
-    tail_txns: HashMap<AlloyAddress, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
+    head_txns: HashMap<u64, TransactionId>,    // The Map from Address to the head Transaction Nodes in the graph
+    tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
     txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
 }
 
@@ -171,7 +166,7 @@ impl TransactionGraph {
 
     pub fn add_transaction(&mut self, node: TransactionNode) -> Result<usize, String> {
         let tx_id = node.transaction_id();
-        
+        println!("Adding Txn {}", tx_id.id);
         // Check if transaction already exists
         if self.id_to_index.contains_key(&tx_id) {
             return Err(format!("Transaction {:?} already exists in graph", tx_id));
@@ -179,7 +174,7 @@ impl TransactionGraph {
 
         // Collect all addresses this transaction touches
         // Collect all addresses this transaction touches
-        let mut all_addresses: HashSet<AlloyAddress> = HashSet::new();
+        let mut all_addresses: HashSet<u64> = HashSet::new();
         all_addresses.extend(node.read_set.iter().cloned());
         all_addresses.extend(node.write_set.iter().cloned());
         
@@ -203,6 +198,7 @@ impl TransactionGraph {
                         // Write-After-Read conflict 
                         (!tail_node.read_set.is_disjoint(&node.write_set));
                     if has_conflict {
+                        println!("Conflicting with Txn {}", tail_tx_id.id);
                         parent_transactions.insert(tail_tx_id.clone());
                     }
                 }
@@ -433,7 +429,7 @@ impl TransactionGraph {
         let mut edges_added = 0;
         
         // Step 1: Collect all addresses from both graphs
-        let mut all_addresses: HashSet<AlloyAddress> = HashSet::new();
+        let mut all_addresses: HashSet<u64> = HashSet::new();
         all_addresses.extend(self.head_txns.keys().cloned());
         all_addresses.extend(self.tail_txns.keys().cloned());
         all_addresses.extend(other.head_txns.keys().cloned());
@@ -640,12 +636,8 @@ impl std::fmt::Display for ThreadEndTimeStats {
         let mut graph = TransactionGraph::new();
         let mut graph2 = TransactionGraph::new();
         
-        let addr1 = "0x0000000000000000000000000000000000000001"
-            .parse::<AlloyAddress>()
-            .unwrap();
-        let addr2 = "0x0000000000000000000000000000000000000002"
-            .parse::<AlloyAddress>()
-            .unwrap();
+        let addr1 = 0x1 as u64;
+        let addr2 = 0x2 as u64;
         
         let mut read_set1 = HashSet::new();
         read_set1.insert(addr1);
