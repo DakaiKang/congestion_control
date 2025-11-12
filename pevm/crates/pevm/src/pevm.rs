@@ -482,9 +482,8 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
 
 #[derive(Debug, Clone)]
 pub struct AccessSets {
-    pub pure_reads: HashMap<Address, HashSet<U256>>,
     pub read_writes: HashMap<Address, HashSet<U256>>,
-    pub account_reads: HashSet<Address>,
+    pub balance_updated_accounts: HashSet<Address>,
 }
 
 pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
@@ -529,47 +528,13 @@ fn extract_access_sets_from_result<DB: Database>(
     evm: &Evm<'_, (), DB>,
     result_and_state: &ResultAndState
 ) -> AccessSets {
-    let mut pure_reads = HashMap::new();
     let mut read_writes = HashMap::new();
-    let mut account_reads = HashSet::new();
-    
-    // Try to get journaled state
-    let journaled_state = &evm.context.evm.journaled_state;
-    
-    println!("Debug: journaled_state has {} accounts", journaled_state.state.len());
-    
-    // Extract from journaled state
-    for (address, account) in &journaled_state.state {
-        account_reads.insert(*address);
-        
-        println!("  Account {:?}: {} storage slots", address, account.storage.len());
-        
-        for (slot, storage_slot) in &account.storage {
-            println!("    Slot {:?}: original={:?}, present={:?}, changed={}", 
-                slot, 
-                storage_slot.original_value(), 
-                storage_slot.present_value,
-                storage_slot.is_changed()
-            );
-            
-            if storage_slot.is_changed() {
-                read_writes
-                    .entry(*address)
-                    .or_insert_with(HashSet::new)
-                    .insert(*slot);
-            } else {
-                pure_reads
-                    .entry(*address)
-                    .or_insert_with(HashSet::new)
-                    .insert(*slot);
-            }
-        }
-    }
+    let mut balance_updated_accounts = HashSet::new();
     
     // Also check result_and_state for write information
     println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
     for (address, account) in &result_and_state.state {
-        account_reads.insert(*address);
+        balance_updated_accounts.insert(*address);
         
         println!("  Result account {:?}: {} storage slots", address, account.storage.len());
         
@@ -581,14 +546,8 @@ fn extract_access_sets_from_result<DB: Database>(
         }
     }
 
-    let mut read_set = HashSet::new();
+    // let mut read_set = HashSet::new();
     let mut write_set = HashSet::new();
-    
-    for (address, slots) in &pure_reads {
-        for slot in slots.iter() {
-            read_set.insert(hash_deterministic(MemoryLocation::Storage(*address, *slot)));
-        }
-    }
 
     for (address, slots) in &read_writes {
         for slot in slots.iter() {
@@ -596,16 +555,17 @@ fn extract_access_sets_from_result<DB: Database>(
         }
     }
 
-    for address in account_reads.iter() {
-        read_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+    for address in balance_updated_accounts.iter() {
+        if let &Address::ZERO = address {
+            write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+        }
     }
 
-    println!("read_set: {:#?}", read_set);
+    // println!("read_set: {:#?}", read_set);
     println!("write_set: {:#?}", write_set);
 
     AccessSets {
-        pure_reads,
         read_writes,
-        account_reads,
+        balance_updated_accounts,
     }
 }

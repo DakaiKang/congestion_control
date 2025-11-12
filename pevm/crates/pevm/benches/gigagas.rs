@@ -274,7 +274,7 @@ pub fn bench_solana(c: &mut Criterion) {
 
 
 pub fn solana_sample_2_txns() -> (InMemoryStorage, Vec<TxEnv>) {
-    let block_size = 2;
+    let block_size = 1;
     let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
     let (state, bytecodes, txs) = chiron::generate_loop_exchange(block_size);
     final_state.extend(state);
