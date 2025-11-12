@@ -24,11 +24,6 @@ pub use rlp::Rlp;
 pub use std::env;
 use std::str::FromStr;
 
-// #[test]
-// fn test_serializer() {
-//     serializer::test();
-// }
-
 #[tokio::test]
 async fn test_serializer() -> Result<(), Box<dyn std::error::Error>> {
     let wallet = LocalWallet::new(&mut rand::thread_rng()).with_chain_id(1u64);

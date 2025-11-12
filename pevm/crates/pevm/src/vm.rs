@@ -206,6 +206,7 @@ impl<'a, S: Storage, C: PevmChain> VmDb<'a, S, C> {
     }
 
     fn get_code_hash(&mut self, address: Address) -> Result<Option<B256>, ReadError> {
+        // [DK] The way to get A 
         let location_hash = hash_deterministic(MemoryLocation::CodeHash(address));
         let read_origins = self.read_set.entry(location_hash).or_default();
 
@@ -573,6 +574,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                 // There are at least three locations most of the time: the sender,
                 // the recipient, and the beneficiary accounts.
                 let mut write_set = WriteSet::with_capacity(3);
+                println!("state: {:#?}", result_and_state.state);
                 for (address, account) in &result_and_state.state {
                     if account.is_selfdestructed() {
                         // TODO: Also write [SelfDestructed] to the basic location?
@@ -678,6 +680,9 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                 } else {
                     FinishExecFlags::empty()
                 };
+
+                println!("REAL read sets: {:#?}", &db.read_set);
+                println!("REAL write sets: {:#?}", &write_set);
 
                 if self.mv_memory.record(tx_version, db.read_set, write_set) {
                     flags |= FinishExecFlags::WroteNewLocation;

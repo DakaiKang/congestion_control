@@ -149,6 +149,10 @@ pub fn generate_loop_exchange(num_tx: usize) -> (HashMap<Address, EvmAccount>, B
     let mut state = HashMap::from([(chiron_address, chiron_account)]);
     let mut txs = Vec::new();
 
+    println!("chiron address: {}", chiron_address);
+    println!("accounts number: {}", accounts.len());
+
+    // Initiate num_tx accounts. Each account has a balance U128:MAX
     for account in &accounts {
         state.insert(
             *account,
@@ -160,10 +164,12 @@ pub fn generate_loop_exchange(num_tx: usize) -> (HashMap<Address, EvmAccount>, B
     }
 
     let mut rng = thread_rng();
+    // Maintain the nonce of each account
     let mut sender_map = HashMap::new();
     let res_distribution: WeightedIndex<f64> = WeightedIndex::new(&RES_DISTR).unwrap();
 
     for x in 0..num_tx {
+        // For each transaction, randomly select one account as the sender
         let person = accounts[rng.gen_range(0..accounts.len())];
         let nonce = sender_map.get(&person).unwrap_or(&0);
 
@@ -173,26 +179,29 @@ pub fn generate_loop_exchange(num_tx: usize) -> (HashMap<Address, EvmAccount>, B
         for _ in 0..write_len_sample {
             writes.push(res_distribution.sample(&mut rng)) ;
         }
-
-        //println!("writes {:?}", &writes);
+        println!("cost_smaple: {:?}", cost_sample);
+        println!("write_len_sample: {:?}", write_len_sample);
+        println!("writes {:?}", &writes);
 
         let cost = U256::from(cost_sample.round() as u64);
         let calldata = Chiron::loop_exchange(cost, &writes);
 
         let mut write_keys:Vec<AccessListItem> = Vec::new();
-        for write in writes {
-            let slot = U256::from(write);
+        // for write in writes {
+        //     let slot = U256::from(write);
 
-            write_keys.push(AccessListItem {
-                address: chiron_address,
-                storage_keys: vec!(B256::from(slot)),
-            });
-        }
+        //     write_keys.push(AccessListItem {
+        //         address: chiron_address,
+        //         storage_keys: vec!(B256::from(slot)),
+        //     });
+        // }
 
-        write_keys.push(AccessListItem {
-            address: person.clone(),
-            storage_keys: vec!(B256::ZERO),
-        });
+        // write_keys.push(AccessListItem {
+        //     address: person.clone(),
+        //     storage_keys: vec!(B256::ZERO),
+        // });
+
+        println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
 
         txs.push(TxEnv {
             caller: person,
