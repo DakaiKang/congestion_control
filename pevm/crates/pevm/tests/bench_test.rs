@@ -7,11 +7,12 @@ use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng};
 use pevm::{
+    graph_pevm::GraphPevm,
     chain::PevmEthereum, execute_revm_sequential, Bytecodes, ChainState, EvmAccount,
     InMemoryStorage, Pevm, execute_revm_sequential_with_access_sets
 };
 use pevm::dependency_graph::{
-    TransactionGraph, TransactionNode
+    TransactionGraph, TransactionNode, SimulationResult
 };
 use std::collections::HashSet;
 
@@ -67,10 +68,13 @@ pub fn test_bench_sequential() -> Result<(), Box<dyn std::error::Error>> {
         graph2.add_transaction(txn_node);
     }
 
-    let mut simulated = graph.simulate_parallel_execution(8);
-    let mut simulated2 = graph2.simulate_parallel_execution(8);
+    graph.simulate_parallel_execution(8);
+    graph2.simulate_parallel_execution(8);
 
-    // println!("simulated: {:#?}", simulated);
+    let simulated = graph.simulation_result.unwrap();
+    let simulated2 = graph2.simulation_result.unwrap();
+
+    println!("simulated: {:#?}", simulated);
 
     let mut reordered_txns = Vec::new();
     for i in 0..simulated.execution_order.len() {
@@ -103,7 +107,7 @@ pub fn test_bench_sequential() -> Result<(), Box<dyn std::error::Error>> {
         concurrency_level,
     )?;
     let duration = start.elapsed();
-    println!("Execution time: {:?}", duration);
+    // println!("Execution time: {:?}", duration);
 
     // assert_eq!(result, result2);
 
@@ -112,10 +116,10 @@ pub fn test_bench_sequential() -> Result<(), Box<dyn std::error::Error>> {
     // println!("result2 = {:#?}", result2);
     let output_file = std::fs::File::create("bench_test.txt").unwrap();
     let mut writer = std::io::BufWriter::new(output_file);
-    // let result_str = format!("{result2:#?}");
-    let execution_str = format!("Execution Time: {duration:#?}");
+    let result_str = format!("{result2:#?}");
+    // let execution_str = format!("Execution Time: {duration:#?}");
     // output the results to a file
-    writer.write_all(execution_str.as_bytes()).unwrap();
+    writer.write_all(result_str.as_bytes()).unwrap();
     writer.flush().unwrap();
 
     Ok(())
@@ -196,8 +200,10 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
     let mut g1 = graph.clone();
     let mut g2 = graph2.clone();
 
-    let mut simulated = graph.simulate_parallel_execution(8);
-    let mut simulated2 = graph2.simulate_parallel_execution(8);
+    graph.simulate_parallel_execution(8);
+    graph2.simulate_parallel_execution(8);
+    let mut simulated = graph.simulation_result.unwrap();
+    let mut simulated2 = graph2.simulation_result.unwrap();
 
     let mut reordered_txns = Vec::new();
     for i in 0..simulated.execution_order.len() {
@@ -233,7 +239,9 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
 
     g1.integrate_graph(g2);
 
-    let mut simulated = g1.simulate_parallel_execution(8);
+    g1.simulate_parallel_execution(8);
+
+    let mut simulated = g1.simulation_result.unwrap();
 
     // println!("simulated: {:#?}", simulated);
 
@@ -275,4 +283,31 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
     writer.flush().unwrap();
 
     Ok(())
+}
+
+#[test]
+pub fn graph_pevm_test() {
+    let txn_num = 100;
+    let (storage, txs, costs, txs2, costs2) = gigagas::solana_sample_txns_two_batch(txn_num);
+
+    let txs_clone = txs.clone();
+    let txs2_clone = txs2.clone();
+    let storage2 = storage.clone();
+    let storage_cloned = storage.clone();
+    let storage2_cloned = storage.clone();
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+
+    let graph = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env, txs).unwrap();
+
+    let output_file = std::fs::File::create("constructed.txt").unwrap();
+    let mut writer = std::io::BufWriter::new(output_file);
+    let execution_str = format!("{graph:#?}");
+    // output the results to a file
+    writer.write_all(execution_str.as_bytes()).unwrap();
+    writer.flush().unwrap();
+
+    ()
 }

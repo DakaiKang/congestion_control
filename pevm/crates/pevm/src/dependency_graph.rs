@@ -103,6 +103,7 @@ pub struct TransactionGraph {
     head_txns: HashMap<u64, TransactionId>,    // The Map from Address to the head Transaction Nodes in the graph
     tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
     txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
+    pub simulation_result: Option<SimulationResult>,
 }
 
 impl TransactionGraph {
@@ -115,6 +116,7 @@ impl TransactionGraph {
             head_txns: HashMap::new(),
             tail_txns: HashMap::new(),
             txns_without_parent: BinaryHeap::new(),
+            simulation_result: None,
         }
     }
 
@@ -294,7 +296,7 @@ impl TransactionGraph {
     }
 
     /// Simulate parallel execution with k threads using a min-heap for completion times
-    pub fn simulate_parallel_execution(&mut self, k: usize) -> SimulationResult {
+    pub fn simulate_parallel_execution(&mut self, k: usize) -> (){
         // Initialize threads
         let mut threads: Vec<ThreadState> = (0..k)
             .map(|i| ThreadState::new(i))
@@ -383,7 +385,7 @@ impl TransactionGraph {
             }
         }
         
-        SimulationResult::new(current_time, threads, execution_order)
+        self.simulation_result = Some(SimulationResult::new(current_time, threads, execution_order));
     }
     
     /// Remove a transaction and add its newly-freed children to the heap
@@ -541,7 +543,7 @@ impl ThreadState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct SimulationResult {
     pub total_time: u64,
     pub thread_results: Vec<ThreadState>,
@@ -700,8 +702,10 @@ impl std::fmt::Display for ThreadEndTimeStats {
 
         graph.integrate_graph(graph2);
 
-        let mut result = graph.simulate_parallel_execution(4);
-        let (std_dev, cv)= result.calculate_thread_end_time_std_dev_and_coef_dev().unwrap();
+        graph.simulate_parallel_execution(4);
+
+        if let Some(mut result) = graph.simulation_result {
+            let (std_dev, cv)= result.calculate_thread_end_time_std_dev_and_coef_dev().unwrap();
         println!("\n Standard Deviation is {}, cv is {}", std_dev, cv);
         
         println!("\nSimulation completed in {} time units", result.total_time);
@@ -724,8 +728,6 @@ impl std::fmt::Display for ThreadEndTimeStats {
                 thread_id, tx_id.id, tx_id.replica, start, end
             );
         }
+        }
         
-        // Expected: root finishes at 1000, then t2 and t3 run in parallel
-        // t3 finishes at 2500, t2 finishes at 3000, child starts at 3000 and finishes at 6000
-        // assert_eq!(result.total_time, 6000);
     }

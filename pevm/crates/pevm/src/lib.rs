@@ -234,6 +234,7 @@ pub use api::{APIError, PevmAPI};
 pub mod serialization;
 pub mod erc20;
 pub mod dependency_graph;
+pub mod graph_pevm;
 mod common;
 
 #[cfg(feature = "rpc-storage")]

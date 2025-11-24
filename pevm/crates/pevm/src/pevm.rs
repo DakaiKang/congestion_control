@@ -514,9 +514,9 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
         let mut execution_result =
             PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
 
-        cumulative_gas_used =
-            cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
-        execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+        // cumulative_gas_used =
+        //     cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+        // execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
 
         results.push(execution_result);
     }
