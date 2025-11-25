@@ -182,7 +182,7 @@ type WriteSet = Vec<(MemoryLocationHash, MemoryValue)>;
 // the end of block execution, while waiting for a huge blocking
 // transaction to resolve, etc.
 #[derive(Debug)]
-enum Task {
+pub enum Task {
     Execution(TxVersion),
     Validation(TxVersion),
 }

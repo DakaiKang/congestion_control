@@ -7,6 +7,9 @@ use std::{
     thread,
 };
 
+use std::collections::{BinaryHeap, HashSet};
+use std::cmp::Reverse;
+
 use smallvec::SmallVec;
 
 use crate::{FinishExecFlags, IncarnationStatus, Task, TxIdx, TxStatus, TxVersion};
@@ -64,17 +67,32 @@ pub struct GraphScheduler {
     // The dependency graph of transactions
     dependency_graph: TransactionGraph,
     // The set of transactions without unexecuted parent transactions
-    executable_txs: Mutex<Vec<TxIdx>>,
+    executable_txs: Mutex<BinaryHeap<Reverse<TxIdx>>>,
+    // Temporary set of unexecuted transactions while scheduling transactions
+    temp_parents: Mutex<Vec<HashSet<usize>>>,
 }
 
 // TODO: Better error handling.
 // Like returning errors instead of panicking on [unreachable]s.
 impl GraphScheduler {
     pub fn new(block_size: usize, dependency_graph: TransactionGraph) -> Self {
-        let e_txs = dependency_graph
-            .txns_without_parent.clone()
-            .into_iter()
-            .map(|heap_entry| dependency_graph.id_to_index[&heap_entry.tx_id] as TxIdx)
+        let e_txs: Vec<_> = dependency_graph.nodes.iter()
+            .enumerate()
+            .filter_map(|(tx_idx, node)| {
+                if node.parent_indices.len() == 0 {
+                    Some(tx_idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        let heap = e_txs.into_iter().map(Reverse).collect();
+
+        let parents = dependency_graph.nodes.iter()
+            .map(|node| {
+                node.parent_indices.iter().cloned().collect()
+            })
             .collect();
 
         Self {
@@ -96,7 +114,8 @@ impl GraphScheduler {
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
             dependency_graph,
-            executable_txs: Mutex::new(e_txs),
+            executable_txs: Mutex::new(heap),
+            temp_parents: Mutex::new(parents),
         }
     }
 
@@ -105,6 +124,11 @@ impl GraphScheduler {
     }
 
     fn try_execute(&self, tx_idx: TxIdx) -> Option<TxVersion> {
+        let temp_parents = self.temp_parents.lock().unwrap();
+        if temp_parents.get(tx_idx).map_or(true, |parents| !parents.is_empty()) {
+            return None;
+        }
+
         if tx_idx < self.block_size {
             let mut tx = index_mutex!(self.transactions_status, tx_idx);
             if tx.status == IncarnationStatus::ReadyToExecute {
@@ -118,34 +142,64 @@ impl GraphScheduler {
         None
     }
 
-    pub(crate) fn next_task(&self) -> Option<Task> {
+    fn next_executable(&self) -> Option<TxIdx> {
+        let mut heap = self.executable_txs.lock().unwrap();
+        heap.pop().map(|Reverse(idx)| idx)
+    }
+
+    fn add_executable(&self, tx_idx: TxIdx) {
+        let mut heap = self.executable_txs.lock().unwrap();
+        heap.push(Reverse(tx_idx));
+    }
+
+    fn peek_top(&self) -> Option<TxIdx> {
+        let heap = self.executable_txs.lock().unwrap();
+        heap.peek().map(|Reverse(idx)| *idx)
+    }
+    
+    fn is_empty(&self) -> bool {
+        let heap = self.executable_txs.lock().unwrap();
+        heap.is_empty()
+    }
+
+    pub fn next_task(&self) -> Option<Task> {
         while !self.aborted.load(Ordering::Relaxed) {
-            let execution_idx = self.execution_idx.load(Ordering::Relaxed);
             let validation_idx = self.validation_idx.load(Ordering::Relaxed);
-            if execution_idx >= self.block_size && validation_idx >= self.block_size {
-                if self.num_validated.load(Ordering::Relaxed)
-                    >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed)
-                {
-                    break;
+            
+            // Check if there are executable transactions
+            let (has_executable, execution_idx) = {
+                let heap = self.executable_txs.lock().unwrap();
+                (!heap.is_empty(), heap.peek().map(|Reverse(idx)| *idx))
+            };
+            
+            // Check if all tasks are done
+            if !has_executable {
+                if validation_idx >= self.block_size {
+                    if self.num_validated.load(Ordering::Relaxed)
+                        >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed)
+                    {
+                        break;
+                    }
                 }
                 thread::yield_now();
                 continue;
             }
-
+            
+            // Get the exec_idx
+            let exec_idx = execution_idx.unwrap();
+            
             // Prioritize a validation task to minimize re-execution
-            if validation_idx < execution_idx {
+            if validation_idx < exec_idx {
                 let tx_idx = self.validation_idx.fetch_add(1, Ordering::Relaxed);
                 if tx_idx < self.block_size {
                     let mut tx = index_mutex!(self.transactions_status, tx_idx);
-                    // "Steal" execution job while holding the lock
-                    if tx.status == IncarnationStatus::ReadyToExecute {
-                        tx.status = IncarnationStatus::Executing;
-                        return Some(Task::Execution(TxVersion {
-                            tx_idx,
-                            tx_incarnation: tx.incarnation,
-                        }));
-                    }
-                    // Start a typical validation task
+                    // if tx.status == IncarnationStatus::ReadyToExecute {
+                    //     tx.status = IncarnationStatus::Executing;
+                    //     return Some(Task::Execution(TxVersion {
+                    //         tx_idx,
+                    //         tx_incarnation: tx.incarnation,
+                    //     }));
+                    // }
                     if matches!(
                         tx.status,
                         IncarnationStatus::Executed | IncarnationStatus::Validated
@@ -155,23 +209,22 @@ impl GraphScheduler {
                             tx_incarnation: tx.incarnation,
                         }));
                     }
-                    // Validation index is still catching up so continue a
-                    // new loop iteration to refetch the latest indices
-                    // before deciding again.
-                    if tx.status == IncarnationStatus::Aborting {
+                    // if tx.status == IncarnationStatus::Aborting {
+                    //     continue;
+                    // }
+                    else {
                         continue;
                     }
-                    // Fall back to execution job as this executing tx will
-                    // decide if validation is needed when it's done. If it
-                    // does, all validation tasks here would be redone anyway.
                 }
             }
-
-            // Prioritize execution task
-            if let Some(tx_version) =
-                self.try_execute(self.execution_idx.fetch_add(1, Ordering::Relaxed))
-            {
-                return Some(Task::Execution(tx_version));
+    
+            // Prioritize execution task - pop from heap
+            let next_tx_idx = self.executable_txs.lock().unwrap().pop().map(|Reverse(idx)| idx);
+            
+            if let Some(tx_idx) = next_tx_idx {
+                if let Some(tx_version) = self.try_execute(tx_idx) {
+                    return Some(Task::Execution(tx_version));
+                }
             }
         }
         None

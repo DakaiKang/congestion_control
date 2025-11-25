@@ -313,6 +313,9 @@ pub fn graph_pevm_test() {
     let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
     println!("graph_scheduler: {:#?}", graph_scheduler);
 
+    let task = graph_scheduler.next_task();
+    println!("next_task: {:#?}", task);
+
     // let output_file = std::fs::File::create("constructed.txt").unwrap();
     // let mut writer = std::io::BufWriter::new(output_file);
     // let execution_str = format!("{graph:#?}");
