@@ -30,6 +30,7 @@ pub struct TransactionNode {
     pub read_set: HashSet<u64>,
     pub write_set: HashSet<u64>,
     pub longest_suffix: u64,
+    pub parent_indices: HashSet<usize>,
 }
 
 impl TransactionNode {
@@ -51,6 +52,7 @@ impl TransactionNode {
             read_set,
             write_set,
             longest_suffix: execution_time,
+            parent_indices: HashSet::new(),
         }
     }
 
@@ -98,12 +100,14 @@ impl PartialOrd for EstimatedCompletion {
 
 #[derive(Debug, Clone)]
 pub struct TransactionGraph {
-    nodes: Vec<TransactionNode>,
-    id_to_index: HashMap<TransactionId, usize>,
-    head_txns: HashMap<u64, TransactionId>,    // The Map from Address to the head Transaction Nodes in the graph
-    tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
-    txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
+    pub nodes: Vec<TransactionNode>,
+    pub id_to_index: HashMap<TransactionId, usize>,
+    pub head_txns: HashMap<u64, TransactionId>,    // The Map from Address to the head Transaction Nodes in the graph
+    pub tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
+    pub txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
     pub simulation_result: Option<SimulationResult>,
+
+    pub temp_parents: Vec<HashSet<usize>>, // Temporary storage for parent transactions during simulation
 }
 
 impl TransactionGraph {
@@ -117,6 +121,7 @@ impl TransactionGraph {
             tail_txns: HashMap::new(),
             txns_without_parent: BinaryHeap::new(),
             simulation_result: None,
+            temp_parents: Vec::new(),
         }
     }
 
@@ -161,6 +166,7 @@ impl TransactionGraph {
         // Check if edge already exists
         if !self.nodes[parent_idx].children_indices.contains(&child_idx) {
             self.nodes[parent_idx].children_indices.push(child_idx);
+            self.nodes[child_idx].parent_indices.insert(parent_idx);
         }
         
         Ok(())
@@ -297,6 +303,10 @@ impl TransactionGraph {
 
     /// Simulate parallel execution with k threads using a min-heap for completion times
     pub fn simulate_parallel_execution(&mut self, k: usize) -> (){
+        // Initialize temporary parent storage
+        self.temp_parents = self.nodes.iter()
+            .map(|node| node.parent_indices.clone()).collect();
+        
         // Initialize threads
         let mut threads: Vec<ThreadState> = (0..k)
             .map(|i| ThreadState::new(i))
@@ -326,9 +336,10 @@ impl TransactionGraph {
                         let expected_completion_time = current_time + execution_time;
                         
                         println!(
-                            "Time {}: Thread {} starts transaction ({}, {}) [execution_time: {}, expected_completion: {}]",
+                            "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}]",
                             current_time,
                             thread.thread_id,
+                            self.id_to_index[&tx_id],
                             tx_id.id,
                             tx_id.replica,
                             execution_time,
@@ -399,7 +410,8 @@ impl TransactionGraph {
         
         // Check each child to see if it's now free (no other parents)
         for &child_idx in &children_indices {
-            if self.has_no_other_parents(child_idx, tx_idx) {
+            self.temp_parents[child_idx].remove(&tx_idx);
+            if self.temp_parents[child_idx].len() == 0 {
                 let child_node = &self.nodes[child_idx];
                 let child_tx_id = child_node.transaction_id();
                 let child_suffix = child_node.longest_suffix;
@@ -412,19 +424,6 @@ impl TransactionGraph {
                 self.txns_without_parent.push(HeapEntry::new(child_tx_id, child_suffix));
             }
         }
-        
-        // Mark transaction as processed by clearing its children
-        self.nodes[tx_idx].children_indices.clear();
-    }
-    
-    /// Check if a child has no parents other than the specified one
-    fn has_no_other_parents(&self, child_idx: usize, parent_idx: usize) -> bool {
-        for (idx, node) in self.nodes.iter().enumerate() {
-            if idx != parent_idx && node.children_indices.contains(&child_idx) {
-                return false;
-            }
-        }
-        true
     }
 
     pub fn integrate_graph(&mut self, other: TransactionGraph) -> Result<usize, String> {

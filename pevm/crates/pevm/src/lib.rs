@@ -235,6 +235,7 @@ pub mod serialization;
 pub mod erc20;
 pub mod dependency_graph;
 pub mod graph_pevm;
+pub mod graph_scheduler;
 mod common;
 
 #[cfg(feature = "rpc-storage")]

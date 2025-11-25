@@ -53,7 +53,7 @@ impl GraphPevm {
             storage,
             spec_id,
             block_env.clone(),
-            txs.clone(),
+            txs,
         )?;
 
         let mut graph = TransactionGraph::new();
@@ -63,6 +63,35 @@ impl GraphPevm {
         }
 
         Ok(graph)
+    }
+
+    // Reorder the transactions based on the simluation results of the depedency graph
+    // And regenerate the dependency graph with new transactions indices
+    // The current implementation requires to simulate again, which could be optimized later.
+    pub fn reorder_txs_by_dependency_graph(
+        txs: Vec<TxEnv>, 
+        graph: &mut TransactionGraph, 
+        concurrency_level: usize
+    ) -> (Vec<TxEnv>, TransactionGraph) {
+        graph.simulate_parallel_execution(concurrency_level);
+        let mut new_graph = TransactionGraph::new();
+
+        let mut reordered_txs = Vec::new();
+        // Access simulation_result directly from graph
+        if let Some(ref simulation_result) = graph.simulation_result {
+            for (thread_id, tx_id, start, end) in &simulation_result.execution_order {
+                if let Some(&index) = graph.id_to_index.get(tx_id) {
+                    reordered_txs.push(txs[index].clone());
+                    let mut txn_node = graph.nodes[index].clone();
+                    txn_node.children_indices.clear();
+                    txn_node.longest_suffix = txn_node.execution_time;
+                    new_graph.add_transaction(txn_node);
+                }
+            }
+        }
+
+        new_graph.simulate_parallel_execution(concurrency_level);
+        (reordered_txs, new_graph)
     }
 }
 

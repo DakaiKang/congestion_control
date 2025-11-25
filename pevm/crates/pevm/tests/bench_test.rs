@@ -14,6 +14,8 @@ use pevm::{
 use pevm::dependency_graph::{
     TransactionGraph, TransactionNode, SimulationResult
 };
+use pevm::graph_scheduler::GraphScheduler;
+
 use std::collections::HashSet;
 
 use revm::primitives::{AccessListItem, BlockEnv, SpecId, TransactTo, TxEnv};
@@ -287,7 +289,7 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 pub fn graph_pevm_test() {
-    let txn_num = 100;
+    let txn_num = 5;
     let (storage, txs, costs, txs2, costs2) = gigagas::solana_sample_txns_two_batch(txn_num);
 
     let txs_clone = txs.clone();
@@ -300,14 +302,23 @@ pub fn graph_pevm_test() {
     let spec_id = SpecId::LATEST;
     let block_env = BlockEnv::default();
 
-    let graph = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env, txs).unwrap();
+    println!("txns: {:#?}", txs);
 
-    let output_file = std::fs::File::create("constructed.txt").unwrap();
-    let mut writer = std::io::BufWriter::new(output_file);
-    let execution_str = format!("{graph:#?}");
-    // output the results to a file
-    writer.write_all(execution_str.as_bytes()).unwrap();
-    writer.flush().unwrap();
+    let mut graph = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env, txs_clone).unwrap();
+
+    let (reordered_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs, &mut graph, 8);
+
+    println!("reorder_txns: {:#?}", reordered_txns);
+
+    let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
+    println!("graph_scheduler: {:#?}", graph_scheduler);
+
+    // let output_file = std::fs::File::create("constructed.txt").unwrap();
+    // let mut writer = std::io::BufWriter::new(output_file);
+    // let execution_str = format!("{graph:#?}");
+    // // output the results to a file
+    // writer.write_all(execution_str.as_bytes()).unwrap();
+    // writer.flush().unwrap();
 
     ()
 }

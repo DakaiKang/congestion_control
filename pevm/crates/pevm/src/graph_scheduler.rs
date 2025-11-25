@@ -10,6 +10,7 @@ use std::{
 use smallvec::SmallVec;
 
 use crate::{FinishExecFlags, IncarnationStatus, Task, TxIdx, TxStatus, TxVersion};
+use crate::dependency_graph::{TransactionGraph, HeapEntry, TransactionNode};
 
 // The Pevm collaborative scheduler coordinates execution & validation
 // tasks among work threads.
@@ -37,7 +38,7 @@ use crate::{FinishExecFlags, IncarnationStatus, Task, TxIdx, TxStatus, TxVersion
 // failure due to the ESTIMATE markers on memory locations, instead of waiting
 // for a subsequent incarnation to finish.
 #[derive(Debug)]
-pub(crate) struct GraphScheduler {
+pub struct GraphScheduler {
     // The number of transactions in this block.
     block_size: usize,
     // The most up-to-date incarnation number (initially 0) and
@@ -60,12 +61,22 @@ pub(crate) struct GraphScheduler {
     // True if the scheduler has been aborted, likely due to fatal execution
     // errors.
     aborted: AtomicBool,
+    // The dependency graph of transactions
+    dependency_graph: TransactionGraph,
+    // The set of transactions without unexecuted parent transactions
+    executable_txs: Mutex<Vec<TxIdx>>,
 }
 
 // TODO: Better error handling.
 // Like returning errors instead of panicking on [unreachable]s.
 impl GraphScheduler {
-    pub(crate) fn new(block_size: usize) -> Self {
+    pub fn new(block_size: usize, dependency_graph: TransactionGraph) -> Self {
+        let e_txs = dependency_graph
+            .txns_without_parent.clone()
+            .into_iter()
+            .map(|heap_entry| dependency_graph.id_to_index[&heap_entry.tx_id] as TxIdx)
+            .collect();
+
         Self {
             block_size,
             execution_idx: AtomicUsize::new(0),
@@ -84,6 +95,8 @@ impl GraphScheduler {
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
+            dependency_graph,
+            executable_txs: Mutex::new(e_txs),
         }
     }
 
