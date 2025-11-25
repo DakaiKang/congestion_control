@@ -151,7 +151,7 @@ struct TxStatus {
 // transactions have written to a location, the value would be read from the
 // storage state before block execution.
 #[derive(Clone, Debug, PartialEq)]
-struct TxVersion {
+pub struct TxVersion {
     tx_idx: TxIdx,
     tx_incarnation: TxIncarnation,
 }
@@ -188,7 +188,7 @@ pub enum Task {
 }
 
 bitflags! {
-    struct FinishExecFlags: u8 {
+    pub struct FinishExecFlags: u8 {
         // Do we need to validate from this transaction?
         // The first and lazy transactions don't need validation. Note
         // that this is used to tune the min validation index in the

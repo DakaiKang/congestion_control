@@ -262,7 +262,21 @@ impl GraphScheduler {
         tx.incarnation += 1;
     }
 
-    pub(crate) fn finish_execution(
+    pub fn remove_parent(&self, parent_tx_idx: TxIdx) {
+        let mut temp_parents = self.temp_parents.lock().unwrap();
+        println!("Children of parent {}: {:?}", parent_tx_idx, self.dependency_graph.nodes[parent_tx_idx].children_indices);
+        for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
+            println!("Removing parent {} from child {}", parent_tx_idx, child_idx);
+            if let Some(parents) = temp_parents.get_mut(*child_idx) {
+                parents.remove(&parent_tx_idx);
+                if parents.is_empty() {
+                    self.add_executable(*child_idx);
+                }
+            }
+        }
+    }
+
+    pub fn finish_execution(
         &self,
         tx_version: TxVersion,
         flags: FinishExecFlags,
@@ -271,11 +285,16 @@ impl GraphScheduler {
         debug_assert_eq!(tx.status, IncarnationStatus::Executing);
         debug_assert_eq!(tx.incarnation, tx_version.tx_incarnation);
 
-        // Resume dependent transactions
+        // Release the transactions who are dependent on the just finished one in the dependency graph
+        self.remove_parent(tx_version.tx_idx);
+
+        // Resume dependent transactions that were found during execution
         let mut dependents = index_mutex!(self.transactions_dependents, tx_version.tx_idx);
         for tx_idx in dependents.drain(..) {
             self.set_ready_status(tx_idx);
-            self.execution_idx.fetch_min(tx_idx, Ordering::Relaxed);
+            if self.temp_parents.lock().unwrap()[tx_idx].is_empty() {
+                self.add_executable(tx_idx);
+            }
         }
 
         // TODO: Simplify or better document this logic.

@@ -121,9 +121,9 @@ impl From<ReadError> for VmExecutionError {
     }
 }
 
-pub(crate) struct VmExecutionResult {
-    pub(crate) execution_result: PevmTxExecutionResult,
-    pub(crate) flags: FinishExecFlags,
+pub struct VmExecutionResult {
+    pub execution_result: PevmTxExecutionResult,
+    pub flags: FinishExecFlags,
 }
 
 // A database interface that intercepts reads while executing a specific

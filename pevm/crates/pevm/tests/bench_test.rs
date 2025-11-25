@@ -313,8 +313,28 @@ pub fn graph_pevm_test() {
     let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
     println!("graph_scheduler: {:#?}", graph_scheduler);
 
-    let task = graph_scheduler.next_task();
-    println!("next_task: {:#?}", task);
+    for i in 0..txn_num {
+        let task = graph_scheduler.next_task();
+        println!("next_task: {:#?}", task);
+
+        match task {
+            Some(t) => {
+                match t {
+                    pevm::Task::Execution(tx_version) => {
+                        graph_scheduler.finish_execution(tx_version, pevm::FinishExecFlags::NeedValidation);
+                    },
+                    pevm::Task::Validation(tx_version) => {
+                        println!("Validating tx_version: {:#?}", tx_version);
+                    },
+                }
+            }
+            None => {
+                println!("No task available");
+            }
+        }
+        println!("---");
+    }
+    
 
     // let output_file = std::fs::File::create("constructed.txt").unwrap();
     // let mut writer = std::io::BufWriter::new(output_file);
