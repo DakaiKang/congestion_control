@@ -345,3 +345,44 @@ pub fn graph_pevm_test() {
 
     ()
 }
+
+
+#[test]
+pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
+    println!("Running single_sender_test");
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+    let txn_num = 5;
+    let (storage, txs, costs) = gigagas::solana_single_sender_txns(txn_num);
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+
+    let start = Instant::now();
+    let new_result = Pevm::default().execute_revm_parallel(
+        &chain,
+        &storage,
+        SpecId::LATEST,
+        BlockEnv::default(),
+        txs,
+        concurrency_level,
+    )?;
+
+    let duration = start.elapsed();
+    // println!("Execution time: {:?}", duration);
+
+    // assert_eq!(result, result2);
+
+    // println!("YES");
+
+    // println!("result2 = {:#?}", result2);
+    let output_file = std::fs::File::create("bench_test.txt").unwrap();
+    let mut writer = std::io::BufWriter::new(output_file);
+    let result_str = format!("{new_result:#?}");
+    // let execution_str = format!("Execution Time: {duration:#?}");
+    // output the results to a file
+    writer.write_all(result_str.as_bytes()).unwrap();
+    writer.flush().unwrap();
+
+    Ok(())
+}

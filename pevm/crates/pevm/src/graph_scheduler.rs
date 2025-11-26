@@ -276,6 +276,16 @@ impl GraphScheduler {
         }
     }
 
+    pub fn add_parent(&self, parent_tx_idx: TxIdx) {
+        let mut temp_parents = self.temp_parents.lock().unwrap();
+        for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
+            println!("Adding parent {} to child {}", parent_tx_idx, child_idx);
+            if let Some(parents) = temp_parents.get_mut(*child_idx) {
+                parents.insert(parent_tx_idx);
+            }
+        }
+    }
+
     pub fn finish_execution(
         &self,
         tx_version: TxVersion,
@@ -372,8 +382,9 @@ impl GraphScheduler {
             self.set_ready_status(tx_version.tx_idx);
             self.validation_idx
                 .fetch_min(tx_version.tx_idx + 1, Ordering::Relaxed);
-            if self.execution_idx.load(Ordering::Relaxed) > tx_version.tx_idx {
-                return self.try_execute(tx_version.tx_idx).map(Task::Execution);
+            self.add_parent(tx_version.tx_idx);
+            if self.temp_parents.lock().unwrap()[tx_version.tx_idx].is_empty() {
+                self.add_executable(tx_version.tx_idx);
             }
         } else {
             let mut tx = index_mutex!(self.transactions_status, tx_version.tx_idx);

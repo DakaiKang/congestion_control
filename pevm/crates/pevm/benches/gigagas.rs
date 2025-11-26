@@ -298,6 +298,13 @@ pub fn solana_sample_txns_two_batch(block_size: usize) -> (InMemoryStorage, Vec<
     (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs, txs2, costs2)
 }
 
+pub fn solana_single_sender_txns(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>) {
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+    let (state, bytecodes, txs, costs) = chiron::generate_single_sender_loop_exchange(block_size);
+    final_state.extend(state);
+
+    (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
+}
 
 
 /// Runs a series of benchmarks to evaluate the performance of different transaction types.
