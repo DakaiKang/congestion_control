@@ -173,20 +173,18 @@ impl GraphScheduler {
             };
             
             // Check if all tasks are done
-            if !has_executable {
-                if validation_idx >= self.block_size {
-                    if self.num_validated.load(Ordering::Relaxed)
-                        >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed)
-                    {
-                        break;
-                    }
+            if !has_executable && validation_idx >= self.block_size {
+                if self.num_validated.load(Ordering::Relaxed)
+                    >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed)
+                {
+                    break;
                 }
                 thread::yield_now();
                 continue;
             }
             
             // Get the exec_idx
-            let exec_idx = execution_idx.unwrap();
+            let exec_idx = execution_idx.unwrap_or(self.block_size);
             
             // Prioritize a validation task to minimize re-execution
             if validation_idx < exec_idx {

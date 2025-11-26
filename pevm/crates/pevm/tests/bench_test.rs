@@ -310,31 +310,41 @@ pub fn graph_pevm_test() {
 
     println!("reorder_txns: {:#?}", reordered_txns);
 
-    let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
-    println!("graph_scheduler: {:#?}", graph_scheduler);
+    // let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
+    // println!("graph_scheduler: {:#?}", graph_scheduler);
 
-    for i in 0..txn_num {
-        let task = graph_scheduler.next_task();
-        println!("next_task: {:#?}", task);
+    // for i in 0..txn_num {
+    //     let task = graph_scheduler.next_task();
+    //     println!("next_task: {:#?}", task);
 
-        match task {
-            Some(t) => {
-                match t {
-                    pevm::Task::Execution(tx_version) => {
-                        graph_scheduler.finish_execution(tx_version, pevm::FinishExecFlags::NeedValidation);
-                    },
-                    pevm::Task::Validation(tx_version) => {
-                        println!("Validating tx_version: {:#?}", tx_version);
-                    },
-                }
-            }
-            None => {
-                println!("No task available");
-            }
-        }
-        println!("---");
-    }
-    
+    //     match task {
+    //         Some(t) => {
+    //             match t {
+    //                 pevm::Task::Execution(tx_version) => {
+    //                     graph_scheduler.finish_execution(tx_version, pevm::FinishExecFlags::NeedValidation);
+    //                 },
+    //                 pevm::Task::Validation(tx_version) => {
+    //                     println!("Validating tx_version: {:#?}", tx_version);
+    //                 },
+    //             }
+    //         }
+    //         None => {
+    //             println!("No task available");
+    //         }
+    //     }
+    //     println!("---");
+    // }
+
+    let mut pevm = GraphPevm::default();
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+
+    let result = pevm.execute_revm_parallel(&chain, &storage, spec_id, block_env, reordered_txns, concurrency_level, new_graph).unwrap();
+
+    println!("result: {:#?}", result);
 
     // let output_file = std::fs::File::create("constructed.txt").unwrap();
     // let mut writer = std::io::BufWriter::new(output_file);
@@ -351,7 +361,7 @@ pub fn graph_pevm_test() {
 pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
     println!("Running single_sender_test");
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
-    let txn_num = 5;
+    let txn_num = 100;
     let (storage, txs, costs) = gigagas::solana_single_sender_txns(txn_num);
 
     let chain = PevmEthereum::mainnet();

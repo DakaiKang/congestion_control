@@ -75,14 +75,14 @@ pub enum PevmError<C: PevmChain> {
 pub type PevmResult<C> = Result<Vec<PevmTxExecutionResult>, PevmError<C>>;
 
 #[derive(Debug)]
-enum AbortReason {
+pub enum AbortReason {
     FallbackToSequential,
     ExecutionError(ExecutionError),
 }
 
 // TODO: Better implementation
 #[derive(Debug)]
-struct AsyncDropper<T> {
+pub struct AsyncDropper<T> {
     sender: mpsc::Sender<T>,
     _handle: thread::JoinHandle<()>,
 }
@@ -98,7 +98,7 @@ impl<T: Send + 'static> Default for AsyncDropper<T> {
 }
 
 impl<T> AsyncDropper<T> {
-    fn drop(&self, t: T) {
+    pub fn drop(&self, t: T) {
         // TODO: Better error handling
         self.sender.send(t).unwrap();
     }
