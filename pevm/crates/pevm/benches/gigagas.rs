@@ -290,6 +290,23 @@ pub fn solana_sample_txns(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Ve
     (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
 }
 
+pub fn solana_samples(block_size: usize, workload_type: u64) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>) {
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+    if workload_type == 1 {
+        let (state, bytecodes, txs, costs) = chiron::generate_single_sender_loop_exchange(block_size);
+        final_state.extend(state);
+        return (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
+    }
+    else if workload_type == 2 {
+        let (state, bytecodes, txs, costs) = chiron::generate_dense_multiple_sender_loop_exchange(block_size, 8);
+        final_state.extend(state);
+        return (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
+    }
+    else {
+        return solana_sample_txns(block_size);
+    }
+}
+
 pub fn solana_sample_txns_two_batch(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>, Vec<TxEnv>, Vec<u64>) {
     let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
     let (state, bytecodes, txs, costs, txs2, costs2) = chiron::generate_loop_exchange_with_cost_two_batch(block_size);

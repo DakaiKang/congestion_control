@@ -174,7 +174,7 @@ impl TransactionGraph {
 
     pub fn add_transaction(&mut self, node: TransactionNode) -> Result<usize, String> {
         let tx_id = node.transaction_id();
-        println!("Adding Txn {}", tx_id.id);
+        // println!("Adding Txn {}", tx_id.id);
         // Check if transaction already exists
         if self.id_to_index.contains_key(&tx_id) {
             return Err(format!("Transaction {:?} already exists in graph", tx_id));
@@ -206,7 +206,7 @@ impl TransactionGraph {
                         // Write-After-Read conflict 
                         (!tail_node.read_set.is_disjoint(&node.write_set));
                     if has_conflict {
-                        println!("Conflicting with Txn {}", tail_tx_id.id);
+                        // println!("Conflicting with Txn {}", tail_tx_id.id);
                         parent_transactions.insert(tail_tx_id.clone());
                     }
                 }
@@ -335,16 +335,16 @@ impl TransactionGraph {
                         
                         let expected_completion_time = current_time + execution_time;
                         
-                        println!(
-                            "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}]",
-                            current_time,
-                            thread.thread_id,
-                            self.id_to_index[&tx_id],
-                            tx_id.id,
-                            tx_id.replica,
-                            execution_time,
-                            expected_completion_time
-                        );
+                        // println!(
+                        //     "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}]",
+                        //     current_time,
+                        //     thread.thread_id,
+                        //     self.id_to_index[&tx_id],
+                        //     tx_id.id,
+                        //     tx_id.replica,
+                        //     execution_time,
+                        //     expected_completion_time
+                        // );
                         
                         thread.assign_transaction(tx_id.clone(), current_time, execution_time);
                         execution_order.push((
@@ -377,13 +377,13 @@ impl TransactionGraph {
                     current_time = event.time;
                 }
                 
-                println!(
-                    "Time {}: Thread {} completed transaction ({}, {})",
-                    current_time,
-                    event.thread_id,
-                    threads[event.thread_id].current_transaction.as_ref().unwrap().id,
-                    threads[event.thread_id].current_transaction.as_ref().unwrap().replica
-                );
+                // println!(
+                //     "Time {}: Thread {} completed transaction ({}, {})",
+                //     current_time,
+                //     event.thread_id,
+                //     threads[event.thread_id].current_transaction.as_ref().unwrap().id,
+                //     threads[event.thread_id].current_transaction.as_ref().unwrap().replica
+                // );
                 
                 // Complete the transaction on this thread
                 let completed_tx_id = threads[event.thread_id].complete_transaction().unwrap();
@@ -416,10 +416,10 @@ impl TransactionGraph {
                 let child_tx_id = child_node.transaction_id();
                 let child_suffix = child_node.longest_suffix;
                 
-                println!(
-                    "  -> Freeing child transaction ({}, {}) with longest_suffix: {}",
-                    child_tx_id.id, child_tx_id.replica, child_suffix
-                );
+                // println!(
+                //     "  -> Freeing child transaction ({}, {}) with longest_suffix: {}",
+                //     child_tx_id.id, child_tx_id.replica, child_suffix
+                // );
                 
                 self.txns_without_parent.push(HeapEntry::new(child_tx_id, child_suffix));
             }

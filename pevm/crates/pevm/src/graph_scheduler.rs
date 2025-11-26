@@ -262,9 +262,9 @@ impl GraphScheduler {
 
     pub fn remove_parent(&self, parent_tx_idx: TxIdx) {
         let mut temp_parents = self.temp_parents.lock().unwrap();
-        println!("Children of parent {}: {:?}", parent_tx_idx, self.dependency_graph.nodes[parent_tx_idx].children_indices);
+        // println!("Children of parent {}: {:?}", parent_tx_idx, self.dependency_graph.nodes[parent_tx_idx].children_indices);
         for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
-            println!("Removing parent {} from child {}", parent_tx_idx, child_idx);
+            // println!("Removing parent {} from child {}", parent_tx_idx, child_idx);
             if let Some(parents) = temp_parents.get_mut(*child_idx) {
                 parents.remove(&parent_tx_idx);
                 if parents.is_empty() {

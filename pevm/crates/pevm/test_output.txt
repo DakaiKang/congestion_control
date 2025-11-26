@@ -1,7 +1,642 @@
 GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 45,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 37,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 47,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 48,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 49,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 50,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 51,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 52,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 53,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 54,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 55,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 56,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 57,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 58,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 59,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 60,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 61,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 62,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 63,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 64,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 65,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 66,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 67,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 68,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 69,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 70,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 71,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 72,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 73,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 74,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 75,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 76,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 77,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 78,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
     Execution(
         TxVersion {
-            tx_idx: 0,
+            tx_idx: 79,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 40,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 33,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 46,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 82,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 35,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 83,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 80,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+Children of parent 82: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 82,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 81,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+Children of parent 83: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 83,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 85,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 42,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 86,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+Children of parent 85: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 85,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 87,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+Children of parent 79: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 79,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 82,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 83,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 85,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 88,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+Children of parent 86: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 86,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 89,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+Children of parent 87: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 87,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 84,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+Children of parent 80: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 80,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 82,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 83,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 85,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 86,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+Children of parent 88: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 88,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 87,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+Children of parent 81: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 39,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 81,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 90,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+Children of parent 84: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 82,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 83,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 84,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+Children of parent 89: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 85,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 89,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 87,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 88,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 94,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 86,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 89,
             tx_incarnation: 0,
         },
     ),
@@ -9,96 +644,308 @@ GraphPevm: Working on task Some(
 GraphPevm: Working on task Some(
     Execution(
         TxVersion {
-            tx_idx: 1,
+            tx_idx: 92,
             tx_incarnation: 0,
         },
     ),
-) by thread ThreadId(5)
-Children of parent 1: [2]
-Removing parent 1 from child 2
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 1,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(5)
+) by thread ThreadId(10)
+Children of parent 90: []
 GraphPevm: Working on task Some(
     Execution(
         TxVersion {
-            tx_idx: 2,
+            tx_idx: 93,
             tx_incarnation: 0,
         },
     ),
-) by thread ThreadId(5)
-Children of parent 2: []
-Children of parent 0: [3]
-Removing parent 0 from child 3
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 0,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(4)
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 2,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(5)
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 1,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(4)
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 2,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(5)
+) by thread ThreadId(11)
 GraphPevm: Working on task Some(
     Execution(
         TxVersion {
-            tx_idx: 3,
+            tx_idx: 91,
             tx_incarnation: 0,
         },
     ),
-) by thread ThreadId(4)
-Children of parent 3: [4]
-Removing parent 3 from child 4
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 3,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(4)
-GraphPevm: Working on task Some(
-    Validation(
-        TxVersion {
-            tx_idx: 3,
-            tx_incarnation: 0,
-        },
-    ),
-) by thread ThreadId(5)
+) by thread ThreadId(9)
 GraphPevm: Working on task Some(
     Execution(
         TxVersion {
-            tx_idx: 4,
+            tx_idx: 95,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 96,
             tx_incarnation: 0,
         },
     ),
 ) by thread ThreadId(4)
-Children of parent 4: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 90,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 97,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+Children of parent 94: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 94,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+Children of parent 91: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 91,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 94,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Execution(
+        TxVersion {
+            tx_idx: 99,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+Children of parent 98: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+Children of parent 96: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 96,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+Children of parent 93: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 94,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 93,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+Children of parent 92: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 96,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 93,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 94,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 92,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+Children of parent 99: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 96,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 99,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+Children of parent 95: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 96,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 99,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 95,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 99,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 95,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(4)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 95,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(11)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+Children of parent 97: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 99,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(8)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 97,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(9)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 97,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(7)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 97,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(6)
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 98,
+            tx_incarnation: 0,
+        },
+    ),
+) by thread ThreadId(10)
+Children of parent 29: []
+GraphPevm: Working on task Some(
+    Validation(
+        TxVersion {
+            tx_idx: 29,
+            tx_incarnation: 1,
+        },
+    ),
+) by thread ThreadId(5)
+GraphPevm: Out of Loop by thread ThreadId(2)

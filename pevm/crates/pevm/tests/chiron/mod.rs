@@ -389,6 +389,86 @@ pub fn generate_single_sender_loop_exchange(num_tx: usize) -> (HashMap<Address, 
 
 
 /// Generate only `loop_exchange` workload
+pub fn generate_dense_multiple_sender_loop_exchange(num_tx: usize, sender_num: usize) -> (HashMap<Address, EvmAccount>, Bytecodes, Vec<TxEnv>, Vec<u64>) {
+    let accounts: Vec<Address> = generate_addresses(num_tx);
+    let chiron_address = Address::new(rand::random());
+
+    let chiron_account = Chiron::build();
+    let mut state = HashMap::from([(chiron_address, chiron_account)]);
+    let mut txs = Vec::new();
+    let mut costs = Vec::new();
+
+    println!("chiron address: {}", chiron_address);
+    println!("accounts number: {}", accounts.len());
+
+    // Initiate num_tx accounts. Each account has a balance U128:MAX
+    for account in &accounts {
+        state.insert(
+            *account,
+            EvmAccount {
+                balance: U256::from(U128::MAX),
+                ..EvmAccount::default()
+            },
+        );
+    }
+
+    let mut rng = thread_rng();
+    // Maintain the nonce of each account
+    let mut sender_map = HashMap::new();
+    let res_distribution: WeightedIndex<f64> = WeightedIndex::new(&RES_DISTR).unwrap();
+
+    for x in 0..num_tx-1 {
+        // For each transaction, randomly select one account as the sender
+        let person = accounts[x];
+        let nonce = sender_map.get(&person).unwrap_or(&0);
+
+        let cost_sample = COST_DISTR[rand::thread_rng().gen_range(0..COST_DISTR.len())];
+        // let write_len_sample = LEN_DISTR[rand::thread_rng().gen_range(0..LEN_DISTR.len())] as usize;
+        let write_len_sample = rand::thread_rng().gen_range(1..3) as usize;
+        let mut writes= Vec::new();
+        for _ in 0..write_len_sample {
+            writes.push(res_distribution.sample(&mut rng)) ;
+        }
+        writes.push(1000 * (x/sender_num));
+        println!("cost_smaple: {:?}", cost_sample);
+        println!("write_len_sample: {:?}", write_len_sample);
+        println!("person: {}", person);
+        println!("writes {:?}", &writes);
+
+        let cost = U256::from(cost_sample.round() as u64);
+        costs.push(cost_sample.round() as u64);
+        let calldata = Chiron::loop_exchange(cost, &writes);
+
+        let mut write_keys:Vec<AccessListItem> = Vec::new();
+
+        println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
+
+        txs.push(TxEnv {
+            caller: person,
+            gas_limit: GAS_LIMIT * cost_sample as u64,
+            gas_price: U256::from(1),
+            transact_to: TransactTo::Call(chiron_address),
+            data: calldata,
+            nonce: Some(*nonce),
+            access_list: write_keys,
+            ..TxEnv::default()
+        });
+
+        sender_map.insert(person, nonce + 1);
+    }
+
+    let mut bytecodes = Bytecodes::default();
+    for account in state.values_mut() {
+        if let Some(code) = account.code.take() {
+            bytecodes.insert(account.code_hash.unwrap(), code);
+        }
+    }
+
+    (state, bytecodes, txs, costs)
+}
+
+
+/// Generate only `loop_exchange` workload
 pub fn generate_loop_exchange_with_cost_two_batch(num_tx: usize) -> (HashMap<Address, EvmAccount>, Bytecodes, Vec<TxEnv>, Vec<u64>, Vec<TxEnv>, Vec<u64>) {
     let accounts: Vec<Address> = generate_addresses(num_tx * 2);
     let chiron_address = Address::new(rand::random());
@@ -435,6 +515,7 @@ pub fn generate_loop_exchange_with_cost_two_batch(num_tx: usize) -> (HashMap<Add
         for _ in 0..write_len_sample {
             writes.push(res_distribution.sample(&mut rng)) ;
         }
+        
         // println!("cost_smaple: {:?}", cost_sample);
         // println!("write_len_sample: {:?}", write_len_sample);
         // println!("person: {}", person);

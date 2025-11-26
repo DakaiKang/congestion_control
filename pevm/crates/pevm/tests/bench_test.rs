@@ -144,6 +144,7 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
     let storage_cloned = storage.clone();
     let storage2_cloned = storage.clone();
     let storage_reorder = storage.clone();
+    let storage_graph = storage.clone();
 
     let chain = PevmEthereum::mainnet();
     let spec_id = SpecId::LATEST;
@@ -268,6 +269,11 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
         concurrency_level,
     )?;
     let duration = start.elapsed();
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+
     // println!("Execution time 0: {:?}", duration0);
     // println!("Execution time p: {:?}", duration_p);
     // println!("Execution time 1: {:?}", duration1);
@@ -289,62 +295,73 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 pub fn graph_pevm_test() {
-    let txn_num = 5;
-    let (storage, txs, costs, txs2, costs2) = gigagas::solana_sample_txns_two_batch(txn_num);
+    let txn_num = 100;
+    // let (storage, txs, costs, txs2, costs2) = gigagas::solana_sample_txns_two_batch(txn_num);
+    let (storage, txs, costs) = gigagas::solana_samples(txn_num, 1); // very dense
+    let (storage, txs, costs) = gigagas::solana_samples(txn_num, 2); // 8 sender, not evenly located
 
-    let txs_clone = txs.clone();
-    let txs2_clone = txs2.clone();
-    let storage2 = storage.clone();
-    let storage_cloned = storage.clone();
-    let storage2_cloned = storage.clone();
+    let txs_clone1 = txs.clone();
+    let txs_clone2 = txs.clone();
+    let txs_clone3 = txs.clone();
+    let storage_cloned1 = storage.clone();
+    let storage_cloned2 = storage.clone();
+    let storage_cloned3 = storage.clone();
 
     let chain = PevmEthereum::mainnet();
     let spec_id = SpecId::LATEST;
     let block_env = BlockEnv::default();
 
-    println!("txns: {:#?}", txs);
+    // println!("txns: {:#?}", txs);
 
-    let mut graph = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env, txs_clone).unwrap();
+    let start = Instant::now();
+    let result = pevm::execute_revm_sequential(
+        &chain,
+        &storage_cloned1,
+        spec_id,
+        block_env,
+        txs_clone1,
+    ).unwrap();
+    let duration1 = start.elapsed();
 
-    let (reordered_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs, &mut graph, 8);
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+    
+    let mut graph = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env, txs).unwrap();
 
-    println!("reorder_txns: {:#?}", reordered_txns);
-
-    // let graph_scheduler = GraphScheduler::new(txn_num, new_graph);
-    // println!("graph_scheduler: {:#?}", graph_scheduler);
-
-    // for i in 0..txn_num {
-    //     let task = graph_scheduler.next_task();
-    //     println!("next_task: {:#?}", task);
-
-    //     match task {
-    //         Some(t) => {
-    //             match t {
-    //                 pevm::Task::Execution(tx_version) => {
-    //                     graph_scheduler.finish_execution(tx_version, pevm::FinishExecFlags::NeedValidation);
-    //                 },
-    //                 pevm::Task::Validation(tx_version) => {
-    //                     println!("Validating tx_version: {:#?}", tx_version);
-    //                 },
-    //             }
-    //         }
-    //         None => {
-    //             println!("No task available");
-    //         }
-    //     }
-    //     println!("---");
-    // }
-
+    let start = Instant::now();
+    let (reordered_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs_clone2, &mut graph, 8);
+    
     let mut pevm = GraphPevm::default();
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
 
     let chain = PevmEthereum::mainnet();
     let spec_id = SpecId::LATEST;
     let block_env = BlockEnv::default();
+    
+    let result = pevm.execute_revm_parallel(&chain, &storage_cloned2, spec_id, block_env, reordered_txns, concurrency_level, new_graph).unwrap();
+    let duration3 = start.elapsed();
 
-    let result = pevm.execute_revm_parallel(&chain, &storage, spec_id, block_env, reordered_txns, concurrency_level, new_graph).unwrap();
+    let mut pevm = Pevm::default();
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
 
-    println!("result: {:#?}", result);
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+
+    let start = Instant::now();
+    let result = pevm.execute_revm_parallel(&chain, &storage_cloned3, spec_id, block_env, txs_clone3, concurrency_level).unwrap();
+    let duration2 = start.elapsed();
+
+    // println!("Execution time sequential: {:?}", duration1);
+    // println!("Execution time parallel: {:?}", duration2);
+    // println!("Execution time graph pevm: {:?}", duration3);
+
+    println!("{:?}", duration1);
+    println!("{:?}", duration2);
+    println!("{:?}", duration3);
+    
+    // println!("result: {:#?}", result);
 
     // let output_file = std::fs::File::create("constructed.txt").unwrap();
     // let mut writer = std::io::BufWriter::new(output_file);

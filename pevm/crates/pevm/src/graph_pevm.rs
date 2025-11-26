@@ -138,7 +138,7 @@ impl GraphPevm {
                 scope.spawn(|| {
                     let mut task = scheduler.next_task();
                     while task.is_some() {
-                        println!("GraphPevm: Working on task {:#?} by thread {:?}", task, thread::current().id());
+                        // println!("GraphPevm: Working on task {:#?} by thread {:?}", task, thread::current().id());
                         task = match task.unwrap() {
                             Task::Execution(tx_version) => {
                                 self.try_execute(&vm, &scheduler, tx_version)
@@ -166,7 +166,7 @@ impl GraphPevm {
             }
         });
 
-        println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
+        // println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
 
         if let Some(abort_reason) = self.abort_reason.take() {
             match abort_reason {

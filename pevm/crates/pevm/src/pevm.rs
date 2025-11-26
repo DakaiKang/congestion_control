@@ -532,14 +532,14 @@ fn extract_access_sets_from_result<DB: Database>(
     let mut balance_updated_accounts = HashSet::new();
     
     // Also check result_and_state for write information
-    println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
+    // println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
     for (address, account) in &result_and_state.state {
         if account.storage.len() == 0 {
             balance_updated_accounts.insert(*address);
             continue;
         }
         
-        println!("  Result account {:?}: {} storage slots", address, account.storage.len());
+        // println!("  Result account {:?}: {} storage slots", address, account.storage.len());
         
         for (slot, _) in &account.storage {
             read_writes
@@ -562,12 +562,12 @@ fn extract_access_sets_from_result<DB: Database>(
         if let &Address::ZERO = address {
             continue;
         }
-        println!("add basic: {} of address {}", hash_deterministic(MemoryLocation::Basic(*address)), address);
+        // println!("add basic: {} of address {}", hash_deterministic(MemoryLocation::Basic(*address)), address);
         write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
     }
 
     // println!("read_set: {:#?}", read_set);
-    println!("write_set: {:#?}", write_set);
+    // println!("write_set: {:#?}", write_set);
 
     write_set
 }
