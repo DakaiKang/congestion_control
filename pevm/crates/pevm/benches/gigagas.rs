@@ -307,6 +307,15 @@ pub fn solana_samples(block_size: usize, workload_type: u64) -> (InMemoryStorage
     }
 }
 
+pub fn solana_samples_vector(block_size: usize, batch_num: usize, workload_type: u64) 
+    -> (InMemoryStorage, Vec<Vec<TxEnv>>) {
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+    let (state, bytecodes, all_batches) = chiron::generate_loop_exchange_batches(block_size, batch_num);
+    final_state.extend(state);
+    return (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), all_batches)
+}
+
+
 pub fn solana_sample_txns_two_batch(block_size: usize) -> (InMemoryStorage, Vec<TxEnv>, Vec<u64>, Vec<TxEnv>, Vec<u64>) {
     let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
     let (state, bytecodes, txs, costs, txs2, costs2) = chiron::generate_loop_exchange_with_cost_two_batch(block_size);

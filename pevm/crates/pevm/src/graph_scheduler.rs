@@ -277,7 +277,7 @@ impl GraphScheduler {
     pub fn add_parent(&self, parent_tx_idx: TxIdx) {
         let mut temp_parents = self.temp_parents.lock().unwrap();
         for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
-            println!("Adding parent {} to child {}", parent_tx_idx, child_idx);
+            // println!("Adding parent {} to child {}", parent_tx_idx, child_idx);
             if let Some(parents) = temp_parents.get_mut(*child_idx) {
                 parents.insert(parent_tx_idx);
             }

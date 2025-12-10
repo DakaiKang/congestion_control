@@ -448,15 +448,21 @@ impl TransactionGraph {
             self.nodes.push(node.clone());
         }
         
-        // Step 3: Update children indices for G2 nodes (remap to new indices)
+        // Step 3: Update children and parent indices for G2 nodes (remap to new indices)
         for (old_idx, &new_idx) in &old_to_new_index {
             let old_children = other.nodes[*old_idx].children_indices.clone();
+            let old_parents = other.nodes[*old_idx].parent_indices.clone();
             let new_children: Vec<usize> = old_children
                 .iter()
                 .map(|&old_child_idx| old_to_new_index[&old_child_idx])
                 .collect();
+            let new_paraents: HashSet<usize> = old_parents
+                .iter()
+                .map(|&old_parent_idx| old_to_new_index[&old_parent_idx])
+                .collect();
             
             self.nodes[new_idx].children_indices = new_children;
+            self.nodes[new_idx].parent_indices = new_paraents;
         }
         
         // Step 4: For each address, connect G1's tail to G2's head
@@ -469,10 +475,10 @@ impl TransactionGraph {
 
                     if let Ok(false) = self.has_edge(&tail_tx_id, &head_tx_id) {
                         // Add edge from G1's tail to G2's head
-                        println!(
-                            "Connecting address {:?}: G1 tail ({}, {}) -> G2 head ({}, {})",
-                            addr, tail_tx_id.id, tail_tx_id.replica, head_tx_id.id, head_tx_id.replica
-                        );
+                        // println!(
+                        //     "Connecting address {:?}: G1 tail ({}, {}) -> G2 head ({}, {})",
+                        //     addr, tail_tx_id.id, tail_tx_id.replica, head_tx_id.id, head_tx_id.replica
+                        // );
                     
                         self.add_edge(tail_tx_id.clone(), head_tx_id.clone())?;
                         edges_added += 1;

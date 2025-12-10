@@ -19,6 +19,7 @@ use revm::{
 };
 
 use crate::{
+    api::update_storage_with_results,
     chain::PevmChain,
     compat::get_block_env,
     hash_deterministic,
@@ -47,8 +48,9 @@ impl GraphPevm {
         storage: &S,
         spec_id: SpecId,
         block_env: BlockEnv,
-        txs: Vec<TxEnv>
-    ) -> Result<TransactionGraph, PevmError<C>> {
+        txs: Vec<TxEnv>,
+        replica: u64,
+    ) -> Result<(TransactionGraph, Vec<PevmTxExecutionResult>), PevmError<C>> {
         // Execute the txs in sequential to fetch the read/write set
         let (result, access_set) = execute_revm_sequential_with_access_sets(
             chain,
@@ -60,11 +62,11 @@ impl GraphPevm {
 
         let mut graph = TransactionGraph::new();
         for i in 0..result.len() {
-            let txn_node = TransactionNode::new(i as u64, 1, 1, result[i].receipt.cumulative_gas_used, HashSet::new(), access_set[i].clone());
+            let txn_node = TransactionNode::new(i as u64, replica, 1, result[i].receipt.cumulative_gas_used, HashSet::new(), access_set[i].clone());
             graph.add_transaction(txn_node);
         }
 
-        Ok(graph)
+        Ok((graph, result))
     }
 
     // Reorder the transactions based on the simluation results of the depedency graph
