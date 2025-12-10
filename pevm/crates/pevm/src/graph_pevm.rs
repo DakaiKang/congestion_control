@@ -96,6 +96,8 @@ impl GraphPevm {
         }
 
         new_graph.simulate_parallel_execution(concurrency_level);
+
+        // println!("new_graph: {:#?}", new_graph.nodes);
         (reordered_txs, new_graph)
     }
 
@@ -138,14 +140,16 @@ impl GraphPevm {
         thread::scope(|scope| {
             for _ in 0..concurrency_level.into() {
                 scope.spawn(|| {
+                    println!("Spawned thread {:?}", thread::current().id());
                     let mut task = scheduler.next_task();
                     while task.is_some() {
-                        // println!("GraphPevm: Working on task {:#?} by thread {:?}", task, thread::current().id());
                         task = match task.unwrap() {
                             Task::Execution(tx_version) => {
+                                // println!("GraphPevm: Working on execution task of {:#?} by thread {:?}", tx_version, thread::current().id());
                                 self.try_execute(&vm, &scheduler, tx_version)
                             }
                             Task::Validation(tx_version) => {
+                                // println!("GraphPevm: Working on validation task of {:#?} by thread {:?}", tx_version.tx_idx, thread::current().id());
                                 try_validate(&mv_memory, &scheduler, &tx_version)
                             }
                         };
@@ -164,11 +168,12 @@ impl GraphPevm {
                             task = scheduler.next_task();
                         }
                     }
+                    println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
                 });
             }
         });
 
-        // println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
+        
 
         if let Some(abort_reason) = self.abort_reason.take() {
             match abort_reason {
@@ -368,9 +373,6 @@ impl GraphPevm {
         }
     }
 
-    
-
-
 }
 
 fn try_validate(
@@ -378,6 +380,7 @@ fn try_validate(
     scheduler: &GraphScheduler,
     tx_version: &TxVersion,
 ) -> Option<Task> {
+    // println!("start validation for tx {}", tx_version.tx_idx);
     let read_set_valid = mv_memory.validate_read_locations(tx_version.tx_idx);
     let aborted = !read_set_valid && scheduler.try_validation_abort(tx_version);
     if aborted {

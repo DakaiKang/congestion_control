@@ -2,8 +2,9 @@ use std::{
     cmp::min,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
+        Mutex, Condvar,
     },
+    time::Duration,
     thread,
 };
 
@@ -68,6 +69,8 @@ pub struct GraphScheduler {
     dependency_graph: TransactionGraph,
     // The set of transactions without unexecuted parent transactions
     executable_txs: Mutex<BinaryHeap<Reverse<TxIdx>>>,
+    // Condition variable for tasks - notifies when new tasks are available
+    task_available: Condvar,
     // Temporary set of unexecuted transactions while scheduling transactions
     temp_parents: Mutex<Vec<HashSet<usize>>>,
 }
@@ -76,9 +79,15 @@ pub struct GraphScheduler {
 // Like returning errors instead of panicking on [unreachable]s.
 impl GraphScheduler {
     pub fn new(block_size: usize, dependency_graph: TransactionGraph) -> Self {
+
+        // for i in 0..dependency_graph.nodes.len() {
+        //     println!("Node {} {} {}: {:?} {:?}", i, dependency_graph.nodes[i].id, dependency_graph.nodes[i].replica, dependency_graph.nodes[i].children_indices, dependency_graph.nodes[i].parent_indices);
+        // }
+
         let e_txs: Vec<_> = dependency_graph.nodes.iter()
             .enumerate()
             .filter_map(|(tx_idx, node)| {
+                // println!("tx_idx {}", tx_idx);
                 if node.parent_indices.len() == 0 {
                     Some(tx_idx)
                 } else {
@@ -87,6 +96,8 @@ impl GraphScheduler {
             })
             .collect();
         
+        println!("Initial executable transactions: {:?}", e_txs);
+
         let heap = e_txs.into_iter().map(Reverse).collect();
 
         let parents = dependency_graph.nodes.iter()
@@ -109,17 +120,19 @@ impl GraphScheduler {
             transactions_dependents: (0..block_size).map(|_| Mutex::default()).collect(),
             // We won't validate until we find the first non-lazy transaction that
             // needs to read explicit values. We also skip the first transaction.
-            validation_idx: AtomicUsize::new(block_size),
+            validation_idx: AtomicUsize::new(block_size + 1),
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
             dependency_graph,
             executable_txs: Mutex::new(heap),
+            task_available: Condvar::new(),
             temp_parents: Mutex::new(parents),
         }
     }
 
     pub(crate) fn abort(&self) {
+        println!("ABORTING SCHEDULER");
         self.aborted.store(true, Ordering::Relaxed);
     }
 
@@ -150,6 +163,8 @@ impl GraphScheduler {
     fn add_executable(&self, tx_idx: TxIdx) {
         let mut heap = self.executable_txs.lock().unwrap();
         heap.push(Reverse(tx_idx));
+        self.task_available.notify_one();
+        // println!("Current executable tx count {}", heap.len());
     }
 
     fn peek_top(&self) -> Option<TxIdx> {
@@ -173,15 +188,18 @@ impl GraphScheduler {
             };
             
             // Check if all tasks are done
-            if !has_executable && validation_idx >= self.block_size {
-                if self.num_validated.load(Ordering::Relaxed)
-                    >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed)
-                {
-                    break;
-                }
-                thread::yield_now();
-                continue;
+            let all_done = !has_executable 
+                && validation_idx == self.block_size
+                && self.num_validated.load(Ordering::Relaxed)
+                    >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed);
+            
+            if all_done {
+                // All tasks are done, notify all waiting threads to exit
+                self.task_available.notify_all();
+                println!("ALL DONE");
+                return None;
             }
+
             
             // Get the exec_idx
             let exec_idx = execution_idx.unwrap_or(self.block_size);
@@ -216,14 +234,33 @@ impl GraphScheduler {
                 }
             }
     
-            // Prioritize execution task - pop from heap
-            let next_tx_idx = self.executable_txs.lock().unwrap().pop().map(|Reverse(idx)| idx);
+            // Try to get the next executable transaction
+            let next_tx_idx = {
+                let mut heap = self.executable_txs.lock().unwrap();
+                heap.pop().map(|Reverse(idx)| idx)
+            };
             
             if let Some(tx_idx) = next_tx_idx {
                 if let Some(tx_version) = self.try_execute(tx_idx) {
                     return Some(Task::Execution(tx_version));
                 }
             }
+
+            let mut heap = self.executable_txs.lock().unwrap();
+            let execution_idx = heap.peek().map(|Reverse(idx)| *idx);
+            let exec_idx = execution_idx.unwrap_or(self.block_size);
+            
+            // Check if we need to wait for new tasks
+            if heap.is_empty() 
+                && self.validation_idx.load(Ordering::Relaxed) >= exec_idx
+            {
+                let timeout = Duration::from_millis(10);
+                let (new_heap, _result) = self.task_available.wait_timeout(heap, timeout).unwrap();
+                heap = new_heap;
+            }
+                        
+            drop(heap);  
+
         }
         None
     }
@@ -293,6 +330,8 @@ impl GraphScheduler {
         debug_assert_eq!(tx.status, IncarnationStatus::Executing);
         debug_assert_eq!(tx.incarnation, tx_version.tx_incarnation);
 
+        // println!("Finish Execution for tx {}", tx_version.tx_idx);
+
         // Release the transactions who are dependent on the just finished one in the dependency graph
         self.remove_parent(tx_version.tx_idx);
 
@@ -316,6 +355,7 @@ impl GraphScheduler {
         } else {
             self.min_validation_idx.load(Ordering::Relaxed)
         };
+
         // Have found a min validation index to even bother
         if min_validation_idx < self.block_size {
             // Must re-validate from min as this transaction is lower
@@ -341,6 +381,9 @@ impl GraphScheduler {
             }
             // Don't need to validate anything if the current validation index is
             // lower or equal -- it will catch up later.
+
+            // Notify the task_available condition variable in case threads are waiting
+            self.task_available.notify_one();
         }
 
         if flags.contains(FinishExecFlags::NeedValidation) {
@@ -377,6 +420,7 @@ impl GraphScheduler {
     // for the aborted transaction.
     pub(crate) fn finish_validation(&self, tx_version: &TxVersion, aborted: bool) -> Option<Task> {
         if aborted {
+            println!("Validation abort for tx {}", tx_version.tx_idx);
             self.set_ready_status(tx_version.tx_idx);
             self.validation_idx
                 .fetch_min(tx_version.tx_idx + 1, Ordering::Relaxed);
@@ -385,6 +429,7 @@ impl GraphScheduler {
                 self.add_executable(tx_version.tx_idx);
             }
         } else {
+            // println!("Validation success for tx {}", tx_version.tx_idx);
             let mut tx = index_mutex!(self.transactions_status, tx_version.tx_idx);
             if tx.status == IncarnationStatus::Executed {
                 tx.status = IncarnationStatus::Validated;

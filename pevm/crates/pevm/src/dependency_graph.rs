@@ -26,10 +26,10 @@ pub struct TransactionNode {
     pub replica: u64,
     pub round: u64,
     pub execution_time: u64,
-    pub children_indices: Vec<usize>,
     pub read_set: HashSet<u64>,
     pub write_set: HashSet<u64>,
     pub longest_suffix: u64,
+    pub children_indices: Vec<usize>,
     pub parent_indices: HashSet<usize>,
 }
 
@@ -106,7 +106,6 @@ pub struct TransactionGraph {
     pub tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
     pub txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
     pub simulation_result: Option<SimulationResult>,
-
     pub temp_parents: Vec<HashSet<usize>>, // Temporary storage for parent transactions during simulation
 }
 
@@ -329,6 +328,12 @@ impl TransactionGraph {
             for thread in &mut threads {
                 if thread.is_idle() {
                     if let Some(tx_id) = self.pop_txn_without_parent() {
+                        let keys = {
+                            let node = self.get_node(&tx_id).unwrap();
+                            let mut key_set: std::collections::HashSet<u64> = HashSet::new();
+                            key_set.extend(&node.write_set);
+                            key_set
+                        };
                         let execution_time = self.get_node(&tx_id)
                             .map(|node| node.execution_time)
                             .unwrap_or(0);
@@ -336,14 +341,15 @@ impl TransactionGraph {
                         let expected_completion_time = current_time + execution_time;
                         
                         // println!(
-                        //     "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}]",
+                        //     "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}] keys: {:?}",
                         //     current_time,
                         //     thread.thread_id,
                         //     self.id_to_index[&tx_id],
                         //     tx_id.id,
                         //     tx_id.replica,
                         //     execution_time,
-                        //     expected_completion_time
+                        //     expected_completion_time,
+                        //     keys
                         // );
                         
                         thread.assign_transaction(tx_id.clone(), current_time, execution_time);
@@ -397,6 +403,7 @@ impl TransactionGraph {
         }
         
         self.simulation_result = Some(SimulationResult::new(current_time, threads, execution_order));
+        // println!("simulation_result: {:#?}", self.simulation_result.clone().unwrap().thread_results);
     }
     
     /// Remove a transaction and add its newly-freed children to the heap
@@ -456,15 +463,15 @@ impl TransactionGraph {
                 .iter()
                 .map(|&old_child_idx| old_to_new_index[&old_child_idx])
                 .collect();
-            let new_paraents: HashSet<usize> = old_parents
+            let new_parents: HashSet<usize> = old_parents
                 .iter()
                 .map(|&old_parent_idx| old_to_new_index[&old_parent_idx])
                 .collect();
             
             self.nodes[new_idx].children_indices = new_children;
-            self.nodes[new_idx].parent_indices = new_paraents;
+            self.nodes[new_idx].parent_indices = new_parents;
         }
-        
+
         // Step 4: For each address, connect G1's tail to G2's head
         for addr in &all_addresses {
             let g1_tail = self.tail_txns.get(addr).cloned();
@@ -479,7 +486,7 @@ impl TransactionGraph {
                         //     "Connecting address {:?}: G1 tail ({}, {}) -> G2 head ({}, {})",
                         //     addr, tail_tx_id.id, tail_tx_id.replica, head_tx_id.id, head_tx_id.replica
                         // );
-                    
+
                         self.add_edge(tail_tx_id.clone(), head_tx_id.clone())?;
                         edges_added += 1;
                     }
@@ -504,7 +511,7 @@ impl TransactionGraph {
                 }
             }
         }
-        
+        println!("edges_added :{}", edges_added);
         Ok(edges_added)
     }
 

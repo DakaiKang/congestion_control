@@ -179,9 +179,9 @@ pub fn generate_loop_exchange(num_tx: usize) -> (HashMap<Address, EvmAccount>, B
         for _ in 0..write_len_sample {
             writes.push(res_distribution.sample(&mut rng)) ;
         }
-        println!("cost_smaple: {:?}", cost_sample);
-        println!("write_len_sample: {:?}", write_len_sample);
-        println!("writes {:?}", &writes);
+        // println!("cost_smaple: {:?}", cost_sample);
+        // println!("write_len_sample: {:?}", write_len_sample);
+        // println!("writes {:?}", &writes);
 
         let cost = U256::from(cost_sample.round() as u64);
         let calldata = Chiron::loop_exchange(cost, &writes);
@@ -258,14 +258,17 @@ pub fn generate_loop_exchange_batches(
     // Maintain the nonce of each account across all batches
     let mut sender_map = HashMap::new();
     let res_distribution: WeightedIndex<f64> = WeightedIndex::new(&RES_DISTR).unwrap();
-    let sender_num = 4;
+    // let sender_num = 4;
     // Generate batch_num batches
     for batch_idx in 0..batch_num {
         let mut txs = Vec::new();
 
         for x in 0..num_tx {
             // For each transaction, randomly select one account as the sender
-            let person = accounts[rng.gen_range(0..accounts.len())];
+            // let person = accounts[rng.gen_range(0..accounts.len())];
+            let range_length = accounts.len() / batch_num;
+            let person_id = batch_idx * range_length + (x % range_length);
+            let person = accounts[person_id];
             let nonce = sender_map.get(&person).unwrap_or(&0);
 
             let cost_sample = COST_DISTR[rand::thread_rng().gen_range(0..COST_DISTR.len())];
@@ -275,10 +278,12 @@ pub fn generate_loop_exchange_batches(
             // for _ in 0..write_len_sample {
             //     writes.push(res_distribution.sample(&mut rng));
             // }
-            for _ in 0..write_len_sample-1 {
-                writes.push(res_distribution.sample(&mut rng)) ;
-            }
-            writes.push(1000 * (x/sender_num) + batch_idx);
+            // let write_len_sample = 1 as usize;
+            // for _ in 0..write_len_sample-1 {
+            //     writes.push(res_distribution.sample(&mut rng)) ;
+            // }
+            writes.push(person_id % 2 + 100 * batch_idx);
+            println!("writes: {:?}", writes);
             // println!("cost_sample: {:?}", cost_sample);
             // println!("write_len_sample: {:?}", write_len_sample);
             // println!("writes {:?}", &writes);
@@ -359,10 +364,10 @@ pub fn generate_loop_exchange_with_cost(num_tx: usize) -> (HashMap<Address, EvmA
         for _ in 0..write_len_sample {
             writes.push(res_distribution.sample(&mut rng)) ;
         }
-        println!("cost_smaple: {:?}", cost_sample);
-        println!("write_len_sample: {:?}", write_len_sample);
-        println!("person: {}", person);
-        println!("writes {:?}", &writes);
+        // println!("cost_smaple: {:?}", cost_sample);
+        // println!("write_len_sample: {:?}", write_len_sample);
+        // println!("person: {}", person);
+        // println!("writes {:?}", &writes);
 
 
         let cost = U256::from(cost_sample.round() as u64);
@@ -371,7 +376,7 @@ pub fn generate_loop_exchange_with_cost(num_tx: usize) -> (HashMap<Address, EvmA
 
         let mut write_keys:Vec<AccessListItem> = Vec::new();
 
-        println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
+        // println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
 
         txs.push(TxEnv {
             caller: person,
@@ -439,10 +444,10 @@ pub fn generate_single_sender_loop_exchange(num_tx: usize) -> (HashMap<Address, 
         for _ in 0..write_len_sample {
             writes.push(res_distribution.sample(&mut rng)) ;
         }
-        println!("cost_smaple: {:?}", cost_sample);
-        println!("write_len_sample: {:?}", write_len_sample);
-        println!("person: {}", person);
-        println!("writes {:?}", &writes);
+        // println!("cost_smaple: {:?}", cost_sample);
+        // println!("write_len_sample: {:?}", write_len_sample);
+        // println!("person: {}", person);
+        // println!("writes {:?}", &writes);
 
 
         let cost = U256::from(cost_sample.round() as u64);
@@ -451,7 +456,7 @@ pub fn generate_single_sender_loop_exchange(num_tx: usize) -> (HashMap<Address, 
 
         let mut write_keys:Vec<AccessListItem> = Vec::new();
 
-        println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
+        // println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
 
         txs.push(TxEnv {
             caller: person,
@@ -520,10 +525,10 @@ pub fn generate_dense_multiple_sender_loop_exchange(num_tx: usize, sender_num: u
             writes.push(res_distribution.sample(&mut rng)) ;
         }
         writes.push(1000 * (x/sender_num));
-        println!("cost_smaple: {:?}", cost_sample);
-        println!("write_len_sample: {:?}", write_len_sample);
-        println!("person: {}", person);
-        println!("writes {:?}", &writes);
+        // println!("cost_smaple: {:?}", cost_sample);
+        // println!("write_len_sample: {:?}", write_len_sample);
+        // println!("person: {}", person);
+        // println!("writes {:?}", &writes);
 
         let cost = U256::from(cost_sample.round() as u64);
         costs.push(cost_sample.round() as u64);
@@ -531,7 +536,7 @@ pub fn generate_dense_multiple_sender_loop_exchange(num_tx: usize, sender_num: u
 
         let mut write_keys:Vec<AccessListItem> = Vec::new();
 
-        println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
+        // println!("gas limit is {:#?}", GAS_LIMIT * cost_sample as u64);
 
         txs.push(TxEnv {
             caller: person,

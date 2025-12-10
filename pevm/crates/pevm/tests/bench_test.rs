@@ -368,26 +368,34 @@ pub fn graph_pevm_test() {
     let duration3 = start.elapsed();
 
     ////////////////////////////
+    let mut ro_txns = Vec::new();
+
     let (reordered_txns, mut new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs_clone2, &mut graph1, 8);
     let (reordered_txns2, mut new_graph2) = GraphPevm::reorder_txs_by_dependency_graph(txs2_clone2, &mut graph2, 8);
 
+    ro_txns.extend(reordered_txns.clone());
+    ro_txns.extend(reordered_txns2.clone());
+
     new_graph.integrate_graph(new_graph2);
 
-    new_graph.simulate_parallel_execution(8);
+    // new_graph.simulate_parallel_execution(8);
 
-    let mut simulated = new_graph.simulation_result.clone().unwrap();
+    // let mut simulated = new_graph.simulation_result.clone().unwrap();
 
-    let mut ro_txns = Vec::new();
-    for i in 0..simulated.execution_order.len() {
-        let tx_id = simulated.execution_order[i].1.id; 
-        let replica = simulated.execution_order[i].1.replica; 
-        if replica == 1 {
-            ro_txns.push(reordered_txns[tx_id as usize].clone());
-        } else {
-            ro_txns.push(reordered_txns2[tx_id as usize].clone());
-        }
-    }
+    // let mut ro_txns = Vec::new();
+    // for i in 0..simulated.execution_order.len() {
+    //     let tx_id = simulated.execution_order[i].1.id; 
+    //     let replica = simulated.execution_order[i].1.replica; 
+    //     if replica == 1 {
+    //         ro_txns.push(reordered_txns[tx_id as usize].clone());
+    //     } else {
+    //         ro_txns.push(reordered_txns2[tx_id as usize].clone());
+    //     }
+    // }
     
+    let (ro_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(ro_txns, &mut new_graph, 8);
+
+
     let start = Instant::now();
     let mut pevm = GraphPevm::default();
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
@@ -399,36 +407,25 @@ pub fn graph_pevm_test() {
     let result = pevm.execute_revm_parallel(&chain, &storage_cloned2, spec_id, block_env, ro_txns, concurrency_level, new_graph).unwrap();
     let duration4 = start.elapsed();
 
-    ////////////////////////////
-    let mut pevm = Pevm::default();
-    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+    // ////////////////////////////
+    // let mut pevm = Pevm::default();
+    // let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
 
-    let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::LATEST;
-    let block_env = BlockEnv::default();
+    // let chain = PevmEthereum::mainnet();
+    // let spec_id = SpecId::LATEST;
+    // let block_env = BlockEnv::default();
 
-    let start = Instant::now();
-    let result = pevm.execute_revm_parallel(&chain, &storage_cloned3, spec_id, block_env.clone(), txs_clone3, concurrency_level).unwrap();
-    let result = pevm.execute_revm_parallel(&chain, &storage_cloned3, spec_id, block_env, txs2_clone3, concurrency_level).unwrap();
-    let duration2 = start.elapsed();
+    // let start = Instant::now();
+    // let result = pevm.execute_revm_parallel(&chain, &storage_cloned3, spec_id, block_env.clone(), txs_clone3, concurrency_level).unwrap();
+    // let result = pevm.execute_revm_parallel(&chain, &storage_cloned3, spec_id, block_env, txs2_clone3, concurrency_level).unwrap();
+    // let duration2 = start.elapsed();
 
-    // println!("Execution time sequential: {:?}", duration1);
-    // println!("Execution time parallel: {:?}", duration2);
-    // println!("Execution time graph pevm: {:?}", duration3);
-
-    println!("{:?}", duration1);
-    println!("{:?}", duration2);
-    println!("{:?}", duration3);
-    println!("{:?}", duration4);
+    // println!("{:?}", duration1);
+    // println!("{:?}", duration2);
+    // println!("{:?}", duration3);
+    // println!("{:?}", duration4);
     
     // println!("result: {:#?}", result);
-
-    // let output_file = std::fs::File::create("constructed.txt").unwrap();
-    // let mut writer = std::io::BufWriter::new(output_file);
-    // let execution_str = format!("{graph:#?}");
-    // // output the results to a file
-    // writer.write_all(execution_str.as_bytes()).unwrap();
-    // writer.flush().unwrap();
 
     ()
 }
@@ -477,8 +474,8 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
 #[test]
 
 pub fn long_test() {
-    let txn_num = 10;
-    let batch_num = 4;
+    let txn_num = 100;
+    let batch_num = 8;
     let (mut storage, all_batches) = gigagas::solana_samples_vector(txn_num, batch_num, 2);
 
     let mut storage_history = Vec::new();
@@ -503,61 +500,58 @@ pub fn long_test() {
 
         let (reordered_txns, mut new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs, &mut graph, 8);
         reordered_txns_list.push(reordered_txns);
+        // for i in 0..new_graph.nodes.len() {
+        //     println!("Node {} {} {}: {:?}", i, new_graph.nodes[i].id, new_graph.nodes[i].replica, new_graph.nodes[i].children_indices);
+        // }
         new_graphs.push(new_graph);
     }
 
-    // Integrate graphs every 4 graphs
-    for i in 0..batch_num/4 {
-        let mut id_to_txn = std::collections::HashMap::new();
+    let batch_size = 4;
 
-        for j in 0..4 {
-            if i * 4 + j < batch_num {
-                let graph = &new_graphs[i * 4 + j];
-                // println!("nodes: {:#?}", graph.nodes);
-                let mut x = 0;
-                for txn_node in &graph.nodes {
-                    // println!("Mapping txn id: {}, replica: {} to txn", txn_node.id, i*4+j);
-                    id_to_txn.insert((txn_node.id, i*4+j), reordered_txns_list[i*4+j][x].clone());
-                    x += 1;
-                }
+    // Integrate graphs every 'batch_size' graphs
+    for i in 0..batch_num/batch_size {
+        // let mut id_to_txn = std::collections::HashMap::new();
+        let mut reordered_txns = Vec::new();
+
+        for j in 0..batch_size {
+            if i * batch_size + j < batch_num {
+                reordered_txns.extend(reordered_txns_list[i*batch_size + j].clone());
             }
         }
 
-        let mut integrated_graph = new_graphs[i * 4].clone();
-        for j in 1..4 {
-            if i * 4 + j < batch_num {
-                integrated_graph.integrate_graph(new_graphs[i * 4 + j].clone());
+        let mut integrated_graph = new_graphs[i * batch_size].clone();
+        for j in 1..batch_size {
+            if i * batch_size + j < batch_num {
+                integrated_graph.integrate_graph(new_graphs[i * batch_size + j].clone());
             }
         }
         println!("nodes count in integrated graph: {}", integrated_graph.nodes.len());
-        // println!("node: {:#?}", integrated_graph.nodes);
-        integrated_graph.simulate_parallel_execution(8);
-        let simulated = integrated_graph.simulation_result.clone().unwrap();
-        let mut reordered_txns = Vec::new();
-        println!("The length of execution order: {}", simulated.execution_order.len());
-        for k in 0..simulated.execution_order.len() {
-            // println!("Reordering txn id: {}, replica: {}", simulated.execution_order[k].1.id, simulated.execution_order[k].1.replica);
-            reordered_txns.push(id_to_txn.get(&(simulated.execution_order[k].1.id, simulated.execution_order[k].1.replica as usize)).unwrap().clone());
-        }
-        integrate_graphs.push(integrated_graph);
-        integrate_txns.push(reordered_txns);
-        integrate_storages.push(storage_history[i*4].clone());
+
+        let (reordered_txns, integrated_graph) = GraphPevm::reorder_txs_by_dependency_graph(
+            reordered_txns,
+            &mut integrated_graph,
+            8,
+        );
+
+        integrate_graphs.push(integrated_graph.clone());
+        integrate_txns.push(reordered_txns.clone());
+        integrate_storages.push(storage_history[i*batch_size].clone());
+        
     }
 
-    let repeat = 3;
+    let repeat = 1;
 
-    let start = Instant::now();
-    for _ in 0..repeat{
-        running_in_sequentially(storage_history.clone(), all_batches.clone());
-    }
-    let duration = start.elapsed();
-    println!("Sequential execution time: {:?}", duration);
+    // let start = Instant::now();
+    // for _ in 0..repeat{
+    //     running_in_sequentially(storage_history.clone(), all_batches.clone());
+    // }
+    // let duration = start.elapsed();
 
-    let start = Instant::now();
-    for _ in 0..repeat{
-        running_in_parallel(storage_history.clone(), all_batches.clone());
-    }
-    let duration1 = start.elapsed();
+    // let start = Instant::now();
+    // for _ in 0..repeat{
+    //     running_in_parallel(storage_history.clone(), all_batches.clone());
+    // }
+    // let duration1 = start.elapsed();
 
     let start = Instant::now();
     for _ in 0..repeat{
@@ -568,10 +562,10 @@ pub fn long_test() {
         );
     }
     let duration2 = start.elapsed();
-    println!("Parallel execution time: {:?}", duration1);
-    println!("Depedency Graph execution time: {:?}", duration2);
+    
 
     let start = Instant::now();
+    println!("integrate_storages: {}", integrate_storages.len());
     for _ in 0..repeat{
         running_in_dependency_graph(
             integrate_storages.clone(),
@@ -581,6 +575,9 @@ pub fn long_test() {
     }
     let duration3 = start.elapsed();
     
+    // println!("Sequential execution time: {:?}", duration);
+    // println!("Parallel execution time: {:?}", duration1);
+    println!("Depedency Graph execution time: {:?}", duration2);
     println!("Integrated Depedency Graph execution time: {:?}", duration3);
 
 }
@@ -644,6 +641,7 @@ fn running_in_dependency_graph(
         let block_env = BlockEnv::default();
 
         let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+        println!("concurrency_level: {:?}", concurrency_level);
         let mut pevm = GraphPevm::default();
         let start = Instant::now();
         let result = pevm.execute_revm_parallel(
@@ -656,6 +654,6 @@ fn running_in_dependency_graph(
             new_graphs[i].clone(),
         ).unwrap();
         let duration = start.elapsed();
-        // println!("Dependency graph batch {} done in {:?}", i, duration);
+        println!("Dependency graph batch {} done in {:?}", i, duration);
     }
 }
