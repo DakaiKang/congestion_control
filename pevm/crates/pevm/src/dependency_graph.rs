@@ -562,62 +562,75 @@ pub struct SimulationResult {
     pub execution_order: Vec<(usize, TransactionId, u64, u64)>, // (thread_id, tx_id, start_time, end_time)
     pub standard_deviation: f64,
     pub coefficient_of_variation: f64,
+    pub sum_completion_times: u64,
 }
 
 impl SimulationResult {
-    pub fn new(total_time: u64, thread_results: Vec<ThreadState>, execution_order: Vec<(usize, TransactionId, u64, u64)>) -> Self {
+    pub fn new(
+        total_time: u64, 
+        thread_results: Vec<ThreadState>, 
+        execution_order: Vec<(usize, TransactionId, u64, u64)>
+    ) -> Self {
+        // Calculate sum of all thread completion times
+        let sum_completion_times: u64 = thread_results.iter()
+            .map(|thread| thread.completion_time)
+            .sum();
+
+        // Calculate standard deviation and coefficient of variation
+        let (standard_deviation, coefficient_of_variation) = 
+            Self::calculate_std_dev_and_cv(&thread_results, sum_completion_times);
+        
         Self {
             total_time,
             thread_results,
             execution_order,
-            standard_deviation: 0.0,
-            coefficient_of_variation: 0.0,
+            standard_deviation,
+            coefficient_of_variation,
+            sum_completion_times,
         }
     }
 
-    /// Calculates the standard deviation of the end time (completion time) of all threads
-    pub fn calculate_thread_end_time_std_dev_and_coef_dev(& mut self) -> Result<(f64, f64), String> {
-        if self.thread_results.is_empty() {
-            return Ok((0.0, 0.0));
+    /// Internal helper to calculate std dev and CV from thread results
+    fn calculate_std_dev_and_cv(
+        thread_results: &[ThreadState],
+        sum_completion_times: u64
+    ) -> (f64, f64) {
+        if thread_results.is_empty() {
+            return (0.0, 0.0);
         }
         
-        // Collect end times for each thread
-        let end_times: Vec<u64> = self.thread_results
-            .iter()
-            .map(|thread| self.get_thread_end_time(thread))
-            .collect();
-        
-        // Calculate mean
-        let sum: u64 = end_times.iter().sum();
-        let mean = sum as f64 / end_times.len() as f64;
+        let mean = sum_completion_times as f64 / thread_results.len() as f64;
         
         // Calculate variance
-        let variance: f64 = end_times
+        let variance: f64 = thread_results
             .iter()
-            .map(|&end_time| {
-                let diff = end_time as f64 - mean;
+            .map(|thread| {
+                let diff = thread.completion_time as f64 - mean;
                 diff * diff
             })
-            .sum::<f64>() / end_times.len() as f64;
+            .sum::<f64>() / thread_results.len() as f64;
         
         // Standard deviation is the square root of variance
-        self.standard_deviation = variance.sqrt();
-        self.coefficient_of_variation = self.standard_deviation / mean;
+        let standard_deviation = variance.sqrt();
+        let coefficient_of_variation = if mean > 0.0 {
+            standard_deviation / mean
+        } else {
+            0.0
+        };
         
-        Ok((self.standard_deviation, self.coefficient_of_variation))
+        (standard_deviation, coefficient_of_variation)
     }
-    
-    /// Helper function to get the end time (last completion time) for a thread
-    fn get_thread_end_time(&self, thread: &ThreadState) -> u64 {
-        // Find the maximum end time from execution_order for this thread
-        self.execution_order
-            .iter()
-            .filter(|(thread_id, _, _, _)| *thread_id == thread.thread_id)
-            .map(|(_, _, _, end_time)| *end_time)
-            .max()
-            .unwrap_or(0)
+
+    /// Calculates the standard deviation of the end time (completion time) of all threads
+    /// Updates internal fields and returns the calculated values
+    pub fn calculate_thread_end_time_std_dev_and_coef_dev(&mut self) -> Result<(f64, f64), String> {
+        let (std_dev, cv) = Self::calculate_std_dev_and_cv(&self.thread_results, self.sum_completion_times);
+        self.standard_deviation = std_dev;
+        self.coefficient_of_variation = cv;
+        Ok((std_dev, cv))
     }
 }
+
 
 #[derive(Debug, Clone)]
 pub struct ThreadEndTimeStats {
@@ -717,7 +730,8 @@ impl std::fmt::Display for ThreadEndTimeStats {
         graph.simulate_parallel_execution(4);
 
         if let Some(mut result) = graph.simulation_result {
-            let (std_dev, cv)= result.calculate_thread_end_time_std_dev_and_coef_dev().unwrap();
+            let std_dev = result.standard_deviation;
+            let cv = result.coefficient_of_variation;
         println!("\n Standard Deviation is {}, cv is {}", std_dev, cv);
         
         println!("\nSimulation completed in {} time units", result.total_time);

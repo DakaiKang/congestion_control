@@ -474,7 +474,7 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
 #[test]
 
 pub fn long_test() {
-    let txn_num = 100;
+    let txn_num = 400;
     let batch_num = 8;
     let (mut storage, all_batches) = gigagas::solana_samples_vector(txn_num, batch_num, 2);
 
@@ -539,19 +539,19 @@ pub fn long_test() {
         
     }
 
-    let repeat = 1;
+    let repeat = 5;
 
-    // let start = Instant::now();
-    // for _ in 0..repeat{
-    //     running_in_sequentially(storage_history.clone(), all_batches.clone());
-    // }
-    // let duration = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..repeat{
+        running_in_sequentially(storage_history.clone(), all_batches.clone());
+    }
+    let duration = start.elapsed();
 
-    // let start = Instant::now();
-    // for _ in 0..repeat{
-    //     running_in_parallel(storage_history.clone(), all_batches.clone());
-    // }
-    // let duration1 = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..repeat{
+        running_in_parallel(storage_history.clone(), all_batches.clone());
+    }
+    let duration1 = start.elapsed();
 
     let start = Instant::now();
     for _ in 0..repeat{
@@ -575,8 +575,8 @@ pub fn long_test() {
     }
     let duration3 = start.elapsed();
     
-    // println!("Sequential execution time: {:?}", duration);
-    // println!("Parallel execution time: {:?}", duration1);
+    println!("Sequential execution time: {:?}", duration);
+    println!("Parallel execution time: {:?}", duration1);
     println!("Depedency Graph execution time: {:?}", duration2);
     println!("Integrated Depedency Graph execution time: {:?}", duration3);
 

@@ -136,7 +136,10 @@ impl GraphScheduler {
         self.aborted.store(true, Ordering::Relaxed);
     }
 
+    
     fn try_execute(&self, tx_idx: TxIdx) -> Option<TxVersion> {
+
+        // Check if the execution task has no unexecuted parents
         let temp_parents = self.temp_parents.lock().unwrap();
         if temp_parents.get(tx_idx).map_or(true, |parents| !parents.is_empty()) {
             return None;
@@ -233,7 +236,8 @@ impl GraphScheduler {
                     }
                 }
             }
-    
+            
+            // No validation task, try execution
             // Try to get the next executable transaction
             let next_tx_idx = {
                 let mut heap = self.executable_txs.lock().unwrap();

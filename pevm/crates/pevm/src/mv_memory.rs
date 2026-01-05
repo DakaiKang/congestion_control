@@ -150,21 +150,21 @@ impl MvMemory {
                             if closest_idx != &prior_version.tx_idx
                                 || &prior_version.tx_incarnation != tx_incarnation
                             {
-                                println!("Mismatched MV read at location {:?} for tx_idx {}: expected version {:?}, found version idx {} incarnation {}", location, tx_idx, prior_version, closest_idx, tx_incarnation);
+                                // println!("Mismatched MV read at location {:?} for tx_idx {}: expected version {:?}, found version idx {} incarnation {}", location, tx_idx, prior_version, closest_idx, tx_incarnation);
                                 return false;
                             }
                         }
                         // The previously read value is now cleared
                         // or marked with ESTIMATE.
                         else {
-                            println!("Cleared MV read at location {:?} for tx_idx {}: expected version {:?}", location, tx_idx, prior_version);
+                            // println!("Cleared MV read at location {:?} for tx_idx {}: expected version {:?}", location, tx_idx, prior_version);
                             return false;
                         }
                     }
                     // Read from storage but there is now something
                     // in between!
                     else if iter.next_back().is_some() {
-                        println!("Unexpected MV write at location {:?} for tx_idx {}: expected storage read, found MV write", location, tx_idx);
+                        // println!("Unexpected MV write at location {:?} for tx_idx {}: expected storage read, found MV write", location, tx_idx);
                         return false;
                     }
                 }

@@ -236,6 +236,7 @@ pub mod erc20;
 pub mod dependency_graph;
 pub mod graph_pevm;
 pub mod graph_scheduler;
+pub mod greedy_integrator;
 mod common;
 
 #[cfg(feature = "rpc-storage")]
