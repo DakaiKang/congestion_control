@@ -13,7 +13,7 @@ use serde::{Serialize, Deserialize};
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InMemoryStorage {
-    accounts: ChainState,
+    pub accounts: ChainState,
     #[serde_as(as = "Arc<_>")]
     bytecodes: Arc<Bytecodes>,
     #[serde_as(as = "Arc<_>")]
@@ -35,8 +35,10 @@ impl InMemoryStorage {
         }
     }
 
-    pub fn update_accounts(&mut self, accounts: ChainState) {
-        self.accounts = accounts;
+    pub fn update_accounts(&mut self, new_accounts: ChainState) {
+        for (address, account) in new_accounts {
+            self.accounts.insert(address, account);
+        }
     }
 
     pub fn accounts_clone(&self) -> ChainState {

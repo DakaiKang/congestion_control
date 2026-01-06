@@ -61,6 +61,8 @@ crossbeam-channel.workspace = true
 crossbeam-utils.workspace = true
 revme.workspace = true
 
+rand_distr = "0.4"
+
 # OP dependencies
 op-alloy-consensus = { workspace = true, optional = true }
 op-alloy-network = { workspace = true, optional = true }

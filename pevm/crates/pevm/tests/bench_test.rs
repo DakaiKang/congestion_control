@@ -471,6 +471,72 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
     Ok(())
 }
 
+
+#[test]
+
+pub fn different_conflict_test() {
+    let (storage, blocks_txs) = gigagas::conflict_workloads(50, 300);
+    
+    // Clone for processing
+    let mut current_storage = storage.clone();
+    let blocks_txs_copy = blocks_txs.clone();
+    
+    let mut total_duration = std::time::Duration::ZERO;
+    let mut block_times = Vec::new();
+    
+    // Execute each block and measure time
+    for (i, txs) in blocks_txs_copy.into_iter().enumerate() {
+        let start = Instant::now();
+        current_storage = execute_sequential_and_update(current_storage, txs);
+        let duration = start.elapsed();
+        
+        block_times.push(duration);
+        total_duration += duration;
+        
+        println!("Block {}: {:?}", i, duration);
+    }
+
+    
+    // let output_file = std::fs::File::create("bench_test.txt").unwrap();
+    // let mut writer = std::io::BufWriter::new(output_file);
+    // let result_str = format!("{current_storage:#?}");
+    // writer.write_all(result_str.as_bytes()).unwrap();
+    // writer.flush().unwrap();
+
+    println!("\n=== Summary ===");
+    println!("Total execution time: {:?}", total_duration);
+    println!("Average time per block: {:?}", total_duration / blocks_txs.len() as u32);
+    println!("Min time: {:?}", block_times.iter().min().unwrap());
+    println!("Max time: {:?}", block_times.iter().max().unwrap());
+}
+
+fn execute_sequential_and_update(
+    mut storage: InMemoryStorage, 
+    txs: Vec<TxEnv>
+) -> InMemoryStorage {
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+    
+    let result = pevm::execute_revm_sequential(
+        &chain,
+        &storage,
+        spec_id,
+        block_env,
+        txs.clone(),
+    ).unwrap();
+
+
+    // Verify execution success
+    println!("\n=== Execution Verification ===");
+    println!("Total transactions: {}", txs.len());
+    println!("Successful executions: {}", result.len());
+
+    
+    update_storage_with_results(&mut storage, result);
+    storage
+}
+
 #[test]
 
 pub fn long_test() {
@@ -500,9 +566,6 @@ pub fn long_test() {
 
         let (reordered_txns, mut new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs, &mut graph, 8);
         reordered_txns_list.push(reordered_txns);
-        // for i in 0..new_graph.nodes.len() {
-        //     println!("Node {} {} {}: {:?}", i, new_graph.nodes[i].id, new_graph.nodes[i].replica, new_graph.nodes[i].children_indices);
-        // }
         new_graphs.push(new_graph);
     }
 

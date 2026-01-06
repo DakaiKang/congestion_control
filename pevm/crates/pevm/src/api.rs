@@ -1150,21 +1150,53 @@ pub fn test_no_scheduling() {
 }
 
 
-pub fn update_storage_with_results(storage: &mut InMemoryStorage, results: Vec<PevmTxExecutionResult>) {
-        let mut state = storage.accounts_clone();
-        for changed_state in results.iter() {
-            for (addr, acc) in changed_state.state.iter() {
-                match acc {
-                    Some(account) => {
-                        state.insert(*addr, account.clone());
+// pub fn update_storage_with_results(storage: &mut InMemoryStorage, results: Vec<PevmTxExecutionResult>) {
+//         let mut state = storage.accounts_clone();
+//         for changed_state in results.iter() {
+//             for (addr, acc) in changed_state.state.iter() {
+//                 match acc {
+//                     Some(account) => {
+//                         state.insert(*addr, account.clone());
+//                     }
+//                     None => {
+//                         state.remove(addr);
+//                     }
+//                 }
+//             }
+//         }
+//         storage.update_accounts(state);
+// }
+
+pub fn update_storage_with_results(
+    storage: &mut InMemoryStorage,
+    results: Vec<PevmTxExecutionResult>,
+) {
+    for result in results {
+        for (address, new_account_opt) in result.state {
+            if let Some(new_account) = new_account_opt {
+                // Now new_account is EvmAccount, not Option
+                if let Some(existing) = storage.accounts.get_mut(&address) {
+                    // Merge with existing account
+                    existing.balance = new_account.balance;
+                    existing.nonce = new_account.nonce;
+                    
+                    if new_account.code.is_some() {
+                        existing.code = new_account.code.clone();
+                        existing.code_hash = new_account.code_hash;
                     }
-                    None => {
-                        state.remove(addr);
-                    }
+                    
+                    // Merge storage slots
+                    existing.storage.extend(new_account.storage);
+                } else {
+                    // Insert new account
+                    storage.accounts.insert(address, new_account);
                 }
+            } else {
+                // new_account is None, possibly means account was deleted
+                storage.accounts.remove(&address);
             }
         }
-        storage.update_accounts(state);
+    }
 }
 
 pub fn get_delta_state(results: &Vec<PevmTxExecutionResult>) -> HashMap<AlloyAddress, EvmAccount> {

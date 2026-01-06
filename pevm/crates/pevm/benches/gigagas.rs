@@ -332,6 +332,28 @@ pub fn solana_single_sender_txns(block_size: usize) -> (InMemoryStorage, Vec<TxE
     (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
 }
 
+pub fn conflict_workloads(num_blocks: usize, num_tx_per_block: usize) -> (InMemoryStorage, Vec<Vec<TxEnv>>) {
+    let config = chiron::BlockGenerationConfig {
+        address_space_per_block: 100,
+        common_access_ratio: 0.3,
+        zipf_theta: 1.2,
+        avg_accesses_per_tx: 2.5,
+    };
+
+    let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);
+
+    // Generate 50 blocks, each with 100 transactions
+    let (state, bytecodes, blocks_txs) = chiron::generate_n_blocks_with_controlled_conflicts(
+        num_blocks,   // num_blocks
+        num_tx_per_block,  // num_tx_per_block
+        config,
+    );
+
+    final_state.extend(state);
+
+    (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), blocks_txs)
+}
+
 
 /// Runs a series of benchmarks to evaluate the performance of different transaction types.
 pub fn benchmark_gigagas(c: &mut Criterion) {
