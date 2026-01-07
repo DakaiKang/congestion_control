@@ -16,6 +16,7 @@ use pevm::dependency_graph::{
     TransactionGraph, TransactionNode, SimulationResult
 };
 use pevm::graph_scheduler::GraphScheduler;
+use pevm::greedy_integrator::{GreedyIntegrator, GreedyIntegratorConfig};
 
 use std::collections::HashSet;
 
@@ -475,39 +476,158 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
 #[test]
 
 pub fn different_conflict_test() {
-    let (storage, blocks_txs) = gigagas::conflict_workloads(50, 300);
+    let (storage, blocks_txs) = gigagas::conflict_workloads(32, 500);
     
-    // Clone for processing
-    let mut current_storage = storage.clone();
-    let blocks_txs_copy = blocks_txs.clone();
+    let num_blocks = blocks_txs.len();
+    let num_txs_per_block = blocks_txs[0].len();
+    let total_txs = num_blocks * num_txs_per_block;
     
-    let mut total_duration = std::time::Duration::ZERO;
-    let mut block_times = Vec::new();
+    println!("=== Workload ===");
+    println!("Blocks: {}", num_blocks);
+    println!("Txs per block: {}", num_txs_per_block);
+    println!("Total txs: {}\n", total_txs);
     
-    // Execute each block and measure time
-    for (i, txs) in blocks_txs_copy.into_iter().enumerate() {
-        let start = Instant::now();
-        current_storage = execute_sequential_and_update(current_storage, txs);
-        let duration = start.elapsed();
-        
-        block_times.push(duration);
-        total_duration += duration;
-        
-        println!("Block {}: {:?}", i, duration);
+    // 1. Sequential Execution
+    println!("=== 1. Sequential Execution ===");
+    let seq_start = Instant::now();
+    let mut seq_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        seq_storage = execute_sequential_and_update(seq_storage, txs);
     }
-
+    let seq_total = seq_start.elapsed();
+    println!("Time: {:.2} s\n", seq_total.as_secs_f64());
     
-    // let output_file = std::fs::File::create("bench_test.txt").unwrap();
-    // let mut writer = std::io::BufWriter::new(output_file);
-    // let result_str = format!("{current_storage:#?}");
-    // writer.write_all(result_str.as_bytes()).unwrap();
-    // writer.flush().unwrap();
+    // 2. Parallel Execution (Original)
+    println!("=== 2. Parallel Execution (Original Order) ===");
+    let par_start = Instant::now();
+    let mut par_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        par_storage = execute_parallel_and_update(par_storage, txs);
+    }
+    let par_total = par_start.elapsed();
+    println!("Time: {:.2} s\n", par_total.as_secs_f64());
+    
+    // 3. Generate Dependency Graphs
+    println!("=== 3. Generate Dependency Graphs ===");
+    let graph_gen_start = Instant::now();
+    let (_, reordered_blocks_txs, dependency_graphs) = 
+        generate_dependency_graphs(storage.clone(), blocks_txs.clone());
+    let graph_gen_time = graph_gen_start.elapsed();
+    println!("Time: {:.2} s\n", graph_gen_time.as_secs_f64());
+    
+    // 4. Parallel with Dependency Graphs
+    println!("=== 4. Parallel with Dependency Graphs ===");
+    let graph_par_start = Instant::now();
+    let mut graph_par_storage = storage.clone();
+    for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
+        graph_par_storage = execute_parallel_with_graph_and_update(
+            graph_par_storage, 
+            txs.clone(),
+            graph.clone()
+        );
+    }
+    let graph_par_total = graph_par_start.elapsed();
+    println!("Time: {:.2} s\n", graph_par_total.as_secs_f64());
+    
+    // 5. Greedy Integration
+    println!("=== 5. Greedy Integration ===");
+    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        tau_cv: 0.3,
+        num_threads: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8),
+    });
+    
+    let integration_start = Instant::now();
+    let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
+        dependency_graphs,
+        reordered_blocks_txs,
+    );
+    let integration_time = integration_start.elapsed();
+    
+    // 6. Parallel with Integrated Graphs
+    println!("=== 6. Parallel with Integrated Graphs ===");
+    let integrated_start = Instant::now();
+    let mut integrated_storage = storage.clone();
+    for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+        integrated_storage = execute_parallel_with_graph_and_update(
+            integrated_storage,
+            txs.clone(),
+            graph.clone()
+        );
+    }
+    let integrated_total = integrated_start.elapsed();
+    println!("Time: {:.2} s\n", integrated_total.as_secs_f64());
+    
+    // Final Summary
+    println!("=== Performance Summary ===");
+    println!("1. Sequential:                {:.2} s (baseline)", seq_total.as_secs_f64());
+    println!("2. Parallel (original):       {:.2} s ({:.2}x speedup)", 
+             par_total.as_secs_f64(),
+             seq_total.as_secs_f64() / par_total.as_secs_f64());
+    println!("3. Graph generation:          {:.2} s", graph_gen_time.as_secs_f64());
+    println!("4. Parallel with graphs:      {:.2} s ({:.2}x speedup)", 
+             graph_par_total.as_secs_f64(),
+             seq_total.as_secs_f64() / graph_par_total.as_secs_f64());
+    println!("5. Integration:               {:.2} s", integration_time.as_secs_f64());
+    println!("6. Parallel with integrated:  {:.2} s ({:.2}x speedup)", 
+             integrated_total.as_secs_f64(),
+             seq_total.as_secs_f64() / integrated_total.as_secs_f64());
+    
+    println!("\n=== Speedup Analysis ===");
+    println!("Parallel vs Sequential:            {:.2}x", 
+             seq_total.as_secs_f64() / par_total.as_secs_f64());
+    println!("Graph-parallel vs Sequential:      {:.2}x", 
+             seq_total.as_secs_f64() / graph_par_total.as_secs_f64());
+    println!("Integrated vs Sequential:          {:.2}x",
+             seq_total.as_secs_f64() / integrated_total.as_secs_f64());
+    println!("Integrated vs Graph-parallel:      {:.2}x",
+             graph_par_total.as_secs_f64() / integrated_total.as_secs_f64());
+}
 
-    println!("\n=== Summary ===");
-    println!("Total execution time: {:?}", total_duration);
-    println!("Average time per block: {:?}", total_duration / blocks_txs.len() as u32);
-    println!("Min time: {:?}", block_times.iter().min().unwrap());
-    println!("Max time: {:?}", block_times.iter().max().unwrap());
+
+fn generate_dependency_graphs(
+    storage: InMemoryStorage, 
+    blocks_txs: Vec<Vec<TxEnv>>
+) -> (InMemoryStorage, Vec<Vec<TxEnv>>, Vec<pevm::dependency_graph::TransactionGraph>) {
+    
+    let mut reordered_txns_list = Vec::new(); 
+    let mut new_graphs = Vec::new(); 
+    
+    let concurrency_level = std::thread::available_parallelism()
+        .unwrap_or(std::num::NonZeroUsize::MIN)
+        .get();
+    
+    for i in 0..blocks_txs.len() {
+        println!("Constructing graph for batch {}", i);
+        
+        let txs = blocks_txs[i].clone();
+
+        let chain = PevmEthereum::mainnet();
+        let spec_id = SpecId::LATEST;
+        let block_env = BlockEnv::default();
+
+        // Construct graph using the same storage for all batches
+        let (mut graph, _r) = GraphPevm::construct_graph_pevm_by_sequential(
+            &chain, 
+            &storage,  // Always use initial storage
+            spec_id, 
+            block_env, 
+            txs.clone(), 
+            i as u64
+        ).unwrap();
+
+        let (reordered_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(
+            txs, 
+            &mut graph, 
+            concurrency_level
+        );
+        
+        reordered_txns_list.push(reordered_txns);
+        new_graphs.push(new_graph);
+    }
+    
+    (storage, reordered_txns_list, new_graphs)  // Fixed: return the list, not single item
 }
 
 fn execute_sequential_and_update(
@@ -525,17 +645,62 @@ fn execute_sequential_and_update(
         block_env,
         txs.clone(),
     ).unwrap();
-
-
-    // Verify execution success
-    println!("\n=== Execution Verification ===");
-    println!("Total transactions: {}", txs.len());
-    println!("Successful executions: {}", result.len());
-
     
     update_storage_with_results(&mut storage, result);
     storage
 }
+
+
+fn execute_parallel_and_update(
+    mut storage: InMemoryStorage, 
+    txs: Vec<TxEnv>
+) -> InMemoryStorage {
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+    
+    let result = Pevm::default().execute_revm_parallel(
+        &chain,
+        &storage,
+        spec_id,
+        block_env,
+        txs.clone(),
+        concurrency_level,
+    ).unwrap();
+    
+    update_storage_with_results(&mut storage, result);
+    storage
+}
+
+
+fn execute_parallel_with_graph_and_update(
+    mut storage: InMemoryStorage, 
+    txs: Vec<TxEnv>,
+    graph: pevm::dependency_graph::TransactionGraph,
+) -> InMemoryStorage {
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let block_env = BlockEnv::default();
+    let concurrency_level = std::thread::available_parallelism()
+        .unwrap_or(std::num::NonZeroUsize::MIN);
+        
+    let mut pevm = GraphPevm::default();
+
+    let result = pevm.execute_revm_parallel(
+        &chain,
+        &storage,
+        spec_id,
+        block_env,
+        txs, 
+        concurrency_level,
+        graph, 
+    ).unwrap();
+    
+    update_storage_with_results(&mut storage, result);
+    storage
+}
+
 
 #[test]
 

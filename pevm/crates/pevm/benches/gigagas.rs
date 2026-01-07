@@ -335,9 +335,9 @@ pub fn solana_single_sender_txns(block_size: usize) -> (InMemoryStorage, Vec<TxE
 pub fn conflict_workloads(num_blocks: usize, num_tx_per_block: usize) -> (InMemoryStorage, Vec<Vec<TxEnv>>) {
     let config = chiron::BlockGenerationConfig {
         address_space_per_block: 100,
-        common_access_ratio: 0.3,
-        zipf_theta: 1.2,
-        avg_accesses_per_tx: 2.5,
+        common_access_ratio: 0.01,
+        zipf_theta: 1.5,
+        avg_accesses_per_tx: 2.0,
     };
 
     let mut final_state = ChainState::from_iter([(Address::ZERO, EvmAccount::default())]);

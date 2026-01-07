@@ -96,7 +96,7 @@ impl GraphScheduler {
             })
             .collect();
         
-        println!("Initial executable transactions: {:?}", e_txs);
+        // println!("Initial executable transactions: {:?}", e_txs);
 
         let heap = e_txs.into_iter().map(Reverse).collect();
 
@@ -199,7 +199,7 @@ impl GraphScheduler {
             if all_done {
                 // All tasks are done, notify all waiting threads to exit
                 self.task_available.notify_all();
-                println!("ALL DONE");
+                // println!("ALL DONE");
                 return None;
             }
 

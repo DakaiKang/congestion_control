@@ -140,7 +140,7 @@ impl GraphPevm {
         thread::scope(|scope| {
             for _ in 0..concurrency_level.into() {
                 scope.spawn(|| {
-                    println!("Spawned thread {:?}", thread::current().id());
+                    // println!("Spawned thread {:?}", thread::current().id());
                     let mut task = scheduler.next_task();
                     while task.is_some() {
                         task = match task.unwrap() {
@@ -168,7 +168,7 @@ impl GraphPevm {
                             task = scheduler.next_task();
                         }
                     }
-                    println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
+                    // println!("GraphPevm: Out of Loop by thread {:?}", thread::current().id());
                 });
             }
         });
