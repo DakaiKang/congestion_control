@@ -278,7 +278,7 @@ impl GreedyIntegrator {
         for (group_idx, integrated_result) in integrated_results.iter().enumerate() {
             let source_indices = &integrated_result.source_indices;
             
-            println!("Group {}: merging graphs {:?}", group_idx, source_indices);
+            // println!("Group {}: merging graphs {:?}", group_idx, source_indices);
             
             // Merge transactions in integration order
             let mut merged_txns = Vec::new();
@@ -318,7 +318,7 @@ impl GreedyIntegrator {
             let cv = integrated_result.graph.simulation_result.as_ref()
                 .map(|r| r.coefficient_of_variation)
                 .unwrap_or(0.0);
-            println!("  Group {}: {:?} (CV: {:.4})", i, integrated_result.source_indices, cv);
+            // println!("Group {}: {:?} (CV: {:.4})", i, integrated_result.source_indices, cv);
         }
         
         (integrated_txns, integrated_graphs)

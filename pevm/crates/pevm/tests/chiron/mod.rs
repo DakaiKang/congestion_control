@@ -778,7 +778,7 @@ pub fn generate_n_blocks_with_controlled_conflicts(
         let zipf_block = Zipf::new(config.address_space_per_block as u64, config.zipf_theta)
             .expect("Invalid Zipf parameters for block region");
         
-        println!("Block {}: accounts [{}, {})", block_id, start_idx, end_idx);
+        // println!("Block {}: accounts [{}, {})", block_id, start_idx, end_idx);
         
         // Generate transactions for this block
         for &caller in block_accounts.iter() {

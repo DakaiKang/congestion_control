@@ -474,49 +474,107 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
 
 
 #[test]
+pub fn conflict_parameter_sweep() {
+    let num_blocks = 50;
+    let num_tx_per_block = 300;
+    
+    let zipf_thetas = vec![0.01];
+    let zipf_thetas = vec![0.5];
+    let zipf_thetas = vec![1.0];
+    // let zipf_thetas = vec![1.5];
+    // let common_access_ratios = vec![0.01, 0.25, 0.5, 0.75, 1.0];
+    let common_access_ratios = vec![0.0];
+    
+    println!("╔═══════════════════════════════════════════════════════════════════╗");
+    println!("║           CONFLICT PARAMETER SWEEP EXPERIMENT                     ║");
+    println!("╠═══════════════════════════════════════════════════════════════════╣");
+    println!("║ Blocks: {}  |  Txs per block: {}                                ║", 
+             num_blocks, num_tx_per_block);
+    println!("║ Total combinations: {}                                            ║",
+             zipf_thetas.len() * common_access_ratios.len());
+    println!("╚═══════════════════════════════════════════════════════════════════╝\n");
+    
+    let mut all_results = Vec::new();
+    
+    for &theta in &zipf_thetas {
+        for &ratio in &common_access_ratios {
+            let (seq, par, graph, integrated) = different_conflict_test(
+                num_blocks, 
+                num_tx_per_block, 
+                theta, 
+                ratio
+            );
+            
+            all_results.push((theta, ratio, seq, par, graph, integrated));
+        }
+    }
+    
+    // Summary table
+    println!("\n╔═══════════════════════════════════════════════════════════════════════════════════════╗");
+    println!("║                              FINAL RESULTS SUMMARY                                    ║");
+    println!("╠═══════════════════════════════════════════════════════════════════════════════════════╣");
+    println!("║ Theta │ Ratio │   Sequential │     Parallel │  Graph-Parallel │      Integrated │ Speedup ║");
+    println!("╠═══════╪═══════╪══════════════╪══════════════╪═════════════════╪═════════════════╪═════════╣");
+    
+    for (theta, ratio, seq, par, graph, integrated) in &all_results {
+        let speedup = integrated / seq;
+        println!("║ {:>5.2} │ {:>5.2} │ {:>10.2} t/s│ {:>10.2} t/s│ {:>13.2} t/s│ {:>13.2} t/s│ {:>6.2}x ║",
+                 theta, ratio, seq, par, graph, integrated, speedup);
+    }
+    
+    println!("╚═══════════════════════════════════════════════════════════════════════════════════════╝");
+    
+    // Raw data for plotting
+    println!("\n=== RAW DATA ===");
+    println!("theta ratio seq_tput par_tput graph_tput integrated_tput");
+    for (theta, ratio, seq, par, graph, integrated) in &all_results {
+        println!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2}", 
+                 theta, ratio, seq, par, graph, integrated);
+    }
+}
 
-pub fn different_conflict_test() {
-    let (storage, blocks_txs) = gigagas::conflict_workloads(32, 500);
+/// Returns (seq_tput, par_tput, graph_par_tput, integrated_tput)
+pub fn different_conflict_test(
+    num_blocks: usize,
+    num_tx_per_block: usize,
+    zipf_theta: f64,
+    common_access_ratio: f64,
+) -> (f64, f64, f64, f64) {
+    let (storage, blocks_txs) = gigagas::conflict_workloads(
+        num_blocks, 
+        num_tx_per_block, 
+        zipf_theta, 
+        common_access_ratio
+    );
     
-    let num_blocks = blocks_txs.len();
-    let num_txs_per_block = blocks_txs[0].len();
-    let total_txs = num_blocks * num_txs_per_block;
+    let total_txs = num_blocks * num_tx_per_block;
     
-    println!("=== Workload ===");
-    println!("Blocks: {}", num_blocks);
-    println!("Txs per block: {}", num_txs_per_block);
-    println!("Total txs: {}\n", total_txs);
+    println!("=== Config: theta={:.2}, ratio={:.2} ===", zipf_theta, common_access_ratio);
     
-    // 1. Sequential Execution
-    println!("=== 1. Sequential Execution ===");
+    // 1. Sequential
+    println!("Sequential...");
     let seq_start = Instant::now();
     let mut seq_storage = storage.clone();
     for txs in blocks_txs.clone() {
         seq_storage = execute_sequential_and_update(seq_storage, txs);
     }
-    let seq_total = seq_start.elapsed();
-    println!("Time: {:.2} s\n", seq_total.as_secs_f64());
+    let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
     
-    // 2. Parallel Execution (Original)
-    println!("=== 2. Parallel Execution (Original Order) ===");
+    // 2. Parallel (original)
+    println!("Parallel...");
     let par_start = Instant::now();
     let mut par_storage = storage.clone();
     for txs in blocks_txs.clone() {
         par_storage = execute_parallel_and_update(par_storage, txs);
     }
-    let par_total = par_start.elapsed();
-    println!("Time: {:.2} s\n", par_total.as_secs_f64());
+    let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     
-    // 3. Generate Dependency Graphs
-    println!("=== 3. Generate Dependency Graphs ===");
-    let graph_gen_start = Instant::now();
+    // 3. Generate graphs and parallel with graphs
+    println!("Generating graphs...");
     let (_, reordered_blocks_txs, dependency_graphs) = 
-        generate_dependency_graphs(storage.clone(), blocks_txs.clone());
-    let graph_gen_time = graph_gen_start.elapsed();
-    println!("Time: {:.2} s\n", graph_gen_time.as_secs_f64());
+        generate_dependency_graphs(storage.clone(), blocks_txs);
     
-    // 4. Parallel with Dependency Graphs
-    println!("=== 4. Parallel with Dependency Graphs ===");
+    println!("Parallel with graphs...");
     let graph_par_start = Instant::now();
     let mut graph_par_storage = storage.clone();
     for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
@@ -526,11 +584,10 @@ pub fn different_conflict_test() {
             graph.clone()
         );
     }
-    let graph_par_total = graph_par_start.elapsed();
-    println!("Time: {:.2} s\n", graph_par_total.as_secs_f64());
+    let graph_par_tput = total_txs as f64 / graph_par_start.elapsed().as_secs_f64();
     
-    // 5. Greedy Integration
-    println!("=== 5. Greedy Integration ===");
+    // 4. Greedy integration
+    println!("Greedy integration...");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
         tau_cv: 0.3,
         num_threads: std::thread::available_parallelism()
@@ -538,15 +595,12 @@ pub fn different_conflict_test() {
             .unwrap_or(8),
     });
     
-    let integration_start = Instant::now();
     let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
         dependency_graphs,
         reordered_blocks_txs,
     );
-    let integration_time = integration_start.elapsed();
     
-    // 6. Parallel with Integrated Graphs
-    println!("=== 6. Parallel with Integrated Graphs ===");
+    println!("Parallel with integrated...");
     let integrated_start = Instant::now();
     let mut integrated_storage = storage.clone();
     for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
@@ -556,33 +610,12 @@ pub fn different_conflict_test() {
             graph.clone()
         );
     }
-    let integrated_total = integrated_start.elapsed();
-    println!("Time: {:.2} s\n", integrated_total.as_secs_f64());
+    let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
     
-    // Final Summary
-    println!("=== Performance Summary ===");
-    println!("1. Sequential:                {:.2} s (baseline)", seq_total.as_secs_f64());
-    println!("2. Parallel (original):       {:.2} s ({:.2}x speedup)", 
-             par_total.as_secs_f64(),
-             seq_total.as_secs_f64() / par_total.as_secs_f64());
-    println!("3. Graph generation:          {:.2} s", graph_gen_time.as_secs_f64());
-    println!("4. Parallel with graphs:      {:.2} s ({:.2}x speedup)", 
-             graph_par_total.as_secs_f64(),
-             seq_total.as_secs_f64() / graph_par_total.as_secs_f64());
-    println!("5. Integration:               {:.2} s", integration_time.as_secs_f64());
-    println!("6. Parallel with integrated:  {:.2} s ({:.2}x speedup)", 
-             integrated_total.as_secs_f64(),
-             seq_total.as_secs_f64() / integrated_total.as_secs_f64());
+    println!("Results: {:.2} {:.2} {:.2} {:.2}\n", 
+             seq_tput, par_tput, graph_par_tput, integrated_tput);
     
-    println!("\n=== Speedup Analysis ===");
-    println!("Parallel vs Sequential:            {:.2}x", 
-             seq_total.as_secs_f64() / par_total.as_secs_f64());
-    println!("Graph-parallel vs Sequential:      {:.2}x", 
-             seq_total.as_secs_f64() / graph_par_total.as_secs_f64());
-    println!("Integrated vs Sequential:          {:.2}x",
-             seq_total.as_secs_f64() / integrated_total.as_secs_f64());
-    println!("Integrated vs Graph-parallel:      {:.2}x",
-             graph_par_total.as_secs_f64() / integrated_total.as_secs_f64());
+    (seq_tput, par_tput, graph_par_tput, integrated_tput)
 }
 
 
@@ -599,7 +632,7 @@ fn generate_dependency_graphs(
         .get();
     
     for i in 0..blocks_txs.len() {
-        println!("Constructing graph for batch {}", i);
+        // println!("Constructing graph for batch {}", i);
         
         let txs = blocks_txs[i].clone();
 
@@ -717,7 +750,7 @@ pub fn long_test() {
     let mut integrate_storages = Vec::new();
 
     for i in 0..batch_num {
-        println!("Constructing graph for batch {}", i);
+        // println!("Constructing graph for batch {}", i);
         storage_history.push(storage.clone());
         let txs = all_batches[i].clone();
 
