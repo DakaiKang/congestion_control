@@ -99,6 +99,16 @@ impl PartialOrd for EstimatedCompletion {
 
 
 #[derive(Debug, Clone)]
+pub struct HotKeyStats {
+    pub total_keys: usize,
+    pub hot_keys_count: usize,
+    pub hot_key_ratio: f64,
+    pub threshold_value: f64,
+    pub avg_thread_completion: f64,
+}
+
+
+#[derive(Debug, Clone)]
 pub struct TransactionGraph {
     pub nodes: Vec<TransactionNode>,
     pub id_to_index: HashMap<TransactionId, usize>,
@@ -107,6 +117,8 @@ pub struct TransactionGraph {
     pub txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
     pub simulation_result: Option<SimulationResult>,
     pub temp_parents: Vec<HashSet<usize>>, // Temporary storage for parent transactions during simulation
+    pub hot_key_threshold: f64, // Threshold to classify hot keys based on access frequency
+    pub hot_keys: HashSet<u64>,
 }
 
 impl TransactionGraph {
@@ -121,7 +133,14 @@ impl TransactionGraph {
             txns_without_parent: BinaryHeap::new(),
             simulation_result: None,
             temp_parents: Vec::new(),
+            hot_key_threshold: 1.5,
+            hot_keys: HashSet::new(),
         }
+    }
+
+    /// Set the hot key threshold
+    pub fn set_hot_key_threshold(&mut self, threshold: f64) {
+        self.hot_key_threshold = threshold;
     }
 
     /// Gets a reference to a node by TransactionId
@@ -404,6 +423,7 @@ impl TransactionGraph {
         
         self.simulation_result = Some(SimulationResult::new(current_time, threads, execution_order));
         // println!("simulation_result: {:#?}", self.simulation_result.clone().unwrap().thread_results);
+        self.analyze_key_access_spans();
     }
     
     /// Remove a transaction and add its newly-freed children to the heap
@@ -515,6 +535,182 @@ impl TransactionGraph {
         Ok(edges_added)
     }
 
+    /// Detect and store hot keys
+    fn detect_hot_keys(&mut self) {
+        self.hot_keys.clear();
+        
+        if let Some(result) = &self.simulation_result {
+            let avg_completion = self.average_thread_completion_time();
+            let threshold = avg_completion * self.hot_key_threshold;
+            
+            for (key, span) in &result.key_access_spans {
+                let lifespan = span.latest_finish - span.earliest_start;
+                if lifespan as f64 > threshold {
+                    self.hot_keys.insert(*key);
+                }
+            }
+        }
+    }
+
+    /// Analyze key access spans from simulation results
+    fn analyze_key_access_spans(&mut self) {
+        if let Some(result) = &mut self.simulation_result {
+            // Pre-build index for O(1) lookup
+            let node_map: HashMap<u64, &TransactionNode> = self.nodes.iter()
+                .map(|n| (n.id, n))
+                .collect();
+            
+            let mut key_spans: HashMap<u64, KeyAccessSpan> = HashMap::new();
+            
+            for (_thread_id, tx_id, start_time, end_time) in &result.execution_order {
+                if let Some(&node) = node_map.get(&(tx_id.id as u64)) {
+                    // Collect all keys accessed by this transaction
+                    // Combine both read_set and write_set
+                    let all_keys: HashSet<u64> = node.read_set.iter()
+                        .chain(node.write_set.iter())
+                        .copied()
+                        .collect();
+                    
+                    for key in all_keys {
+                        key_spans.entry(key)
+                            .and_modify(|span| {
+                                span.earliest_start = span.earliest_start.min(*start_time);
+                                span.latest_finish = span.latest_finish.max(*end_time);
+                                span.access_count += 1;
+                            })
+                            .or_insert(KeyAccessSpan {
+                                key,
+                                earliest_start: *start_time,
+                                latest_finish: *end_time,
+                                access_count: 1,
+                            });
+                    }
+                }
+            }
+            
+            result.key_access_spans = key_spans;
+        }
+        // After analyzing key access spans, detect hot keys
+        self.detect_hot_keys();
+    }
+
+    /// Calculate average thread completion time
+    fn average_thread_completion_time(&self) -> f64 {
+        if let Some(result) = &self.simulation_result {
+            if result.thread_results.is_empty() {
+                return 0.0;
+            }
+            
+            result.sum_completion_times as f64 / result.thread_results.len() as f64
+        } else {
+            0.0
+        }
+    }
+    
+    /// Check if a specific key is hot
+    pub fn is_hot_key(&self, key: u64) -> bool {
+        self.hot_keys.contains(&key)
+    }
+    
+    /// Get all hot keys (returns reference to the set)
+    pub fn get_hot_keys(&self) -> &HashSet<u64> {
+        &self.hot_keys
+    }
+
+    /// Get hot key details (with spans)
+    pub fn get_hot_key_spans(&self) -> Vec<&KeyAccessSpan> {
+        if let Some(result) = &self.simulation_result {
+            self.hot_keys.iter()
+                .filter_map(|key| result.key_access_spans.get(key))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    /// Get top N hottest keys (by lifespan)
+    pub fn get_hottest_keys(&self, n: usize) -> Vec<&KeyAccessSpan> {
+        let mut hot_key_spans = self.get_hot_key_spans();
+        
+        // Sort by lifespan descending
+        hot_key_spans.sort_by(|a, b| {
+            let lifespan_a = a.latest_finish - a.earliest_start;
+            let lifespan_b = b.latest_finish - b.earliest_start;
+            lifespan_b.cmp(&lifespan_a)
+        });
+        
+        hot_key_spans.into_iter().take(n).collect()
+    }
+
+    /// Check if two graphs have common hot keys
+    pub fn has_common_hot_keys(&self, other: &TransactionGraph) -> bool {
+        !self.hot_keys.is_disjoint(&other.hot_keys)
+    }
+    
+    /// Get hot key statistics
+    pub fn hot_key_statistics(&self) -> HotKeyStats {
+        let all_keys = if let Some(result) = &self.simulation_result {
+            result.key_access_spans.len()
+        } else {
+            0
+        };
+        
+        let hot_count = self.hot_keys.len();
+        
+        let avg_completion = self.average_thread_completion_time();
+        let threshold = avg_completion * self.hot_key_threshold;
+        
+        HotKeyStats {
+            total_keys: all_keys,
+            hot_keys_count: hot_count,
+            hot_key_ratio: if all_keys > 0 { 
+                hot_count as f64 / all_keys as f64 
+            } else { 
+                0.0 
+            },
+            threshold_value: threshold,
+            avg_thread_completion: avg_completion,
+        }
+    }
+    
+    /// Print hot key analysis
+    pub fn print_hot_key_report(&self) {
+        let stats = self.hot_key_statistics();
+        
+        println!("\n╔═══════════════════════════════════════════════════════════════════╗");
+        println!("║                      HOT KEY ANALYSIS                             ║");
+        println!("╠═══════════════════════════════════════════════════════════════════╣");
+        println!("║ Hot Key Threshold (k):        {:>6.2}                            ║", 
+                 self.hot_key_threshold);
+        println!("║ Avg Thread Completion Time:   {:>10.2}                          ║",
+                 stats.avg_thread_completion);
+        println!("║ Threshold Value (k × avg):    {:>10.2}                          ║",
+                 stats.threshold_value);
+        println!("╠═══════════════════════════════════════════════════════════════════╣");
+        println!("║ Total Keys:                   {:>6}                              ║",
+                 stats.total_keys);
+        println!("║ Hot Keys:                     {:>6}                              ║",
+                 stats.hot_keys_count);
+        println!("║ Hot Key Ratio:                {:>6.2}%                            ║",
+                 stats.hot_key_ratio * 100.0);
+        println!("╠═══════════════════════════════════════════════════════════════════╣");
+        
+        let hottest = self.get_hottest_keys(10);
+        if !hottest.is_empty() {
+            println!("║ Top 10 Hottest Keys:                                              ║");
+            for (i, span) in hottest.iter().enumerate() {
+                let lifespan = span.latest_finish - span.earliest_start;
+                let ratio = lifespan as f64 / stats.avg_thread_completion;
+                println!("║ {}. Key {:>5}: lifespan {:>6} ({:>4.2}× avg), {} accesses      ║",
+                         i + 1, span.key, lifespan, ratio, span.access_count);
+            }
+        } else {
+            println!("║ No hot keys detected.                                             ║");
+        }
+        
+        println!("╚═══════════════════════════════════════════════════════════════════╝");
+    }
+
 }
 
 
@@ -555,6 +751,15 @@ impl ThreadState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct KeyAccessSpan {
+    pub key: u64,
+    pub earliest_start: u64,  // Earliest time this key is accessed
+    pub latest_finish: u64,   // Latest time this key finishes being accessed
+    pub access_count: usize,  // Number of transactions accessing this key
+}
+
+
 #[derive(Debug, Clone, Default)]
 pub struct SimulationResult {
     pub total_time: u64,
@@ -563,6 +768,7 @@ pub struct SimulationResult {
     pub standard_deviation: f64,
     pub coefficient_of_variation: f64,
     pub sum_completion_times: u64,
+    pub key_access_spans: HashMap<u64, KeyAccessSpan>,
 }
 
 impl SimulationResult {
@@ -587,6 +793,7 @@ impl SimulationResult {
             standard_deviation,
             coefficient_of_variation,
             sum_completion_times,
+            key_access_spans: HashMap::new(),
         }
     }
 
@@ -654,6 +861,105 @@ impl std::fmt::Display for ThreadEndTimeStats {
             self.mean, self.std_dev, self.min, self.max, self.range
         )
     }
+}
+
+#[test]
+fn test_key_access_span_analysis() {
+    let mut graph = TransactionGraph::new();
+    
+    // Transaction 0: accesses keys [1, 2, 3]
+    graph.add_transaction(TransactionNode {
+        id: 0,
+        replica: 0,
+        round: 0,
+        execution_time: 100,
+        read_set: HashSet::from([1, 2]),
+        write_set: HashSet::from([3]),
+        longest_suffix: 0,
+        children_indices: vec![1],
+        parent_indices: HashSet::new(),
+    }).unwrap();
+    
+    // Transaction 1: accesses keys [2, 4, 5]
+    graph.add_transaction(TransactionNode {
+        id: 1,
+        replica: 0,
+        round: 1,
+        execution_time: 150,
+        read_set: HashSet::from([2, 4]),
+        write_set: HashSet::from([5]),
+        longest_suffix: 0,
+        children_indices: vec![2],
+        parent_indices: HashSet::from([0]),
+    }).unwrap();
+    
+    // Transaction 2: accesses keys [3, 5, 6]
+    graph.add_transaction(TransactionNode {
+        id: 2,
+        replica: 0,
+        round: 2,
+        execution_time: 120,
+        read_set: HashSet::from([3, 5]),
+        write_set: HashSet::from([6]),
+        longest_suffix: 0,
+        children_indices: vec![],
+        parent_indices: HashSet::from([1]),
+    }).unwrap();
+    
+    // Transaction 3: accesses keys [1, 7] (independent)
+    graph.add_transaction(TransactionNode {
+        id: 3,
+        replica: 0,
+        round: 3,
+        execution_time: 80,
+        read_set: HashSet::from([1]),
+        write_set: HashSet::from([7]),
+        longest_suffix: 0,
+        children_indices: vec![],
+        parent_indices: HashSet::new(),
+    }).unwrap();
+    
+    println!("\n=== Test Graph Structure ===");
+    println!("Transaction 0: keys [1, 2, 3], time=100");
+    println!("Transaction 1: keys [2, 4, 5], time=150, depends on tx0");
+    println!("Transaction 2: keys [3, 5, 6], time=120, depends on tx1");
+    println!("Transaction 3: keys [1, 7], time=80, independent");
+    
+    // Simulate execution with 2 threads
+    graph.simulate_parallel_execution(2);
+    
+    // Verify simulation result exists
+    assert!(graph.simulation_result.is_some());
+    
+    let result = graph.simulation_result.as_ref().unwrap();
+    
+    // Check key access spans exist
+    assert!(!result.key_access_spans.is_empty(), "Should have key access spans");
+    
+    // Key 1 should be accessed by tx0 and tx3
+    if let Some(span) = result.key_access_spans.get(&1) {
+        println!("\n=== Key 1 Analysis ===");
+        println!("Access count: {}", span.access_count);
+        println!("Earliest start: {}", span.earliest_start);
+        println!("Latest finish: {}", span.latest_finish);
+        println!("Lifespan: {}", span.latest_finish - span.earliest_start);
+        
+        assert_eq!(span.access_count, 2, "Key 1 accessed by tx0 and tx3");
+    } else {
+        panic!("Key 1 not found in key_access_spans");
+    }
+    
+    // Key 2 should be accessed by tx0 and tx1
+    if let Some(span) = result.key_access_spans.get(&2) {
+        println!("\n=== Key 2 Analysis ===");
+        println!("Access count: {}", span.access_count);
+        assert_eq!(span.access_count, 2, "Key 2 accessed by tx0 and tx1");
+    }
+    
+    // Use TransactionGraph methods
+    println!("\n=== Using TransactionGraph methods ===");
+    graph.print_hot_key_report();
+
 }
 
 
