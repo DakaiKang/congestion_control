@@ -332,7 +332,7 @@ pub fn solana_single_sender_txns(block_size: usize) -> (InMemoryStorage, Vec<TxE
     (InMemoryStorage::new(final_state, Arc::new(bytecodes), Default::default()), txs, costs)
 }
 
-pub fn conflict_workloads(num_blocks: usize, num_tx_per_block: usize, zipf_theta: f64, common_access_ratio: f64) -> (InMemoryStorage, Vec<Vec<TxEnv>>) {
+pub fn conflict_workloads(num_blocks: usize, num_tx_per_block: usize, zipf_theta: f64, common_access_ratio: f64, unique_hot_ratio: f64) -> (InMemoryStorage, Vec<Vec<TxEnv>>) {
     let config = chiron::BlockGenerationConfig {
         address_space_per_block: 100,
         common_access_ratio,
@@ -347,6 +347,7 @@ pub fn conflict_workloads(num_blocks: usize, num_tx_per_block: usize, zipf_theta
         num_blocks,   // num_blocks
         num_tx_per_block,  // num_tx_per_block
         config,
+        unique_hot_ratio,
     );
 
     final_state.extend(state);

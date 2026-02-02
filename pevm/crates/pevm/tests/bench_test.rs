@@ -475,15 +475,15 @@ pub fn single_sender_test()  -> Result<(), Box<dyn std::error::Error>>{
 
 #[test]
 pub fn conflict_parameter_sweep() {
-    let num_blocks = 50;
-    let num_tx_per_block = 300;
+    let num_blocks = 100;
+    let num_tx_per_block = 500;
     
-    let zipf_thetas = vec![0.01];
-    let zipf_thetas = vec![0.5];
-    let zipf_thetas = vec![1.0];
-    // let zipf_thetas = vec![1.5];
+    // let zipf_thetas = vec![0.01];
+    let zipf_thetas = vec![0.99];
+    // let zipf_thetas = vec![0.99];
     // let common_access_ratios = vec![0.01, 0.25, 0.5, 0.75, 1.0];
-    let common_access_ratios = vec![0.0];
+    let common_access_ratios = vec![0.5];
+    let unique_hot_ratio = 0.25;
     
     println!("╔═══════════════════════════════════════════════════════════════════╗");
     println!("║           CONFLICT PARAMETER SWEEP EXPERIMENT                     ║");
@@ -502,10 +502,11 @@ pub fn conflict_parameter_sweep() {
                 num_blocks, 
                 num_tx_per_block, 
                 theta, 
-                ratio
+                ratio,
+                unique_hot_ratio,
             );
             
-            all_results.push((theta, ratio, seq, par, graph, integrated));
+            all_results.push((theta, ratio, unique_hot_ratio, seq, par, graph, integrated));
         }
     }
     
@@ -516,7 +517,7 @@ pub fn conflict_parameter_sweep() {
     println!("║ Theta │ Ratio │   Sequential │     Parallel │  Graph-Parallel │      Integrated │ Speedup ║");
     println!("╠═══════╪═══════╪══════════════╪══════════════╪═════════════════╪═════════════════╪═════════╣");
     
-    for (theta, ratio, seq, par, graph, integrated) in &all_results {
+    for (theta, ratio, seq, par, graph, integrated, speedup) in &all_results {
         let speedup = integrated / seq;
         println!("║ {:>5.2} │ {:>5.2} │ {:>10.2} t/s│ {:>10.2} t/s│ {:>13.2} t/s│ {:>13.2} t/s│ {:>6.2}x ║",
                  theta, ratio, seq, par, graph, integrated, speedup);
@@ -526,10 +527,10 @@ pub fn conflict_parameter_sweep() {
     
     // Raw data for plotting
     println!("\n=== RAW DATA ===");
-    println!("theta ratio seq_tput par_tput graph_tput integrated_tput");
-    for (theta, ratio, seq, par, graph, integrated) in &all_results {
-        println!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2}", 
-                 theta, ratio, seq, par, graph, integrated);
+    println!("theta ratio unique_hot_ratio seq_tput par_tput graph_tput integrated_tput");
+    for (theta, ratio, seq, par, graph, integrated, speedup) in &all_results {
+        println!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}", 
+                 theta, ratio, unique_hot_ratio, seq, par, graph, integrated);
     }
 }
 
@@ -539,35 +540,39 @@ pub fn different_conflict_test(
     num_tx_per_block: usize,
     zipf_theta: f64,
     common_access_ratio: f64,
+    unique_hot_ratio: f64,
 ) -> (f64, f64, f64, f64) {
     let (storage, blocks_txs) = gigagas::conflict_workloads(
         num_blocks, 
         num_tx_per_block, 
         zipf_theta, 
-        common_access_ratio
+        common_access_ratio,
+        unique_hot_ratio,
     );
     
     let total_txs = num_blocks * num_tx_per_block;
     
     println!("=== Config: theta={:.2}, ratio={:.2} ===", zipf_theta, common_access_ratio);
     
-    // 1. Sequential
-    println!("Sequential...");
-    let seq_start = Instant::now();
-    let mut seq_storage = storage.clone();
-    for txs in blocks_txs.clone() {
-        seq_storage = execute_sequential_and_update(seq_storage, txs);
-    }
-    let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
+    let mut seq_tput = 0.0;
+    let mut par_tput = 0.0;
+    // // 1. Sequential
+    // println!("Sequential...");
+    // let seq_start = Instant::now();
+    // let mut seq_storage = storage.clone();
+    // for txs in blocks_txs.clone() {
+    //     seq_storage = execute_sequential_and_update(seq_storage, txs);
+    // }
+    // let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
     
-    // 2. Parallel (original)
-    println!("Parallel...");
-    let par_start = Instant::now();
-    let mut par_storage = storage.clone();
-    for txs in blocks_txs.clone() {
-        par_storage = execute_parallel_and_update(par_storage, txs);
-    }
-    let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
+    // // 2. Parallel (original)
+    // println!("Parallel...");
+    // let par_start = Instant::now();
+    // let mut par_storage = storage.clone();
+    // for txs in blocks_txs.clone() {
+    //     par_storage = execute_parallel_and_update(par_storage, txs);
+    // }
+    // let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     
     // 3. Generate graphs and parallel with graphs
     println!("Generating graphs...");
@@ -577,7 +582,10 @@ pub fn different_conflict_test(
     println!("Parallel with graphs...");
     let graph_par_start = Instant::now();
     let mut graph_par_storage = storage.clone();
+    let mut count = 0;
     for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
+        count += 1;
+        println!("Processing block {}/{}", count, reordered_blocks_txs.len());
         graph_par_storage = execute_parallel_with_graph_and_update(
             graph_par_storage, 
             txs.clone(),
@@ -585,32 +593,32 @@ pub fn different_conflict_test(
         );
     }
     let graph_par_tput = total_txs as f64 / graph_par_start.elapsed().as_secs_f64();
+    let integrated_tput = 0.0;
+    // // 4. Greedy integration
+    // println!("Greedy integration...");
+    // let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+    //     tau_cv: 0.1,
+    //     num_threads: std::thread::available_parallelism()
+    //         .map(|n| n.get())
+    //         .unwrap_or(8),
+    // });
     
-    // 4. Greedy integration
-    println!("Greedy integration...");
-    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.3,
-        num_threads: std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8),
-    });
+    // let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
+    //     dependency_graphs,
+    //     reordered_blocks_txs,
+    // );
     
-    let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
-        dependency_graphs,
-        reordered_blocks_txs,
-    );
-    
-    println!("Parallel with integrated...");
-    let integrated_start = Instant::now();
-    let mut integrated_storage = storage.clone();
-    for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
-        integrated_storage = execute_parallel_with_graph_and_update(
-            integrated_storage,
-            txs.clone(),
-            graph.clone()
-        );
-    }
-    let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
+    // println!("Parallel with integrated...");
+    // let integrated_start = Instant::now();
+    // let mut integrated_storage = storage.clone();
+    // for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+    //     integrated_storage = execute_parallel_with_graph_and_update(
+    //         integrated_storage,
+    //         txs.clone(),
+    //         graph.clone()
+    //     );
+    // }
+    // let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
     
     println!("Results: {:.2} {:.2} {:.2} {:.2}\n", 
              seq_tput, par_tput, graph_par_tput, integrated_tput);

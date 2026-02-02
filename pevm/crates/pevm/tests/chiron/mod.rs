@@ -724,6 +724,7 @@ pub fn generate_n_blocks_with_controlled_conflicts(
     num_blocks: usize,
     num_tx_per_block: usize,
     config: BlockGenerationConfig,
+    unique_hot_ratio: f64,  // New parameter: probability of using unique hot keys (common_ratio = 0)
 ) -> (HashMap<Address, EvmAccount>, Bytecodes, Vec<Vec<TxEnv>>) {
     
     let total_accounts = num_blocks * num_tx_per_block;
@@ -740,6 +741,7 @@ pub fn generate_n_blocks_with_controlled_conflicts(
              config.common_access_ratio,
              config.zipf_theta,
              config.avg_accesses_per_tx);
+    println!("unique_hot_ratio: {:.2}", unique_hot_ratio);
     
     // Initialize shared state with chiron contract
     let chiron_account = Chiron::build();
@@ -767,6 +769,21 @@ pub fn generate_n_blocks_with_controlled_conflicts(
     
     // Generate transactions for each block
     for block_id in 0..num_blocks {
+        // Decide which config to use for this block based on unique_hot_ratio
+        let x: f64 = rng.gen(); // Generate random number in [0, 1)
+        let block_config = if x < unique_hot_ratio {
+            // Use unique hot keys (no common region access)
+            BlockGenerationConfig {
+                address_space_per_block: config.address_space_per_block,
+                common_access_ratio: 0.0,  // No common access
+                zipf_theta: config.zipf_theta,
+                avg_accesses_per_tx: config.avg_accesses_per_tx,
+            }
+        } else {
+            // Use the original config (with common region access)
+            config.clone()
+        };
+        
         let mut txs = Vec::new();
         
         // Calculate account range for this block
@@ -778,8 +795,6 @@ pub fn generate_n_blocks_with_controlled_conflicts(
         let zipf_block = Zipf::new(config.address_space_per_block as u64, config.zipf_theta)
             .expect("Invalid Zipf parameters for block region");
         
-        // println!("Block {}: accounts [{}, {})", block_id, start_idx, end_idx);
-        
         // Generate transactions for this block
         for &caller in block_accounts.iter() {
             // 1. Sample number of accesses (using Poisson distribution)
@@ -789,7 +804,7 @@ pub fn generate_n_blocks_with_controlled_conflicts(
             let writes = generate_accesses(
                 block_id,
                 num_accesses,
-                &config,
+                &block_config,  // Use the selected config for this block
                 &zipf_common,
                 &zipf_block,
                 &mut rng,

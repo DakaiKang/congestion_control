@@ -120,7 +120,7 @@ impl GraphScheduler {
             transactions_dependents: (0..block_size).map(|_| Mutex::default()).collect(),
             // We won't validate until we find the first non-lazy transaction that
             // needs to read explicit values. We also skip the first transaction.
-            validation_idx: AtomicUsize::new(block_size + 1),
+            validation_idx: AtomicUsize::new(block_size),
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
@@ -192,7 +192,7 @@ impl GraphScheduler {
             
             // Check if all tasks are done
             let all_done = !has_executable 
-                && validation_idx == self.block_size
+                && validation_idx >= self.block_size
                 && self.num_validated.load(Ordering::Relaxed)
                     >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed);
             
@@ -438,6 +438,14 @@ impl GraphScheduler {
             if tx.status == IncarnationStatus::Executed {
                 tx.status = IncarnationStatus::Validated;
                 self.num_validated.fetch_add(1, Ordering::Relaxed);
+                
+                // Debugging info for last validation
+                // let new_validated = self.num_validated.load(Ordering::Relaxed);
+                // let expected = self.block_size - self.min_validation_idx.load(Ordering::Relaxed);
+                // if new_validated >= expected {
+                //     println!(" LAST VALIDATION: tx {} (total: {}), expected {}", 
+                //              tx_version.tx_idx, new_validated, expected);
+                // }
             }
         }
         None
