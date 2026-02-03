@@ -387,3 +387,5 @@ mod tests {
         );
     }
 }
+
+mod block_loader;
