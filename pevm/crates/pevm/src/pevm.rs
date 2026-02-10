@@ -12,7 +12,7 @@ use alloy_rpc_types_eth::{Block, BlockTransactions};
 use hashbrown::HashMap;
 use revm::{
     db::CacheDB,
-    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState},
+    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState, ExecutionResult},
     DatabaseCommit,
     Database,
     Evm,
@@ -458,13 +458,34 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
     let mut results = Vec::with_capacity(txs.len());
     let mut cumulative_gas_used: u64 = 0;
     let mut x = 0;
-    for tx in txs {
+    let mut count_failed = 0;
+    for (tx_idx, tx) in txs.into_iter().enumerate() {
         *evm.tx_mut() = tx;
         
         // TODO: More concrete type for `EVMError<StorageWrapperError<S>>`
         let result_and_state = evm
             .transact()
             .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+
+        match &result_and_state.result {
+            ExecutionResult::Success { .. } => {
+                // Success - no print
+            }
+            ExecutionResult::Revert { gas_used, output } => {
+                count_failed += 1;
+                println!("❌ Transaction {} REVERTED", tx_idx);
+                println!("  Gas used: {}", gas_used);
+                if !output.is_empty() {
+                    println!("  Revert reason: {}", String::from_utf8_lossy(output));
+                }
+            }
+            ExecutionResult::Halt { reason, gas_used } => {
+                count_failed += 1;
+                println!("❌ Transaction {} HALTED", tx_idx);
+                println!("  Gas used: {}", gas_used);
+                println!("  Halt reason: {:?}", reason);  // ← 关键：打印失败原因
+            }
+        }
 
         evm.db_mut().commit(result_and_state.state.clone());
 
@@ -477,6 +498,7 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
 
         results.push(execution_result);
     }
+    println!("✅ Executed {} transactions, {} failed.", x + results.len(), count_failed);
     Ok(results)
 }
 
@@ -514,9 +536,9 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
         let mut execution_result =
             PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
 
-        // cumulative_gas_used =
-        //     cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
-        // execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+        cumulative_gas_used =
+            cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+        execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
 
         results.push(execution_result);
     }

@@ -59,13 +59,25 @@ impl GraphPevm {
             block_env.clone(),
             txs,
         )?;
-
+    
         let mut graph = TransactionGraph::new();
+        let mut previous_cumulative_gas = 0u64;  
+        
         for i in 0..result.len() {
-            let txn_node = TransactionNode::new(i as u64, replica, 1, result[i].receipt.cumulative_gas_used, HashSet::new(), access_set[i].clone());
+            let tx_gas_used = result[i].receipt.cumulative_gas_used - previous_cumulative_gas;
+            previous_cumulative_gas = result[i].receipt.cumulative_gas_used;
+            
+            let txn_node = TransactionNode::new(
+                i as u64, 
+                replica, 
+                1, 
+                tx_gas_used, 
+                HashSet::new(), 
+                access_set[i].clone()
+            );
             graph.add_transaction(txn_node);
         }
-
+    
         Ok((graph, result))
     }
 
