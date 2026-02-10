@@ -4,16 +4,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // use std::collections::HashMap;
 use hashbrown::HashMap;
-use std::fs;
-use std::error::Error;
+use std::{
+    collections::{VecDeque, HashSet},
+    num::NonZeroUsize,
+    thread,
+    sync::{Arc, Mutex as StdMutex},
+    fs,
+    error::Error,
+};
 use anyhow::Result;
 
 // Adjust these imports based on your actual project
-use revm::primitives::{Address, U256, B256, Bytes, AccountInfo, Bytecode, BlockEnv, SpecId, BlobExcessGasAndPrice};
+use revm::primitives::{Address, TxEnv, U256, B256, Bytes, AccountInfo, Bytecode, BlockEnv, SpecId, BlobExcessGasAndPrice};
 use alloy_consensus::TxEnvelope;
-use revm::primitives::TxEnv;
-use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEthereum, EvmCode, BlockHashes, BuildSuffixHasher};
-use crate::{PevmError, execute_revm_sequential, PevmResult};
+use alloy_consensus::Eip658Value::Eip658;
+use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEthereum, EvmCode, BlockHashes, BuildSuffixHasher, Pevm};
+use crate::{PevmError, execute_revm_sequential, PevmResult, graph_pevm::GraphPevm};
 use rustc_hash::FxBuildHasher;
 
 /// Block data structure from JSON file
@@ -143,20 +149,7 @@ pub fn prestate_to_storage(block_data: &BlockData) -> InMemoryStorage {
     
     println!("\n=== DEBUG: prestate_to_storage ===");
     println!("Block number: {}", block_data.number);
-    println!("Prestate is_object: {}", block_data.prestate.is_object());
     println!("Prestate is_array: {}", block_data.prestate.is_array());
-    
-    // Print raw prestate
-    if block_data.prestate.is_array() {
-        if let Some(arr) = block_data.prestate.as_array() {
-            println!("Prestate array length: {}", arr.len());
-            // Print first transaction's prestate
-            if let Some(first) = arr.first() {
-                println!("First tx prestate:");
-                println!("{}", serde_json::to_string_pretty(first).unwrap());
-            }
-        }
-    }
     
     let mut chain_state = ChainState::default();
     let mut bytecodes = Bytecodes::default();
@@ -189,18 +182,18 @@ pub fn prestate_to_storage(block_data: &BlockData) -> InMemoryStorage {
         let balance = account.balance.as_ref()
             .map(|b| {
                 let val = parse_hex_u256(b);
-                println!("Address {}: balance {} -> {:?}", &addr_str[..10], b, val);
+                // println!("Address {}: balance {} -> {:?}", &addr_str[..10], b, val);
                 val
             })
             .unwrap_or(U256::ZERO);
         
         // Parse nonce
         let nonce = account.nonce.unwrap_or_else(|| {
-            println!("Address {}: nonce is None, defaulting to 0", &addr_str[..10]);
+            // println!("Address {}: nonce is None, defaulting to 0", &addr_str[..10]);
             0
         });
         
-        println!("Address {}: final nonce = {}", &addr_str[..10], nonce);
+        // println!("Address {}: final nonce = {}", &addr_str[..10], nonce);
         
         // Parse code
         let code_hash = if let Some(code_hex) = &account.code {
@@ -211,7 +204,7 @@ pub fn prestate_to_storage(block_data: &BlockData) -> InMemoryStorage {
                 let hash = revm::primitives::keccak256(&code_bytes);
                 let bytecode = Bytecode::new_raw(code_bytes);
                 bytecodes.insert(hash, bytecode.into());
-                println!("Address {}: has code, hash = {:?}", &addr_str[..10], hash);
+                // println!("Address {}: has code, hash = {:?}", &addr_str[..10], hash);
                 Some(hash)
             }
         } else {
@@ -225,7 +218,7 @@ pub fn prestate_to_storage(block_data: &BlockData) -> InMemoryStorage {
             for (slot_str, value_str) in slots {
                 s.insert(parse_hex_u256(slot_str), parse_hex_u256(value_str));
             }
-            println!("Address {}: {} storage slots", &addr_str[..10], s.len());
+            // println!("Address {}: {} storage slots", &addr_str[..10], s.len());
             s
         } else {
             HashMap::with_hasher(FxBuildHasher::default())
@@ -314,9 +307,9 @@ pub fn transactions_to_txenvs(block_data: &BlockData) -> Result<Vec<TxEnv>> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         
-        println!("Transaction {}: hash={}", idx, tx_hash);
-        println!("  From: {:?}", tx_env.caller);
-        println!("  To: {:?}", tx_env.transact_to);
+        // println!("Transaction {}: hash={}", idx, tx_hash);
+        // println!("  From: {:?}", tx_env.caller);
+        // println!("  To: {:?}", tx_env.transact_to);
         
         txenvs.push(tx_env);
     }
@@ -545,11 +538,29 @@ fn test_load_block() {
             let chain = PevmEthereum::mainnet();
             let spec_id = get_spec_id(blocknum);
             let block_env = create_block_env(&block);
-            let exec_result = execute_revm_sequential(&chain, &storage, spec_id, block_env, txs);
+            let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+            // Sequential
+            // let exec_result = execute_revm_sequential(&chain, &storage, spec_id, block_env, txs);
+
+            // OCC
+            // let exec_result = Pevm::default().execute_revm_parallel(&chain, &storage, spec_id, block_env, txs, concurrency_level);
+            
+            // OCC + Dependency Graph
+            let (mut graph1, r) = GraphPevm::construct_graph_pevm_by_sequential(&chain, &storage, spec_id, block_env.clone(), txs.clone(), 1).unwrap();
+            let (txs, mut new_graph) = GraphPevm::reorder_txs_by_dependency_graph(txs, &mut graph1, 8);
+            let mut pevm = GraphPevm::default();
+            let exec_result = pevm.execute_revm_parallel(&chain, &storage, spec_id, block_env, txs, concurrency_level, new_graph);
+
             // output execution result to file "result.txt"
             match exec_result {
                 Ok(result) => {
+                    let total = result.len();
+                    let successful = result.iter()
+                        .filter(|r| matches!(r.receipt.status, Eip658(true)))
+                        .count();
+                    let failed = total - successful;
                     println!("✓ Successfully executed block");
+                    println!("✅ Executed {} transactions, {} failed.", total, failed);
                     std::fs::write("result.txt", format!("{:#?}", result)).expect("Failed to write execution result to file");
                 }
                 Err(e) => {
@@ -567,6 +578,5 @@ fn test_load_block() {
 
 
     }
-
-    
+   
 }
