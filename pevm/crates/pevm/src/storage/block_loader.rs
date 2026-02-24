@@ -19,7 +19,7 @@ use revm::primitives::{Address, TxEnv, U256, B256, Bytes, AccountInfo, Bytecode,
 use alloy_consensus::TxEnvelope;
 use alloy_consensus::Eip658Value::Eip658;
 use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEthereum, EvmCode, BlockHashes, BuildSuffixHasher, Pevm};
-use crate::{PevmError, execute_revm_sequential, PevmResult, graph_pevm::GraphPevm};
+use crate::{PevmError, execute_revm_sequential, execute_revm_sequential_with_access_sets, PevmResult, graph_pevm::GraphPevm};
 use rustc_hash::FxBuildHasher;
 
 /// Block data structure from JSON file
@@ -161,13 +161,13 @@ pub fn prestate_to_storage(block_data: &BlockData) -> InMemoryStorage {
         let merged = merge_transaction_prestates(&block_data.prestate);
         println!("\n=== After merge ===");
         println!("Merged accounts: {}", merged.len());
-        // for (addr, account) in merged.iter() {
-        //     println!("Address: {}", addr);
-        //     println!("  Balance: {:?}", account.balance);
-        //     println!("  Nonce: {:?}", account.nonce);
-        //     println!("  Code: {:?}", account.code.as_ref().map(|s| &s[..20.min(s.len())]));
-        //     println!("  Storage: {} slots", account.storage.as_ref().map(|s| s.len()).unwrap_or(0));
-        // }
+        for (addr, account) in merged.iter() {
+            // println!("Address: {}", addr);
+            // println!("  Balance: {:?}", account.balance);
+            // println!("  Nonce: {:?}", account.nonce);
+            // println!("  Code: {:?}", account.code.as_ref().map(|s| &s[..20.min(s.len())]));
+            // println!("  Storage: {} slots", account.storage.as_ref().map(|s| s.len()).unwrap_or(0));
+        }
         merged
     } else {
         HashMap::new()
@@ -410,12 +410,12 @@ fn parse_hex_u128(hex: &str) -> u128 {
 /// Convenience function: load block and convert in one step
 pub fn load_block_for_execution(
     filepath: &str,
-) -> Result<(InMemoryStorage, Vec<TxEnv>)> {
+) -> Result<(BlockData, InMemoryStorage, Vec<TxEnv>)> {
     let block_data = load_block_from_file(filepath)?;
     let storage = prestate_to_storage(&block_data);
     let txenvs = transactions_to_txenvs(&block_data)?;
     
-    Ok((storage, txenvs))
+    Ok((block_data, storage, txenvs))
 }
 
 /// Merge prestate from multiple transactions into a single map
@@ -423,7 +423,38 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
     let mut merged = HashMap::new();
     
     if let Some(array) = prestate_array.as_array() {
-        for tx_prestate in array {
+        if let Some(first_tx_prestate) = array.first() {
+            if let Some(result) = first_tx_prestate.get("result") {
+                if let Some(accounts) = result.as_object() {
+                    for (addr, account_data) in accounts {
+                        let account = PrestateAccount {
+                            balance: account_data.get("balance")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            
+                            nonce: account_data.get("nonce")
+                                .and_then(|v| v.as_u64()).or_else(|| Some(0)),
+                            
+                            code: account_data.get("code")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            
+                            storage: account_data.get("storage")
+                                .and_then(|v| v.as_object())
+                                .map(|obj| {
+                                    obj.iter()
+                                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("0x0").to_string()))
+                                        .collect()
+                                }),
+                        };
+                        
+                        merged.insert(addr.clone(), account);
+                    }
+                }
+            }
+        }
+        
+        for tx_prestate in array.iter().skip(1) {
             if let Some(result) = tx_prestate.get("result") {
                 if let Some(accounts) = result.as_object() {
                     for (addr, account_data) in accounts {
@@ -436,7 +467,6 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
                             }
                         });
                         
-                        // 更新 balance/nonce/code (保留第一次出现的)
                         if entry.balance.is_none() {
                             entry.balance = account_data.get("balance")
                                 .and_then(|v| v.as_str())
@@ -445,7 +475,7 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
                         
                         if entry.nonce.is_none() {
                             entry.nonce = account_data.get("nonce")
-                                .and_then(|v| v.as_u64());
+                                .and_then(|v| v.as_u64()).or_else(|| Some(0));
                         }
                         
                         if entry.code.is_none() {
@@ -454,13 +484,11 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
                                 .map(|s| s.to_string());
                         }
                         
-                        // 合并 storage (收集所有出现过的 slots)
                         if let Some(new_storage) = account_data.get("storage")
                             .and_then(|v| v.as_object()) 
                         {
                             let storage = entry.storage.get_or_insert_with(HashMap::new);
                             for (k, v) in new_storage {
-                                // 只在 slot 第一次出现时插入
                                 storage.entry(k.clone()).or_insert_with(|| {
                                     v.as_str().unwrap_or("0x0").to_string()
                                 });
@@ -473,6 +501,147 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
     }
     
     merged
+}
+
+/// Merge prestates from multiple blocks by block numbers
+pub fn merge_multiple_blocks_prestates(
+    block_numbers: &[u64]
+) -> Result<HashMap<String, PrestateAccount>> {
+    let mut merged = HashMap::new();
+    
+    for block_num in block_numbers {
+        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        println!("Loading prestate from block {}: {}", block_num, filepath);
+        
+        // Load block data
+        let block_data = load_block_from_file(&filepath)?;
+        
+        // Merge this block's prestate
+        let block_prestate = merge_transaction_prestates(&block_data.prestate);
+        
+        // Merge into the global map
+        for (addr, account) in block_prestate {
+            merge_account_into(&mut merged, addr, account);
+        }
+    }
+    
+    println!("Total unique addresses across all blocks: {}", merged.len());
+    
+    Ok(merged)
+}
+
+/// Merge a single account into the existing map
+/// Strategy: Keep the latest (most recent) non-None values
+fn merge_account_into(
+    merged: &mut HashMap<String, PrestateAccount>,
+    addr: String,
+    new_account: PrestateAccount,
+) {
+    let entry = merged.entry(addr).or_insert_with(|| {
+        PrestateAccount {
+            balance: None,
+            nonce: None,
+            code: None,
+            storage: None,
+        }
+    });
+    
+    // Update with new values (overwrite if new account has data)
+    if new_account.balance.is_some() {
+        entry.balance = new_account.balance;
+    }
+    
+    if new_account.nonce.is_some() {
+        entry.nonce = new_account.nonce;
+    }
+    
+    if new_account.code.is_some() {
+        entry.code = new_account.code;
+    }
+    
+    // Merge storage: add new slots, keep existing ones
+    if let Some(new_storage) = new_account.storage {
+        let storage = entry.storage.get_or_insert_with(HashMap::new);
+        for (k, v) in new_storage {
+            storage.insert(k, v);  // Overwrite with latest value
+        }
+    }
+}
+
+/// Create a combined InMemoryStorage from multiple blocks
+pub fn create_multi_block_storage(
+    block_numbers: &[u64]
+) -> Result<InMemoryStorage> {
+    // Merge all prestates
+    let merged_prestate = merge_multiple_blocks_prestates(block_numbers)?;
+    
+    // Get the first block's number and parent_hash for block_hashes
+    let first_filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_numbers[0]);
+    let first_block = load_block_from_file(&first_filepath)?;
+    
+    // Convert to InMemoryStorage
+    let mut chain_state = ChainState::default();
+    let mut bytecodes = Bytecodes::default();
+    
+    for (addr_str, account) in &merged_prestate {
+        let address = parse_hex_address(addr_str);
+        
+        let balance = account.balance.as_ref()
+            .map(|b| parse_hex_u256(b))
+            .unwrap_or(U256::ZERO);
+        
+        let nonce = account.nonce.unwrap_or(0);
+        
+        let code_hash = if let Some(code_hex) = &account.code {
+            if code_hex == "0x" || code_hex.is_empty() {
+                None
+            } else {
+                let code_bytes = parse_hex_bytes(code_hex);
+                let hash = revm::primitives::keccak256(&code_bytes);
+                let bytecode = Bytecode::new_raw(code_bytes);
+                bytecodes.insert(hash, bytecode.into());
+                Some(hash)
+            }
+        } else {
+            None
+        };
+        
+        let storage = if let Some(slots) = &account.storage {
+            let mut s: HashMap<U256, U256, FxBuildHasher> = 
+                HashMap::with_hasher(FxBuildHasher::default());
+            for (slot_str, value_str) in slots {
+                s.insert(parse_hex_u256(slot_str), parse_hex_u256(value_str));
+            }
+            s
+        } else {
+            HashMap::with_hasher(FxBuildHasher::default())
+        };
+        
+        let evm_account = EvmAccount {
+            balance,
+            nonce,
+            code_hash,
+            code: None,
+            storage,
+        };
+        
+        chain_state.insert(address, evm_account);
+    }
+    
+    // Create block hashes
+    let mut block_hashes = BlockHashes::default();
+    if first_block.number > 0 {
+        if let Some(parent_hash_str) = &first_block.parent_hash {
+            let parent_hash = parse_hex_b256(parent_hash_str);
+            block_hashes.insert(first_block.number - 1, parent_hash);
+        }
+    }
+    
+    Ok(InMemoryStorage::new(
+        chain_state,
+        Arc::new(bytecodes),
+        Arc::new(block_hashes),
+    ))
 }
 
 pub fn get_spec_id(block_num: u64) -> SpecId {
@@ -580,3 +749,235 @@ fn test_load_block() {
     }
    
 }
+
+
+#[test]
+fn test_blocks_batch() -> Result<()> {
+    let block_nums = vec![10646440];
+    
+    for block_num in block_nums {
+        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        let chain = PevmEthereum::mainnet();
+        let (block_data, storage, txenvs) = load_block_for_execution(&filepath)?;
+        let spec_id = get_spec_id(block_num);
+        let block_env = create_block_env(&block_data);
+
+        println!("\nBlock {}: {} txs, {:?}", block_num, txenvs.len(), spec_id);
+        
+        // Test execution
+        let results = execute_revm_sequential(&chain, &storage, spec_id, block_env, txenvs)?;
+        
+        let failed = results.iter()
+            .filter(|r| matches!(r.receipt.status, Eip658(false)))
+            .count();
+        
+        println!("  Failed: {}/{}", failed, results.len());
+    }
+    
+    Ok(())
+}
+
+
+
+/// Hot resources statistics based on actual execution access sets
+#[derive(Debug)]
+pub struct BlockHotResourcesFromExecution {
+    pub block_num: u64,
+    pub total_transactions: usize,
+    pub resource_access_count: HashMap<u64, usize>,  // key -> access_count
+    pub hot_resources: Vec<(u64, usize)>,            // (key, access_count) sorted
+}
+
+impl BlockHotResourcesFromExecution {
+    pub fn print_hot_details(&self) {
+        println!("\n╔════════════════════════════════════════════════════════════════╗");
+        println!("║ Block {:<10}                                              ║", self.block_num);
+        println!("╠════════════════════════════════════════════════════════════════╣");
+        println!("║ Total Transactions:    {:<8}                               ║", self.total_transactions);
+        println!("║ Total Unique Resources: {:<8}                               ║", self.resource_access_count.len());
+        println!("║ Hot Resources (top 20%): {:<8}                              ║", self.hot_resources.len());
+        println!("╚════════════════════════════════════════════════════════════════╝");
+        
+        println!("\nTop Hot Resources:");
+        println!("  {:<20} {:>10} {:>12}", "Resource Key", "Accesses", "Ratio");
+        println!("  {}", "-".repeat(45));
+        
+        for (key, count) in self.hot_resources.iter().take(20) {
+            let ratio = *count as f64 / self.total_transactions as f64;
+            println!("  {:<20} {:>10} {:>11.2}%", 
+                     format!("0x{:016x}", key), 
+                     count, 
+                     ratio * 100.0);
+        }
+    }
+}
+
+/// Analyze hot resources from execution access sets
+pub fn analyze_hot_resources_from_execution(
+    block_numbers: &[u64],
+    hot_threshold: f64,  // e.g., 0.2 for top 20%
+) -> Result<Vec<BlockHotResourcesFromExecution>> {
+    let chain = PevmEthereum::mainnet();
+    let mut all_blocks_hot = Vec::new();
+    
+    for block_num in block_numbers {
+        println!("\n=== Analyzing Block {} ===", block_num);
+        
+        // Load block
+        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        let (block_data, storage, txenvs) = load_block_for_execution(&filepath)?;
+        let spec_id = get_spec_id(*block_num);
+        let block_env = create_block_env(&block_data);
+
+        let total_transactions = txenvs.len();
+        println!("Total transactions: {}", total_transactions);
+        
+        // Execute and get access sets
+        let (_results, access_sets) = execute_revm_sequential_with_access_sets(
+            &chain,
+            &storage,
+            spec_id,
+            block_env,
+            txenvs,
+        )?;
+        
+        // Count access frequency for each resource
+        let mut resource_count: HashMap<u64, usize> = HashMap::new();
+        
+        for (tx_idx, access_set) in access_sets.iter().enumerate() {
+            for &key in access_set {
+                *resource_count.entry(key).or_insert(0) += 1;
+            }
+        }
+        
+        println!("Unique resources accessed: {}", resource_count.len());
+        
+        // Sort by access count
+        let mut sorted_resources: Vec<_> = resource_count.iter().collect();
+        sorted_resources.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        
+        // Get hot resources (top X%)
+        let hot_count = (sorted_resources.len() as f64 * hot_threshold).ceil() as usize;
+        let hot_resources: Vec<_> = sorted_resources.iter()
+            .take(hot_count)
+            .map(|(key, count)| (**key, **count))
+            .collect();
+        
+        println!("Hot resources (top {:.0}%): {}", hot_threshold * 100.0, hot_resources.len());
+        
+        let block_hot = BlockHotResourcesFromExecution {
+            block_num: *block_num,
+            total_transactions,
+            resource_access_count: resource_count,
+            hot_resources,
+        };
+        
+        block_hot.print_hot_details();
+        
+        all_blocks_hot.push(block_hot);
+    }
+    
+    Ok(all_blocks_hot)
+}
+
+/// Analyze hot resource overlap across blocks
+pub fn analyze_hot_resource_overlap_from_execution(
+    block_numbers: &[u64],
+    hot_threshold: f64,
+) -> Result<()> {
+    let blocks_hot = analyze_hot_resources_from_execution(block_numbers, hot_threshold)?;
+    
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║          Hot Resource Overlap Analysis                        ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    
+    // Build overlap map: resource_key -> list of (block_num, access_count)
+    let mut resource_blocks: HashMap<u64, Vec<(u64, usize)>> = HashMap::new();
+    
+    for block_hot in &blocks_hot {
+        for (key, count) in &block_hot.hot_resources {
+            resource_blocks.entry(*key)
+                .or_insert_with(Vec::new)
+                .push((block_hot.block_num, *count));
+        }
+    }
+    
+    // Find resources appearing in multiple blocks
+    let mut multi_block_resources: Vec<_> = resource_blocks.iter()
+        .filter(|(_, blocks)| blocks.len() > 1)
+        .collect();
+    
+    multi_block_resources.sort_by_key(|(_, blocks)| std::cmp::Reverse(blocks.len()));
+    
+    println!("Resources appearing in multiple blocks: {}", multi_block_resources.len());
+    
+    if !multi_block_resources.is_empty() {
+        println!("\nTop Common Hot Resources:");
+        println!("  {:<20} {:>10} {:>12}", "Resource Key", "# Blocks", "Avg Ratio");
+        println!("  {}", "-".repeat(45));
+        
+        for (key, blocks) in multi_block_resources.iter().take(20) {
+            // Calculate average access ratio
+            let mut total_ratio = 0.0;
+            for (block_num, count) in *blocks {
+                if let Some(block_hot) = blocks_hot.iter().find(|b| b.block_num == *block_num) {
+                    let ratio = *count as f64 / block_hot.total_transactions as f64;
+                    total_ratio += ratio;
+                }
+            }
+            let avg_ratio = total_ratio / blocks.len() as f64;
+            
+            println!("  {:<20} {:>10} {:>11.2}%", 
+                     format!("0x{:016x}", key),
+                     blocks.len(),
+                     avg_ratio * 100.0);
+        }
+        
+        // Detailed per-block breakdown for top common resources
+        println!("\n\nDetailed Per-Block Access for Top Common Resources:");
+        for (key, blocks) in multi_block_resources.iter().take(5) {
+            println!("\n  Resource: 0x{:016x}", key);
+            println!("    {:<12} {:>10} {:>12}", "Block", "Accesses", "Ratio");
+            println!("    {}", "-".repeat(37));
+            
+            for (block_num, count) in *blocks {
+                if let Some(block_hot) = blocks_hot.iter().find(|b| b.block_num == *block_num) {
+                    let ratio = *count as f64 / block_hot.total_transactions as f64;
+                    println!("    {:<12} {:>10} {:>11.2}%", 
+                             block_num, count, ratio * 100.0);
+                }
+            }
+        }
+    }
+    
+    // Calculate overlap statistics
+    let total_hot_instances: usize = blocks_hot.iter()
+        .map(|b| b.hot_resources.len())
+        .sum();
+    let unique_hot_resources = resource_blocks.len();
+    let overlap_ratio = if total_hot_instances > 0 {
+        1.0 - (unique_hot_resources as f64 / total_hot_instances as f64)
+    } else {
+        0.0
+    };
+    
+    println!("\n=== Overlap Metrics ===");
+    println!("  Total hot resource instances: {}", total_hot_instances);
+    println!("  Unique hot resources: {}", unique_hot_resources);
+    println!("  Overlap ratio: {:.2}%", overlap_ratio * 100.0);
+    
+    Ok(())
+}
+
+#[test]
+fn test_hot_resources_from_execution() -> Result<()> {
+    let block_nums:Vec<u64> = (10646423..10646472).collect();
+    let block_nums:Vec<u64> = (9646423..9646472).collect();
+    
+    // Analyze hot resources based on actual execution
+    analyze_hot_resource_overlap_from_execution(&block_nums, 0.05)?;
+    
+    Ok(())
+}
+
+
