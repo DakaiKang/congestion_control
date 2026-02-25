@@ -388,4 +388,4 @@ mod tests {
     }
 }
 
-mod block_loader;
+pub mod block_loader;

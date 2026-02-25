@@ -1,6 +1,6 @@
 // greedy_integrator.rs
 
-use crate::dependency_graph::{TransactionGraph, SimulationResult};
+use crate::dependency_graph::{TransactionGraph};
 use std::collections::HashSet;
 use revm::primitives::{TxEnv};
 use crate::graph_pevm::GraphPevm;

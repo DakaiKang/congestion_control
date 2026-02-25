@@ -11,7 +11,7 @@ pub use ethers::core::k256::{
 };
 
 use revm::{
-    primitives::{AuthorizationList, BlockEnv, SpecId, TxEnv, ruint::Uint},
+    primitives::{TxEnv},
     Handler,
 };
 

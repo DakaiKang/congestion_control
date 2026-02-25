@@ -5,7 +5,6 @@ use std::{
         Mutex, Condvar,
     },
     time::Duration,
-    thread,
 };
 
 use std::collections::{BinaryHeap, HashSet};
@@ -14,7 +13,7 @@ use std::cmp::Reverse;
 use smallvec::SmallVec;
 
 use crate::{FinishExecFlags, IncarnationStatus, Task, TxIdx, TxStatus, TxVersion};
-use crate::dependency_graph::{TransactionGraph, HeapEntry, TransactionNode};
+use crate::dependency_graph::{TransactionGraph};
 
 // The Pevm collaborative scheduler coordinates execution & validation
 // tasks among work threads.

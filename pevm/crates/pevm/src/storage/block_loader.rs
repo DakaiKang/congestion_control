@@ -667,11 +667,11 @@ pub fn get_spec_id(block_num: u64) -> SpecId {
 // Simple test for loading functionality
 #[test]
 fn test_load_block() {
-    let blocknum = 4_370_000;
-    let blocknum = 12_965_000;
-    let blocknum = 15_537_393;
-    let blocknum = 18_581_726;
-    let blocknum = 19_426_587;
+    // let blocknum = 4_370_000;
+    // let blocknum = 12_965_000;
+    // let blocknum = 15_537_393;
+    // let blocknum = 18_581_726;
+    // let blocknum = 19_426_587;
     let blocknum = 20_000_000;
     let filepath = "/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json".replace("{}", &blocknum.to_string());
     

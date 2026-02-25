@@ -1,37 +1,30 @@
 use std::{
     fmt::Debug,
     num::NonZeroUsize,
-    sync::{mpsc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     thread,
 };
 
 use std::collections::{HashSet};
 
-use alloy_primitives::{TxNonce, U256};
-use alloy_rpc_types_eth::{Block, BlockTransactions};
+use alloy_primitives::{U256};
 use hashbrown::HashMap;
 use revm::{
-    db::CacheDB,
-    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState},
-    DatabaseCommit,
+    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv},
     Database,
-    Evm,
 };
 
 use crate::{
-    api::update_storage_with_results,
     chain::PevmChain,
-    compat::get_block_env,
     hash_deterministic,
     mv_memory::MvMemory,
     graph_scheduler::GraphScheduler,
-    storage::StorageWrapper,
-    dependency_graph::{TransactionId, TransactionNode, TransactionGraph},
+    dependency_graph::{TransactionNode, TransactionGraph},
     pevm::{PevmError, execute_revm_sequential_with_access_sets, execute_revm_sequential, AbortReason, AsyncDropper, PevmResult},
     vm::{
-        build_evm, ExecutionError, PevmTxExecutionResult, Vm, VmExecutionError, VmExecutionResult,
+        ExecutionError, PevmTxExecutionResult, Vm, VmExecutionError, VmExecutionResult,
     },
-    EvmAccount, MemoryEntry, MemoryLocation, MemoryValue, Storage, Task, TxIdx, TxVersion,
+    EvmAccount, MemoryEntry, MemoryLocation, MemoryValue, Storage, Task, TxVersion,
 };
 
 #[derive(Debug, Default)]
