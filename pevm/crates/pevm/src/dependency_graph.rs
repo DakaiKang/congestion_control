@@ -709,6 +709,81 @@ impl TransactionGraph {
         println!("╚═══════════════════════════════════════════════════════════════════╝");
     }
 
+    /// Check if the graph has cycles
+pub fn has_cycle(&self) -> bool {
+    let n = self.nodes.len();
+    let mut visited = vec![false; n];
+    let mut rec_stack = vec![false; n];
+    
+    fn dfs(
+        node_idx: usize,
+        graph: &TransactionGraph,
+        visited: &mut Vec<bool>,
+        rec_stack: &mut Vec<bool>,
+        path: &mut Vec<usize>,  // 记录路径用于调试
+    ) -> bool {
+        visited[node_idx] = true;
+        rec_stack[node_idx] = true;
+        path.push(node_idx);
+        
+        // 遍历所有子节点
+        for &child_idx in &graph.nodes[node_idx].children_indices {
+            if !visited[child_idx] {
+                if dfs(child_idx, graph, visited, rec_stack, path) {
+                    return true;
+                }
+            } else if rec_stack[child_idx] {
+                // 找到循环！
+                println!("⚠️  Cycle detected:");
+                let cycle_start = path.iter().position(|&idx| idx == child_idx).unwrap();
+                for i in cycle_start..path.len() {
+                    let tx = &graph.nodes[path[i]];
+                    println!("  -> Tx {} (id={}, replica={})", 
+                             path[i], tx.id, tx.replica);
+                }
+                println!("  -> Tx {} (back to start)", child_idx);
+                return true;
+            }
+        }
+        
+        rec_stack[node_idx] = false;
+        path.pop();
+        false
+    }
+    
+    for i in 0..n {
+        if !visited[i] {
+            let mut path = Vec::new();
+            if dfs(i, self, &mut visited, &mut rec_stack, &mut path) {
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+/// Get the dependencies (parent transactions) of a transaction
+pub fn dependencies(&self, tx_idx: usize) -> Vec<usize> {
+    if tx_idx < self.nodes.len() {
+        self.nodes[tx_idx].parent_indices.iter().copied().collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Get node count
+pub fn node_count(&self) -> usize {
+    self.nodes.len()
+}
+
+/// Get edge count
+pub fn edge_count(&self) -> usize {
+    self.nodes.iter()
+        .map(|node| node.children_indices.len())
+        .sum()
+}
+
 }
 
 

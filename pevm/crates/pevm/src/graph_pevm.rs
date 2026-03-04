@@ -339,18 +339,22 @@ impl GraphPevm {
         loop {
             return match vm.execute(&tx_version) {
                 Err(VmExecutionError::Retry) => {
+                    // println!("GraphPevm: Retry execution for {:#?} by thread {:?}", tx_version, thread::current().id());
                     if self.abort_reason.get().is_none() {
                         continue;
                     }
                     None
                 }
                 Err(VmExecutionError::FallbackToSequential) => {
+                    // println!("GraphPevm: Fallback to sequential execution for {:#?} by thread {:?}", tx_version, thread::current().id());
                     scheduler.abort();
                     self.abort_reason
                         .get_or_init(|| AbortReason::FallbackToSequential);
                     None
                 }
                 Err(VmExecutionError::Blocking(blocking_tx_idx)) => {
+                    // println!("GraphPevm: Blocking on transaction index {} for {:#?} by thread {:?}", blocking_tx_idx, tx_version, thread::current().id());
+                    
                     if !scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx)
                         && self.abort_reason.get().is_none()
                     {
@@ -361,6 +365,7 @@ impl GraphPevm {
                     None
                 }
                 Err(VmExecutionError::ExecutionError(err)) => {
+                    // println!("GraphPevm: Execution error for {:#?} by thread {:?}: {:?}", tx_version, thread::current().id(), err);
                     scheduler.abort();
                     self.abort_reason
                         .get_or_init(|| AbortReason::ExecutionError(err));
@@ -370,6 +375,7 @@ impl GraphPevm {
                     execution_result,
                     flags,
                 }) => {
+                    // println!("GraphPevm: Finished execution for {:#?} by thread {:?}, scheduling validation", tx_version, thread::current().id());
                     *index_mutex!(self.execution_results, tx_version.tx_idx) =
                         Some(execution_result);
                     scheduler.finish_execution(tx_version, flags)

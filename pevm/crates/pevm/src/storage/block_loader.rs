@@ -546,24 +546,22 @@ fn merge_account_into(
         }
     });
     
-    // Update with new values (overwrite if new account has data)
-    if new_account.balance.is_some() {
+    if entry.balance.is_none() && new_account.balance.is_some() {
         entry.balance = new_account.balance;
     }
     
-    if new_account.nonce.is_some() {
+    if entry.nonce.is_none() && new_account.nonce.is_some() {
         entry.nonce = new_account.nonce;
     }
     
-    if new_account.code.is_some() {
+    if entry.code.is_none() && new_account.code.is_some() {
         entry.code = new_account.code;
     }
     
-    // Merge storage: add new slots, keep existing ones
     if let Some(new_storage) = new_account.storage {
         let storage = entry.storage.get_or_insert_with(HashMap::new);
         for (k, v) in new_storage {
-            storage.insert(k, v);  // Overwrite with latest value
+            storage.entry(k).or_insert(v); 
         }
     }
 }

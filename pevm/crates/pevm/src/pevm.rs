@@ -470,7 +470,7 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
         match &result_and_state.result {
             ExecutionResult::Success { .. } => {
                 // Success - no print
-                println!("✅ Transaction {} executed successfully", tx_idx);
+                // println!("✅ Transaction {} executed successfully", tx_idx);
             }
             ExecutionResult::Revert { gas_used, output } => {
                 count_failed += 1;

@@ -23,6 +23,8 @@ use std::collections::HashSet;
 use revm::primitives::{AccessListItem, BlockEnv, SpecId, TransactTo, TxEnv};
 use std::io::Write;
 
+use pevm::storage::block_loader::{load_block_for_execution, create_multi_block_storage, get_spec_id};
+use pevm::utils::nonce_tracker::{NonceTracker};
 
 #[path = "../benches/gigagas.rs"]
 pub mod gigagas;
@@ -556,23 +558,23 @@ pub fn different_conflict_test(
     
     let mut seq_tput = 0.0;
     let mut par_tput = 0.0;
-    // // 1. Sequential
-    // println!("Sequential...");
-    // let seq_start = Instant::now();
-    // let mut seq_storage = storage.clone();
-    // for txs in blocks_txs.clone() {
-    //     seq_storage = execute_sequential_and_update(seq_storage, txs);
-    // }
-    // let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
+    // 1. Sequential
+    println!("Sequential...");
+    let seq_start = Instant::now();
+    let mut seq_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        seq_storage = execute_sequential_and_update(seq_storage, txs);
+    }
+    let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
     
-    // // 2. Parallel (original)
-    // println!("Parallel...");
-    // let par_start = Instant::now();
-    // let mut par_storage = storage.clone();
-    // for txs in blocks_txs.clone() {
-    //     par_storage = execute_parallel_and_update(par_storage, txs);
-    // }
-    // let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
+    // 2. Parallel (original)
+    println!("Parallel...");
+    let par_start = Instant::now();
+    let mut par_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        par_storage = execute_parallel_and_update(par_storage, txs);
+    }
+    let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     
     // 3. Generate graphs and parallel with graphs
     println!("Generating graphs...");
@@ -589,36 +591,40 @@ pub fn different_conflict_test(
         graph_par_storage = execute_parallel_with_graph_and_update(
             graph_par_storage, 
             txs.clone(),
-            graph.clone()
+            graph.clone(),
+            SpecId::LATEST,
+            BlockEnv::default()
         );
     }
     let graph_par_tput = total_txs as f64 / graph_par_start.elapsed().as_secs_f64();
     let integrated_tput = 0.0;
-    // // 4. Greedy integration
-    // println!("Greedy integration...");
-    // let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-    //     tau_cv: 0.1,
-    //     num_threads: std::thread::available_parallelism()
-    //         .map(|n| n.get())
-    //         .unwrap_or(8),
-    // });
+    // 4. Greedy integration
+    println!("Greedy integration...");
+    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        tau_cv: 0.1,
+        num_threads: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8),
+    });
     
-    // let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
-    //     dependency_graphs,
-    //     reordered_blocks_txs,
-    // );
+    let (integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
+        dependency_graphs,
+        reordered_blocks_txs,
+    );
     
-    // println!("Parallel with integrated...");
-    // let integrated_start = Instant::now();
-    // let mut integrated_storage = storage.clone();
-    // for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
-    //     integrated_storage = execute_parallel_with_graph_and_update(
-    //         integrated_storage,
-    //         txs.clone(),
-    //         graph.clone()
-    //     );
-    // }
-    // let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
+    println!("Parallel with integrated...");
+    let integrated_start = Instant::now();
+    let mut integrated_storage = storage.clone();
+    for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+        integrated_storage = execute_parallel_with_graph_and_update(
+            integrated_storage,
+            txs.clone(),
+            graph.clone(),
+            SpecId::LATEST,
+            BlockEnv::default()
+        );
+    }
+    let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
     
     println!("Results: {:.2} {:.2} {:.2} {:.2}\n", 
              seq_tput, par_tput, graph_par_tput, integrated_tput);
@@ -634,6 +640,7 @@ fn generate_dependency_graphs(
     
     let mut reordered_txns_list = Vec::new(); 
     let mut new_graphs = Vec::new(); 
+    let mut current_storage = storage.clone(); 
     
     let concurrency_level = std::thread::available_parallelism()
         .unwrap_or(std::num::NonZeroUsize::MIN)
@@ -649,14 +656,16 @@ fn generate_dependency_graphs(
         let block_env = BlockEnv::default();
 
         // Construct graph using the same storage for all batches
-        let (mut graph, _r) = GraphPevm::construct_graph_pevm_by_sequential(
+        let (mut graph, results) = GraphPevm::construct_graph_pevm_by_sequential(
             &chain, 
-            &storage,  // Always use initial storage
+            &current_storage, 
             spec_id, 
             block_env, 
             txs.clone(), 
             i as u64
         ).unwrap();
+
+        update_storage_with_results(& mut current_storage, results);
 
         let (reordered_txns, new_graph) = GraphPevm::reorder_txs_by_dependency_graph(
             txs, 
@@ -719,10 +728,10 @@ fn execute_parallel_with_graph_and_update(
     mut storage: InMemoryStorage, 
     txs: Vec<TxEnv>,
     graph: pevm::dependency_graph::TransactionGraph,
+    spec_id: SpecId,    
+    block_env: BlockEnv, 
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::LATEST;
-    let block_env = BlockEnv::default();
     let concurrency_level = std::thread::available_parallelism()
         .unwrap_or(std::num::NonZeroUsize::MIN);
         
@@ -731,8 +740,8 @@ fn execute_parallel_with_graph_and_update(
     let result = pevm.execute_revm_parallel(
         &chain,
         &storage,
-        spec_id,
-        block_env,
+        spec_id,     
+        block_env,   
         txs, 
         concurrency_level,
         graph, 
@@ -925,4 +934,236 @@ fn running_in_dependency_graph(
         let duration = start.elapsed();
         println!("Dependency graph batch {} done in {:?}", i, duration);
     }
+}
+
+
+pub fn different_conflict_test_real_blocks(
+    start_block: u64,
+    num_blocks: usize,
+) -> (f64, f64, f64, f64) {
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║  Real Block Execution Test: Blocks {}-{}           ║", 
+             start_block, start_block + num_blocks as u64 - 1);
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    
+    let chain = PevmEthereum::mainnet();
+    let spec_id = get_spec_id(start_block);
+    // Build block numbers array
+    let block_numbers: Vec<u64> = (0..num_blocks as u64)
+        .map(|i| start_block + i)
+        .collect();
+    
+    // (1) Create merged storage from all blocks
+    println!("=== Creating merged storage from {} blocks ===", num_blocks);
+    let storage = match create_multi_block_storage(&block_numbers) {
+        Ok(s) => {
+            println!("✓ Merged storage created");
+            s
+        }
+        Err(e) => {
+            println!("❌ Failed to create merged storage: {:?}", e);
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+    };
+    
+    // (2) Load transactions from all blocks and create nonce tracker
+    println!("\n=== Loading transactions and building nonce tracker ===");
+    let mut blocks_txs = Vec::new();
+    let mut nonce_tracker = NonceTracker::new();
+    
+    for (idx, block_num) in block_numbers.iter().enumerate() {
+        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        
+        match load_block_for_execution(&filepath) {
+            Ok((block_data, block_storage, txenvs)) => {
+                println!("  Block {}: {} transactions", block_num, txenvs.len());
+                nonce_tracker.record_from_prestate(*block_num, &block_storage, &txenvs);
+                blocks_txs.push(txenvs);
+            }
+            Err(e) => {
+                println!("  ⚠️  Failed to load block {}: {:?}", block_num, e);
+            }
+        }
+    }
+    
+    if blocks_txs.is_empty() {
+        println!("❌ No blocks loaded successfully!");
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    
+    let total_txs: usize = blocks_txs.iter().map(|txs| txs.len()).sum();
+    println!("\n✓ Loaded {} blocks with {} total transactions", blocks_txs.len(), total_txs);
+    
+    // 1. Sequential
+    println!("\n=== 1. Sequential Execution ===");
+    let seq_start = Instant::now();
+    let mut seq_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        seq_storage = execute_sequential_and_update(seq_storage, txs);
+    }
+    let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
+    println!("Sequential throughput: {:.2} tx/s", seq_tput);
+    
+    // 2. Parallel (original)
+    println!("\n=== 2. Parallel Execution ===");
+    let par_start = Instant::now();
+    let mut par_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        par_storage = execute_parallel_and_update(par_storage, txs);
+    }
+    let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
+    println!("Parallel throughput: {:.2} tx/s", par_tput);
+    
+    // 3. Generate graphs and parallel with graphs
+    println!("\n=== 3. Generating Dependency Graphs ===");
+    let (_, reordered_blocks_txs, dependency_graphs) = 
+        generate_dependency_graphs(storage.clone(), blocks_txs);
+    
+    println!("=== 4. Parallel with Graphs ===");
+    let graph_par_start = Instant::now();
+    let mut graph_par_storage = storage.clone();
+    for (idx, (txs, graph)) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()).enumerate() {
+        if idx % 10 == 0 {
+            println!("  Processing block {}/{}", idx + 1, reordered_blocks_txs.len());
+        }
+        graph_par_storage = execute_parallel_with_graph_and_update(
+            graph_par_storage, 
+            txs.clone(),
+            graph.clone(),
+            spec_id,
+            BlockEnv::default(),
+        );
+    }
+    let graph_par_tput = total_txs as f64 / graph_par_start.elapsed().as_secs_f64();
+    println!("Parallel with graphs throughput: {:.2} tx/s", graph_par_tput);
+    
+    // 4. Greedy integration
+    println!("\n=== 5. Greedy Integration ===");
+    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        tau_cv: 0.1,
+        num_threads: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8),
+    });
+    
+    let (mut integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
+        dependency_graphs,
+        reordered_blocks_txs,
+    );
+
+    for graph in integrated_graphs.iter() {
+        if graph.has_cycle() {
+            println!("⚠️  Warning: Integrated graph has a cycle!");
+        }
+        else {
+            println!("✓ Integrated graph is acyclic");
+        }
+    }
+
+    // for txs in integrated_txns.iter_mut() {
+    //     for tx in txs.iter() {
+    //         println!("{:?}", tx.nonce);
+    //     }
+    // }
+    
+    // (3) Update nonces in integrated_txns using nonce_tracker
+    println!("  Updating nonces in integrated transactions...");
+    for txs in integrated_txns.iter_mut() {
+        nonce_tracker.update_txenv_nonces(txs);
+    }
+    println!("  ✓ Nonces updated");
+
+    // for txs in integrated_txns.iter_mut() {
+    //     for tx in txs.iter() {
+    //         println!("{:?}", tx.nonce);
+    //     }
+    // }
+    
+    println!("=== 6. Parallel with Integrated Graphs ===");
+    let integrated_start = Instant::now();
+    let mut integrated_storage = storage.clone();
+    for (idx, (txs, graph)) in integrated_txns.iter().zip(integrated_graphs.iter()).enumerate() {
+        if idx % 10 == 0 {
+            println!("  Processing integrated block {}/{}", idx + 1, integrated_txns.len());
+        }
+        integrated_storage = execute_parallel_with_graph_and_update(
+            integrated_storage,
+            txs.clone(),
+            graph.clone(),
+            spec_id,
+            BlockEnv::default(),
+        );
+    }
+    let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
+    println!("Integrated throughput: {:.2} tx/s", integrated_tput);
+    
+    println!("\n╔════════════════════════════════════════════════════════════════╗");
+    println!("║                         Results                                ║");
+    println!("╠════════════════════════════════════════════════════════════════╣");
+    println!("║ Sequential:           {:>10.2} tx/s                      ║", seq_tput);
+    println!("║ Parallel:             {:>10.2} tx/s                      ║", par_tput);
+    println!("║ Graph Parallel:       {:>10.2} tx/s                      ║", graph_par_tput);
+    println!("║ Integrated:           {:>10.2} tx/s                      ║", integrated_tput);
+    println!("╠════════════════════════════════════════════════════════════════╣");
+    println!("║ Parallel Speedup:     {:>10.2}x                          ║", par_tput / seq_tput);
+    println!("║ Graph Speedup:        {:>10.2}x                          ║", graph_par_tput / seq_tput);
+    println!("║ Integrated Speedup:   {:>10.2}x                          ║", integrated_tput / seq_tput);
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    
+    (seq_tput, par_tput, graph_par_tput, integrated_tput)
+}
+
+
+
+#[test]
+fn test_real_blocks_performance() {
+    let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
+        9646425,  // start_block
+        4,       // num_blocks
+    );
+    
+    println!("Final results:");
+    println!("  Sequential:  {:.2} tx/s", seq);
+    println!("  Parallel:    {:.2} tx/s", par);
+    println!("  Graph:       {:.2} tx/s", graph_par);
+    println!("  Integrated:  {:.2} tx/s", integrated);
+}
+
+
+fn has_cycle(graph: &TransactionGraph) -> bool {
+    let n = graph.node_count();
+    let mut visited = vec![false; n];
+    let mut rec_stack = vec![false; n];
+    
+    fn dfs(
+        node: usize,
+        graph: &TransactionGraph,
+        visited: &mut Vec<bool>,
+        rec_stack: &mut Vec<bool>,
+    ) -> bool {
+        visited[node] = true;
+        rec_stack[node] = true;
+        
+        for dep in graph.dependencies(node) {
+            if !visited[dep] {
+                if dfs(dep, graph, visited, rec_stack) {
+                    return true;
+                }
+            } else if rec_stack[dep] {
+                println!("      Cycle: {} -> {}", node, dep);
+                return true;
+            }
+        }
+        
+        rec_stack[node] = false;
+        false
+    }
+    
+    for i in 0..n {
+        if !visited[i] && dfs(i, graph, &mut visited, &mut rec_stack) {
+            return true;
+        }
+    }
+    
+    false
 }

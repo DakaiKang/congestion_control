@@ -222,7 +222,7 @@ mod mv_memory;
 mod pevm;
 pub use pevm::{execute_revm_sequential, Pevm, PevmError, PevmResult, execute_revm_sequential_with_access_sets};
 mod scheduler;
-mod storage;
+pub mod storage;
 pub use storage::{
     AccountBasic, BlockHashes, Bytecodes, ChainState, EvmAccount, EvmCode, InMemoryStorage,
     Storage, StorageWrapper,

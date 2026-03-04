@@ -157,26 +157,11 @@ impl GraphScheduler {
         None
     }
 
-    fn next_executable(&self) -> Option<TxIdx> {
-        let mut heap = self.executable_txs.lock().unwrap();
-        heap.pop().map(|Reverse(idx)| idx)
-    }
-
     fn add_executable(&self, tx_idx: TxIdx) {
         let mut heap = self.executable_txs.lock().unwrap();
         heap.push(Reverse(tx_idx));
         self.task_available.notify_one();
         // println!("Current executable tx count {}", heap.len());
-    }
-
-    fn peek_top(&self) -> Option<TxIdx> {
-        let heap = self.executable_txs.lock().unwrap();
-        heap.peek().map(|Reverse(idx)| *idx)
-    }
-    
-    fn is_empty(&self) -> bool {
-        let heap = self.executable_txs.lock().unwrap();
-        heap.is_empty()
     }
 
     pub fn next_task(&self) -> Option<Task> {
@@ -211,13 +196,13 @@ impl GraphScheduler {
                 let tx_idx = self.validation_idx.fetch_add(1, Ordering::Relaxed);
                 if tx_idx < self.block_size {
                     let mut tx = index_mutex!(self.transactions_status, tx_idx);
-                    // if tx.status == IncarnationStatus::ReadyToExecute {
-                    //     tx.status = IncarnationStatus::Executing;
-                    //     return Some(Task::Execution(TxVersion {
-                    //         tx_idx,
-                    //         tx_incarnation: tx.incarnation,
-                    //     }));
-                    // }
+                    if tx.status == IncarnationStatus::ReadyToExecute {
+                        tx.status = IncarnationStatus::Executing;
+                        return Some(Task::Execution(TxVersion {
+                            tx_idx,
+                            tx_incarnation: tx.incarnation,
+                        }));
+                    }
                     if matches!(
                         tx.status,
                         IncarnationStatus::Executed | IncarnationStatus::Validated
@@ -289,6 +274,7 @@ impl GraphScheduler {
 
         let mut blocking_dependents = index_mutex!(self.transactions_dependents, blocking_tx_idx);
         blocking_dependents.push(tx_idx);
+        println!("Added dependency: tx {} depends on blocking tx {}", tx_idx, blocking_tx_idx);
 
         true
     }
@@ -342,7 +328,9 @@ impl GraphScheduler {
         let mut dependents = index_mutex!(self.transactions_dependents, tx_version.tx_idx);
         for tx_idx in dependents.drain(..) {
             self.set_ready_status(tx_idx);
+            println!("Resuming dependent tx {}", tx_idx);
             if self.temp_parents.lock().unwrap()[tx_idx].is_empty() {
+                println!("Adding executable dependent tx {}", tx_idx);
                 self.add_executable(tx_idx);
             }
         }
