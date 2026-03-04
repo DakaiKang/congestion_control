@@ -1,200 +1,195 @@
 use std::{
     cmp::min,
+    collections::BinaryHeap,
+    cmp::Reverse,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex, Condvar,
+        Condvar, Mutex,
     },
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
-
-use std::collections::{BinaryHeap, HashSet};
-use std::cmp::Reverse;
 
 use smallvec::SmallVec;
 
 use crate::{FinishExecFlags, IncarnationStatus, Task, TxIdx, TxStatus, TxVersion};
-use crate::dependency_graph::{TransactionGraph};
+use crate::dependency_graph::TransactionGraph;
 
-// The Pevm collaborative scheduler coordinates execution & validation
-// tasks among work threads.
-//
-// To pick a task, threads increment the smaller of the (execution and
-// validation) task counters until they find a task that is ready to be
-// performed. To redo a task for a transaction, the thread updates the status
-// and reduces the corresponding counter to the transaction index if it had a
-// larger value.
-//
-// An incarnation may write to a memory location that was previously
-// read by a higher transaction. Thus, when an incarnation finishes, new
-// validation tasks are created for higher transactions.
-//
-// Validation tasks are scheduled optimistically and in parallel. Identifying
-// validation failures and aborting incarnations as soon as possible is critical
-// for performance, as any incarnation that reads values written by an
-// incarnation that aborts also must abort.
-// When an incarnation writes only to a subset of memory locations written
-// by the previously completed incarnation of the same transaction, we schedule
-// validation just for the incarnation. This is sufficient as the whole write
-// set of the previous incarnation is marked as ESTIMATE during the abort.
-// The abort leads to optimistically creating validation tasks for higher
-// transactions. Threads that perform these tasks can already detect validation
-// failure due to the ESTIMATE markers on memory locations, instead of waiting
-// for a subsequent incarnation to finish.
-#[derive(Debug)]
+/// GraphScheduler coordinates execution and validation tasks among worker threads
+/// based on an explicit dependency graph.
 pub struct GraphScheduler {
-    // The number of transactions in this block.
+    // ============ Fields inherited from basic Scheduler ============
     block_size: usize,
-    // The most up-to-date incarnation number (initially 0) and
-    // the status of this incarnation.
-    // TODO: Consider packing [TxStatus]s into atomics instead of
-    // [Mutex] given how small they are.
     transactions_status: Vec<Mutex<TxStatus>>,
-    // The list of dependent transactions to resume when the
-    // key transaction is re-executed.
     transactions_dependents: Vec<Mutex<SmallVec<[TxIdx; 1]>>>,
-    // The next transaction to try and execute.
-    execution_idx: AtomicUsize,
-    // The next transaction to try and validate.
     validation_idx: AtomicUsize,
-    // We won't validate until we find the first non-lazy transaction that
-    // needs to read explicit values. We also skip the first transaction.
     min_validation_idx: AtomicUsize,
-    // The number of validated transactions
     num_validated: AtomicUsize,
-    // True if the scheduler has been aborted, likely due to fatal execution
-    // errors.
     aborted: AtomicBool,
-    // The dependency graph of transactions
+    
+    // ============ New fields for GraphScheduler ============
     dependency_graph: TransactionGraph,
-    // The set of transactions without unexecuted parent transactions
     executable_txs: Mutex<BinaryHeap<Reverse<TxIdx>>>,
-    // Condition variable for tasks - notifies when new tasks are available
     task_available: Condvar,
-    // Temporary set of unexecuted transactions while scheduling transactions
-    temp_parents: Mutex<Vec<HashSet<usize>>>,
+    remaining_dependencies: Vec<AtomicUsize>,
 }
 
-// TODO: Better error handling.
-// Like returning errors instead of panicking on [unreachable]s.
+impl std::fmt::Debug for GraphScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphScheduler")
+            .field("block_size", &self.block_size)
+            .field("validation_idx", &self.validation_idx.load(Ordering::Relaxed))
+            .field("num_validated", &self.num_validated.load(Ordering::Relaxed))
+            .field("aborted", &self.aborted.load(Ordering::Relaxed))
+            .field("graph_nodes", &self.dependency_graph.nodes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl GraphScheduler {
+    /// Create a new GraphScheduler with the given dependency graph
     pub fn new(block_size: usize, dependency_graph: TransactionGraph) -> Self {
-
-        // for i in 0..dependency_graph.nodes.len() {
-        //     println!("Node {} {} {}: {:?} {:?}", i, dependency_graph.nodes[i].id, dependency_graph.nodes[i].replica, dependency_graph.nodes[i].children_indices, dependency_graph.nodes[i].parent_indices);
-        // }
-
-        let e_txs: Vec<_> = dependency_graph.nodes.iter()
-            .enumerate()
-            .filter_map(|(tx_idx, node)| {
-                // println!("tx_idx {}", tx_idx);
-                if node.parent_indices.len() == 0 {
-                    Some(tx_idx)
-                } else {
-                    None
-                }
-            })
+        println!("\n=== GraphScheduler Initialization ===");
+        
+        // Step 1: Initialize remaining_dependencies with parent count for each transaction
+        let remaining_dependencies: Vec<AtomicUsize> = dependency_graph.nodes.iter()
+            .map(|node| AtomicUsize::new(node.parent_indices.len()))
             .collect();
         
-        // println!("Initial executable transactions: {:?}", e_txs);
-
-        let heap = e_txs.into_iter().map(Reverse).collect();
-
-        let parents = dependency_graph.nodes.iter()
-            .map(|node| {
-                node.parent_indices.iter().cloned().collect()
-            })
-            .collect();
-
+        // Step 2: Find initial executable transactions (root nodes with no parents)
+        let mut executable_txs = BinaryHeap::new();
+        let mut root_count = 0;
+        
+        for (tx_idx, node) in dependency_graph.nodes.iter().enumerate() {
+            if node.parent_indices.is_empty() {
+                executable_txs.push(Reverse(tx_idx));
+                root_count += 1;
+                if root_count <= 10 {
+                    println!("  Root node: tx {}", tx_idx);
+                }
+            }
+        }
+        
+        println!("Total transactions: {}", block_size);
+        println!("Root nodes (initial executable): {}", root_count);
+        println!("Total edges in graph: {}", 
+                 dependency_graph.nodes.iter().map(|n| n.children_indices.len()).sum::<usize>());
+        println!("=====================================\n");
+        
         Self {
             block_size,
-            execution_idx: AtomicUsize::new(0),
             transactions_status: (0..block_size)
-                .map(|_| {
-                    Mutex::new(TxStatus {
-                        incarnation: 0,
-                        status: IncarnationStatus::ReadyToExecute,
-                    })
-                })
+                .map(|_| Mutex::new(TxStatus {
+                    incarnation: 0,
+                    status: IncarnationStatus::ReadyToExecute,
+                }))
                 .collect(),
             transactions_dependents: (0..block_size).map(|_| Mutex::default()).collect(),
-            // We won't validate until we find the first non-lazy transaction that
-            // needs to read explicit values. We also skip the first transaction.
             validation_idx: AtomicUsize::new(block_size),
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
             dependency_graph,
-            executable_txs: Mutex::new(heap),
+            executable_txs: Mutex::new(executable_txs),
             task_available: Condvar::new(),
-            temp_parents: Mutex::new(parents),
+            remaining_dependencies,
         }
     }
-
-    pub(crate) fn abort(&self) {
-        println!("ABORTING SCHEDULER");
+    
+    pub fn abort(&self) {
         self.aborted.store(true, Ordering::Relaxed);
     }
-
     
-    fn try_execute(&self, tx_idx: TxIdx) -> Option<TxVersion> {
-
-        // Check if the execution task has no unexecuted parents
-        let temp_parents = self.temp_parents.lock().unwrap();
-        if temp_parents.get(tx_idx).map_or(true, |parents| !parents.is_empty()) {
-            return None;
-        }
-
-        if tx_idx < self.block_size {
-            let mut tx = index_mutex!(self.transactions_status, tx_idx);
-            if tx.status == IncarnationStatus::ReadyToExecute {
-                tx.status = IncarnationStatus::Executing;
-                return Some(TxVersion {
-                    tx_idx,
-                    tx_incarnation: tx.incarnation,
-                });
+    /// Get the next task for a worker thread to execute
+    pub fn next_task(&self) -> Option<Task> {
+        let start_time = Instant::now();
+        let timeout = Duration::from_secs(1);
+        let mut iteration = 0;
+        
+        while !self.aborted.load(Ordering::Relaxed) {
+            iteration += 1;
+            
+            // Check timeout
+            if start_time.elapsed() > timeout {
+                println!("\n⚠️  TIMEOUT after {} iterations", iteration);
+                self.print_deadlock_info();
+                self.abort();
+                return None;
             }
+            
+            // Print status every 1000 iterations
+            if iteration % 100000 == 0 {
+                let heap_size = self.executable_txs.lock().unwrap().len();
+                let validation_idx = self.validation_idx.load(Ordering::Relaxed);
+                let num_validated = self.num_validated.load(Ordering::Relaxed);
+                
+                // println!("DEBUG [Iter {}] heap={}, val_idx={}, validated={}/{}", 
+                        //  iteration, heap_size, validation_idx, num_validated, self.block_size);
+            }
+            
+            // Step 1: Check if all tasks are done
+            if self.check_all_done() {
+                return None;
+            }
+            
+            // Step 2: Try to get a validation task
+            if let Some(task) = self.try_validation_task() {
+                return Some(task);
+            }
+            
+            // Step 3: Try to get an execution task
+            if let Some(task) = self.try_execution_task() {
+                return Some(task);
+            }
+            
+            // Step 4: No tasks available, yield CPU and retry
+            thread::yield_now();
         }
         None
     }
-
-    fn add_executable(&self, tx_idx: TxIdx) {
-        let mut heap = self.executable_txs.lock().unwrap();
-        heap.push(Reverse(tx_idx));
-        self.task_available.notify_one();
-        // println!("Current executable tx count {}", heap.len());
+    
+    fn check_all_done(&self) -> bool {
+        let has_executable = {
+            let heap = self.executable_txs.lock().unwrap();
+            !heap.is_empty()
+        };
+        
+        let validation_idx = self.validation_idx.load(Ordering::Relaxed);
+        let num_validated = self.num_validated.load(Ordering::Relaxed);
+        let min_validation_idx = self.min_validation_idx.load(Ordering::Relaxed);
+        
+        let all_done = !has_executable 
+            && validation_idx >= self.block_size
+            && num_validated >= self.block_size - min_validation_idx;
+        
+        if all_done {
+            self.task_available.notify_all();
+        }
+        
+        all_done
     }
-
-    pub fn next_task(&self) -> Option<Task> {
-        while !self.aborted.load(Ordering::Relaxed) {
-            let validation_idx = self.validation_idx.load(Ordering::Relaxed);
+    
+    fn try_validation_task(&self) -> Option<Task> {
+        let validation_idx = self.validation_idx.load(Ordering::Relaxed);
+        
+        let exec_idx = {
+            let heap = self.executable_txs.lock().unwrap();
+            heap.peek().map(|Reverse(idx)| *idx).unwrap_or(self.block_size)
+        };
+        
+        if validation_idx < exec_idx {
+            let tx_idx = self.validation_idx.fetch_add(1, Ordering::Relaxed);
             
-            // Check if there are executable transactions
-            let (has_executable, execution_idx) = {
-                let heap = self.executable_txs.lock().unwrap();
-                (!heap.is_empty(), heap.peek().map(|Reverse(idx)| *idx))
-            };
-            
-            // Check if all tasks are done
-            let all_done = !has_executable 
-                && validation_idx >= self.block_size
-                && self.num_validated.load(Ordering::Relaxed)
-                    >= self.block_size - self.min_validation_idx.load(Ordering::Relaxed);
-            
-            if all_done {
-                // All tasks are done, notify all waiting threads to exit
-                self.task_available.notify_all();
-                // println!("ALL DONE");
-                return None;
-            }
-
-            
-            // Get the exec_idx
-            let exec_idx = execution_idx.unwrap_or(self.block_size);
-            
-            // Prioritize a validation task to minimize re-execution
-            if validation_idx < exec_idx {
-                let tx_idx = self.validation_idx.fetch_add(1, Ordering::Relaxed);
-                if tx_idx < self.block_size {
+            if tx_idx < self.block_size {
+                // Try to steal execution job
+                let steal_attempted = {
+                    let tx = index_mutex!(self.transactions_status, tx_idx);
+                    let is_ready = tx.status == IncarnationStatus::ReadyToExecute;
+                    drop(tx);
+                    is_ready
+                };
+                
+                if steal_attempted && self.all_dependencies_satisfied(tx_idx) {
                     let mut tx = index_mutex!(self.transactions_status, tx_idx);
                     if tx.status == IncarnationStatus::ReadyToExecute {
                         tx.status = IncarnationStatus::Executing;
@@ -203,63 +198,80 @@ impl GraphScheduler {
                             tx_incarnation: tx.incarnation,
                         }));
                     }
-                    if matches!(
-                        tx.status,
-                        IncarnationStatus::Executed | IncarnationStatus::Validated
-                    ) {
-                        return Some(Task::Validation(TxVersion {
-                            tx_idx,
-                            tx_incarnation: tx.incarnation,
-                        }));
-                    }
-                    // if tx.status == IncarnationStatus::Aborting {
-                    //     continue;
-                    // }
-                    else {
-                        continue;
-                    }
+                }
+                
+                // Check for validation task
+                let tx = index_mutex!(self.transactions_status, tx_idx);
+                
+                if matches!(
+                    tx.status,
+                    IncarnationStatus::Executed | IncarnationStatus::Validated
+                ) {
+                    return Some(Task::Validation(TxVersion {
+                        tx_idx,
+                        tx_incarnation: tx.incarnation,
+                    }));
+                }
+                
+                if tx.status == IncarnationStatus::Aborting {
+                    return None;
                 }
             }
-            
-            // No validation task, try execution
-            // Try to get the next executable transaction
-            let next_tx_idx = {
-                let mut heap = self.executable_txs.lock().unwrap();
-                heap.pop().map(|Reverse(idx)| idx)
-            };
-            
-            if let Some(tx_idx) = next_tx_idx {
-                if let Some(tx_version) = self.try_execute(tx_idx) {
-                    return Some(Task::Execution(tx_version));
-                }
-            }
-
-            let mut heap = self.executable_txs.lock().unwrap();
-            let execution_idx = heap.peek().map(|Reverse(idx)| *idx);
-            let exec_idx = execution_idx.unwrap_or(self.block_size);
-            
-            // Check if we need to wait for new tasks
-            if heap.is_empty() 
-                && self.validation_idx.load(Ordering::Relaxed) >= exec_idx
-            {
-                let timeout = Duration::from_millis(10);
-                let (new_heap, _result) = self.task_available.wait_timeout(heap, timeout).unwrap();
-                heap = new_heap;
-            }
-                        
-            drop(heap);  
-
         }
+        
         None
     }
-
-    // Add [tx_idx] as a dependent of [blocking_tx_idx] so [tx_idx] is
-    // re-executed when the next [blocking_tx_idx] incarnation is executed.
-    // Return [false] if we encounter a race condition when [blocking_tx_idx]
-    // gets re-executed before the dependency can be added.
-    pub(crate) fn add_dependency(&self, tx_idx: TxIdx, blocking_tx_idx: TxIdx) -> bool {
-        // This is an important lock to prevent a race condition where the blocking
-        // transaction completes re-execution before this dependency can be added.
+    
+    fn try_execution_task(&self) -> Option<Task> {
+        let tx_idx = {
+            let mut heap = self.executable_txs.lock().unwrap();
+            let result = heap.pop().map(|Reverse(idx)| idx);
+            if let Some(idx) = result {
+                // println!("DEBUG [TryExecTask] Popped tx {} from heap", idx);
+            }
+            result
+        }?;
+        
+        let task = self.try_execute(tx_idx).map(Task::Execution);
+        if task.is_none() {
+            // println!("DEBUG [TryExecTask] try_execute failed for tx {}", tx_idx);
+        }
+        task
+    }
+    
+    fn try_execute(&self, tx_idx: TxIdx) -> Option<TxVersion> {
+        if tx_idx >= self.block_size {
+            // println!("DEBUG [TryExec] Tx {} out of bounds", tx_idx);
+            return None;
+        }
+        
+        let remaining = self.remaining_dependencies[tx_idx].load(Ordering::Relaxed);
+        if !self.all_dependencies_satisfied(tx_idx) {
+            // println!("DEBUG [TryExec] Tx {} deps not satisfied (remaining={})", tx_idx, remaining);
+            return None;
+        }
+        
+        let mut tx = self.transactions_status[tx_idx].lock().unwrap();
+        // println!("DEBUG [TryExec] Tx {} status={:?}", tx_idx, tx.status);
+        
+        if tx.status == IncarnationStatus::ReadyToExecute {
+            tx.status = IncarnationStatus::Executing;
+            // println!("DEBUG [TryExec] Tx {} NOW EXECUTING (incarnation {})", tx_idx, tx.incarnation);
+            return Some(TxVersion {
+                tx_idx,
+                tx_incarnation: tx.incarnation,
+            });
+        }
+        
+        // println!("DEBUG [TryExec] Tx {} not ReadyToExecute, returning None", tx_idx);
+        None
+    }
+    
+    fn all_dependencies_satisfied(&self, tx_idx: TxIdx) -> bool {
+        self.remaining_dependencies[tx_idx].load(Ordering::Relaxed) == 0
+    }
+    
+    pub fn add_dependency(&self, tx_idx: TxIdx, blocking_tx_idx: TxIdx) -> bool {
         let blocking_tx = index_mutex!(self.transactions_status, blocking_tx_idx);
         if matches!(
             blocking_tx.status,
@@ -274,42 +286,17 @@ impl GraphScheduler {
 
         let mut blocking_dependents = index_mutex!(self.transactions_dependents, blocking_tx_idx);
         blocking_dependents.push(tx_idx);
-        println!("Added dependency: tx {} depends on blocking tx {}", tx_idx, blocking_tx_idx);
 
         true
     }
-
+    
     fn set_ready_status(&self, tx_idx: TxIdx) {
         let mut tx = index_mutex!(self.transactions_status, tx_idx);
         debug_assert_eq!(tx.status, IncarnationStatus::Aborting);
         tx.status = IncarnationStatus::ReadyToExecute;
         tx.incarnation += 1;
     }
-
-    pub fn remove_parent(&self, parent_tx_idx: TxIdx) {
-        let mut temp_parents = self.temp_parents.lock().unwrap();
-        // println!("Children of parent {}: {:?}", parent_tx_idx, self.dependency_graph.nodes[parent_tx_idx].children_indices);
-        for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
-            // println!("Removing parent {} from child {}", parent_tx_idx, child_idx);
-            if let Some(parents) = temp_parents.get_mut(*child_idx) {
-                parents.remove(&parent_tx_idx);
-                if parents.is_empty() {
-                    self.add_executable(*child_idx);
-                }
-            }
-        }
-    }
-
-    pub fn add_parent(&self, parent_tx_idx: TxIdx) {
-        let mut temp_parents = self.temp_parents.lock().unwrap();
-        for child_idx in &self.dependency_graph.nodes[parent_tx_idx].children_indices {
-            // println!("Adding parent {} to child {}", parent_tx_idx, child_idx);
-            if let Some(parents) = temp_parents.get_mut(*child_idx) {
-                parents.insert(parent_tx_idx);
-            }
-        }
-    }
-
+    
     pub fn finish_execution(
         &self,
         tx_version: TxVersion,
@@ -319,24 +306,50 @@ impl GraphScheduler {
         debug_assert_eq!(tx.status, IncarnationStatus::Executing);
         debug_assert_eq!(tx.incarnation, tx_version.tx_incarnation);
 
-        // println!("Finish Execution for tx {}", tx_version.tx_idx);
-
-        // Release the transactions who are dependent on the just finished one in the dependency graph
-        self.remove_parent(tx_version.tx_idx);
-
-        // Resume dependent transactions that were found during execution
-        let mut dependents = index_mutex!(self.transactions_dependents, tx_version.tx_idx);
-        for tx_idx in dependents.drain(..) {
-            self.set_ready_status(tx_idx);
-            println!("Resuming dependent tx {}", tx_idx);
-            if self.temp_parents.lock().unwrap()[tx_idx].is_empty() {
-                println!("Adding executable dependent tx {}", tx_idx);
-                self.add_executable(tx_idx);
+        // Release dependency graph children
+        let children_indices = self.dependency_graph.nodes[tx_version.tx_idx]
+            .children_indices.clone();
+        
+        for &child_idx in &children_indices {
+            let prev_count = self.remaining_dependencies[child_idx]
+                .fetch_sub(1, Ordering::Relaxed);
+            
+            if prev_count == 1 {
+                let mut heap = self.executable_txs.lock().unwrap();
+                heap.push(Reverse(child_idx));
+                drop(heap);
+                self.task_available.notify_one();
+                
+                // println!("DEBUG [FinishExec] Tx {} released child {} (now executable)", 
+                        //  tx_version.tx_idx, child_idx);
+            } else if prev_count > 1 {
+                // println!("DEBUG [FinishExec] Tx {} released child {} ({} deps remaining)", 
+                        //  tx_version.tx_idx, child_idx, prev_count - 1);
             }
         }
-
-        // TODO: Simplify or better document this logic.
-        // Decide where to validate from next
+        
+        // Resume OCC dependents
+        let mut dependents = self.transactions_dependents[tx_version.tx_idx].lock().unwrap();
+        for tx_idx in dependents.drain(..) {
+            let remaining = self.remaining_dependencies[tx_idx].load(Ordering::Relaxed);
+            let deps_satisfied = self.all_dependencies_satisfied(tx_idx);
+    
+            // println!("DEBUG [FinishExec]   Tx {} after resume: remaining_deps={}, satisfied={}", 
+                    //  tx_idx, remaining, deps_satisfied);
+    
+            if deps_satisfied {
+                self.set_ready_status(tx_idx);
+                let mut heap = self.executable_txs.lock().unwrap();
+                heap.push(Reverse(tx_idx));
+                drop(heap);
+                self.task_available.notify_one();
+        
+                // println!("DEBUG [FinishExec]   Resumed OCC dependent tx {} (added to heap)", tx_idx);
+            } else {
+                // println!("DEBUG [FinishExec]   Tx {} NOT added to heap (deps not satisfied)", tx_idx);
+            }
+        }
+        // Handle validation scheduling
         let min_validation_idx = if flags.contains(FinishExecFlags::NeedValidation) {
             min(
                 self.min_validation_idx
@@ -346,19 +359,14 @@ impl GraphScheduler {
         } else {
             self.min_validation_idx.load(Ordering::Relaxed)
         };
-
-        // Have found a min validation index to even bother
+        
         if min_validation_idx < self.block_size {
-            // Must re-validate from min as this transaction is lower
             if tx_version.tx_idx < min_validation_idx {
                 if flags.contains(FinishExecFlags::WroteNewLocation) {
                     self.validation_idx
                         .fetch_min(min_validation_idx, Ordering::Relaxed);
                 }
-            }
-            // Validate from this transaction as it's in between min and the current
-            // validation index.
-            else if tx_version.tx_idx < self.validation_idx.load(Ordering::Relaxed) {
+            } else if tx_version.tx_idx < self.validation_idx.load(Ordering::Relaxed) {
                 if flags.contains(FinishExecFlags::WroteNewLocation) {
                     self.validation_idx
                         .fetch_min(tx_version.tx_idx + 1, Ordering::Relaxed);
@@ -370,11 +378,6 @@ impl GraphScheduler {
                 tx.status = IncarnationStatus::Validated;
                 self.num_validated.fetch_add(1, Ordering::Relaxed);
             }
-            // Don't need to validate anything if the current validation index is
-            // lower or equal -- it will catch up later.
-
-            // Notify the task_available condition variable in case threads are waiting
-            self.task_available.notify_one();
         }
 
         if flags.contains(FinishExecFlags::NeedValidation) {
@@ -385,12 +388,8 @@ impl GraphScheduler {
         }
         None
     }
-
-    // Return whether the abort was successful. A successful abort leads to
-    // scheduling the transaction for re-execution and the higher transactions
-    // for validation during [finish_validation]. The scheduler ensures that only
-    // one failing validation per version can lead to a successful abort.
-    pub(crate) fn try_validation_abort(&self, tx_version: &TxVersion) -> bool {
+    
+    pub fn try_validation_abort(&self, tx_version: &TxVersion) -> bool {
         let mut tx = index_mutex!(self.transactions_status, tx_version.tx_idx);
         if tx.status == IncarnationStatus::Validated {
             self.num_validated.fetch_sub(1, Ordering::Relaxed);
@@ -406,35 +405,83 @@ impl GraphScheduler {
         aborting
     }
 
-    // When there is a successful abort, schedule the transaction for re-execution
-    // and the higher transactions for validation. The re-execution task is returned
-    // for the aborted transaction.
-    pub(crate) fn finish_validation(&self, tx_version: &TxVersion, aborted: bool) -> Option<Task> {
+    pub fn finish_validation(&self, tx_version: &TxVersion, aborted: bool) -> Option<Task> {
         if aborted {
-            println!("Validation abort for tx {}", tx_version.tx_idx);
+            // println!("DEBUG [FinishVal] Tx {} validation failed, aborting", tx_version.tx_idx);
+            
             self.set_ready_status(tx_version.tx_idx);
             self.validation_idx
                 .fetch_min(tx_version.tx_idx + 1, Ordering::Relaxed);
-            self.add_parent(tx_version.tx_idx);
-            if self.temp_parents.lock().unwrap()[tx_version.tx_idx].is_empty() {
-                self.add_executable(tx_version.tx_idx);
+            
+            // Reset child dependencies
+            let children_indices = self.dependency_graph.nodes[tx_version.tx_idx]
+                .children_indices.clone();
+            
+            for &child_idx in &children_indices {
+                self.remaining_dependencies[child_idx].fetch_add(1, Ordering::Relaxed);
+                // println!("DEBUG [FinishVal] Reset child {} dependency (parent re-executing)", child_idx);
+            }
+            
+            if self.all_dependencies_satisfied(tx_version.tx_idx) {
+                return self.try_execute(tx_version.tx_idx).map(Task::Execution);
             }
         } else {
-            // println!("Validation success for tx {}", tx_version.tx_idx);
             let mut tx = index_mutex!(self.transactions_status, tx_version.tx_idx);
             if tx.status == IncarnationStatus::Executed {
                 tx.status = IncarnationStatus::Validated;
                 self.num_validated.fetch_add(1, Ordering::Relaxed);
-                
-                // Debugging info for last validation
-                // let new_validated = self.num_validated.load(Ordering::Relaxed);
-                // let expected = self.block_size - self.min_validation_idx.load(Ordering::Relaxed);
-                // if new_validated >= expected {
-                //     println!(" LAST VALIDATION: tx {} (total: {}), expected {}", 
-                //              tx_version.tx_idx, new_validated, expected);
-                // }
             }
         }
         None
+    }
+    
+    fn print_deadlock_info(&self) {
+        println!("\n=== DEADLOCK DIAGNOSTICS ===");
+        
+        let heap = self.executable_txs.lock().unwrap();
+        println!("Executable heap size: {}", heap.len());
+        if !heap.is_empty() {
+            let heap_vec: Vec<_> = heap.iter().map(|Reverse(idx)| *idx).collect();
+            println!("Executable txs: {:?}", heap_vec);
+        }
+        drop(heap);
+        
+        println!("Validation idx: {}", self.validation_idx.load(Ordering::Relaxed));
+        println!("Min validation idx: {}", self.min_validation_idx.load(Ordering::Relaxed));
+        println!("Num validated: {}/{}", 
+                 self.num_validated.load(Ordering::Relaxed), 
+                 self.block_size);
+        
+        println!("\nStuck transactions:");
+        let mut stuck_count = 0;
+        
+        for idx in 0..self.block_size {
+            let tx = index_mutex!(self.transactions_status, idx);
+            let remaining = self.remaining_dependencies[idx].load(Ordering::Relaxed);
+            
+            if !matches!(tx.status, IncarnationStatus::Validated) || remaining > 0 {
+                stuck_count += 1;
+                if stuck_count <= 20 {
+                    println!("  Tx {}: status={:?}, remaining_deps={}", 
+                             idx, tx.status, remaining);
+                    
+                    if remaining > 0 {
+                        let parents = &self.dependency_graph.nodes[idx].parent_indices;
+                        println!("    Parents: {:?}", parents);
+
+                        for &parent_idx in parents.iter().take(5) {
+                            {
+                                let parent_tx = self.transactions_status[parent_idx].lock().unwrap();
+                                println!("      Parent {}: status={:?}", parent_idx, parent_tx.status);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("\nTotal stuck: {}/{}", stuck_count, self.block_size);
+        println!("=== END DIAGNOSTICS ===\n");
+
     }
 }

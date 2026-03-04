@@ -555,7 +555,7 @@ fn extract_access_sets_from_result<DB: Database>(
     let mut balance_updated_accounts = HashSet::new();
     
     // Also check result_and_state for write information
-    // println!("Debug: result_and_state has {} accounts", result_and_state.state.len());
+    // // println!("DEBUG: result_and_state has {} accounts", result_and_state.state.len());
     for (address, account) in &result_and_state.state {
         if account.storage.len() == 0 {
             balance_updated_accounts.insert(*address);

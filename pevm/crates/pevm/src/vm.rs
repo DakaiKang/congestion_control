@@ -382,6 +382,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                 return if self.tx_idx > 0 {
                     // TODO: Better retry strategy -- immediately, to the
                     // closest sender tx, to the missing sender tx, etc.
+                    println!("Tx #{} has invalid nonce {}, expected {}", self.tx_idx, self.tx.nonce.unwrap(), account.nonce);
                     Err(ReadError::Blocking(self.tx_idx - 1))
                 } else {
                     Err(ReadError::InvalidNonce(self.tx_idx))
@@ -471,7 +472,9 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                             )?;
                             return Ok(*value);
                         }
-                        MemoryEntry::Estimate => return Err(ReadError::Blocking(*closest_idx)),
+                        MemoryEntry::Estimate => {
+                            return Err(ReadError::Blocking(*closest_idx));
+                        }
                         _ => return Err(ReadError::InvalidMemoryValueType),
                     }
                 }
@@ -550,6 +553,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
     ) -> Result<VmExecutionResult, VmExecutionError> {
         // SAFETY: A correct scheduler would guarantee this index to be inbound.
         let tx = unsafe { self.txs.get_unchecked(tx_version.tx_idx) };
+        // println!("tx_idx: {}, tx_caller: {}", tx_version.tx_idx, tx.caller);
         let from_hash = hash_deterministic(MemoryLocation::Basic(tx.caller));
         let to_hash = tx
             .transact_to

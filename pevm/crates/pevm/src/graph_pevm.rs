@@ -395,6 +395,7 @@ fn try_validate(
     let read_set_valid = mv_memory.validate_read_locations(tx_version.tx_idx);
     let aborted = !read_set_valid && scheduler.try_validation_abort(tx_version);
     if aborted {
+        println!("Validation aborted for tx {}", tx_version.tx_idx);
         mv_memory.convert_writes_to_estimates(tx_version.tx_idx);
     }
     scheduler.finish_validation(tx_version, aborted)

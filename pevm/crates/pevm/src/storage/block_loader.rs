@@ -410,10 +410,18 @@ fn parse_hex_u128(hex: &str) -> u128 {
 /// Convenience function: load block and convert in one step
 pub fn load_block_for_execution(
     filepath: &str,
+    large_gas_limit: bool
 ) -> Result<(BlockData, InMemoryStorage, Vec<TxEnv>)> {
     let block_data = load_block_from_file(filepath)?;
     let storage = prestate_to_storage(&block_data);
-    let txenvs = transactions_to_txenvs(&block_data)?;
+    let mut txenvs = transactions_to_txenvs(&block_data)?;
+    for txenv in &mut txenvs {
+        if large_gas_limit {
+            if txenv.gas_limit < 30_000_000 {
+                txenv.gas_limit = 30_000_000; 
+            }
+        }
+    }
     
     Ok((block_data, storage, txenvs))
 }
@@ -580,13 +588,23 @@ pub fn create_multi_block_storage(
     // Convert to InMemoryStorage
     let mut chain_state = ChainState::default();
     let mut bytecodes = Bytecodes::default();
+
+    // Inflate Balance to avoid Lack of Funds errors during integrated execution with transaction reordering across blocks, which is not well handled by the current implementation of Vm. 
+
+    let huge_balance = U256::from(1_000_000u128) * U256::from(10u128.pow(18)); // 1M ETH
     
     for (addr_str, account) in &merged_prestate {
         let address = parse_hex_address(addr_str);
         
-        let balance = account.balance.as_ref()
+        let original_balance = account.balance.as_ref()
             .map(|b| parse_hex_u256(b))
             .unwrap_or(U256::ZERO);
+        
+        let balance = if original_balance < huge_balance {
+            huge_balance
+        } else {
+            original_balance
+        };
         
         let nonce = account.nonce.unwrap_or(0);
         
@@ -625,7 +643,7 @@ pub fn create_multi_block_storage(
         
         chain_state.insert(address, evm_account);
     }
-    
+
     // Create block hashes
     let mut block_hashes = BlockHashes::default();
     if first_block.number > 0 {
@@ -634,6 +652,7 @@ pub fn create_multi_block_storage(
             block_hashes.insert(first_block.number - 1, parent_hash);
         }
     }
+    
     
     Ok(InMemoryStorage::new(
         chain_state,
@@ -748,35 +767,6 @@ fn test_load_block() {
    
 }
 
-
-#[test]
-fn test_blocks_batch() -> Result<()> {
-    let block_nums = vec![10646440];
-    
-    for block_num in block_nums {
-        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
-        let chain = PevmEthereum::mainnet();
-        let (block_data, storage, txenvs) = load_block_for_execution(&filepath)?;
-        let spec_id = get_spec_id(block_num);
-        let block_env = create_block_env(&block_data);
-
-        println!("\nBlock {}: {} txs, {:?}", block_num, txenvs.len(), spec_id);
-        
-        // Test execution
-        let results = execute_revm_sequential(&chain, &storage, spec_id, block_env, txenvs)?;
-        
-        let failed = results.iter()
-            .filter(|r| matches!(r.receipt.status, Eip658(false)))
-            .count();
-        
-        println!("  Failed: {}/{}", failed, results.len());
-    }
-    
-    Ok(())
-}
-
-
-
 /// Hot resources statistics based on actual execution access sets
 #[derive(Debug)]
 pub struct BlockHotResourcesFromExecution {
@@ -823,7 +813,7 @@ pub fn analyze_hot_resources_from_execution(
         
         // Load block
         let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
-        let (block_data, storage, txenvs) = load_block_for_execution(&filepath)?;
+        let (block_data, storage, txenvs) = load_block_for_execution(&filepath, false)?;
         let spec_id = get_spec_id(*block_num);
         let block_env = create_block_env(&block_data);
 

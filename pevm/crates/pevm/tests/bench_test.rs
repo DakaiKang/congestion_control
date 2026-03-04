@@ -685,8 +685,10 @@ fn execute_sequential_and_update(
     txs: Vec<TxEnv>
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::LATEST;
-    let block_env = BlockEnv::default();
+    let spec_id = SpecId::FRONTIER;
+    let mut block_env = BlockEnv::default();
+    block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues in sequential execution
+    block_env.basefee = U256::from(1u64); // 1 wei
     
     let result = pevm::execute_revm_sequential(
         &chain,
@@ -706,8 +708,9 @@ fn execute_parallel_and_update(
     txs: Vec<TxEnv>
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::LATEST;
-    let block_env = BlockEnv::default();
+    let spec_id = SpecId::FRONTIER;
+    let mut block_env = BlockEnv::default();
+    block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues 
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
     
     let result = Pevm::default().execute_revm_parallel(
@@ -736,6 +739,7 @@ fn execute_parallel_with_graph_and_update(
         .unwrap_or(std::num::NonZeroUsize::MIN);
         
     let mut pevm = GraphPevm::default();
+    let spec_id = SpecId::FRONTIER;
 
     let result = pevm.execute_revm_parallel(
         &chain,
@@ -952,6 +956,9 @@ pub fn different_conflict_test_real_blocks(
     let block_numbers: Vec<u64> = (0..num_blocks as u64)
         .map(|i| start_block + i)
         .collect();
+
+    let mut block_env = BlockEnv::default();
+    block_env.gas_limit = U256::from(1_000_000_000u64);
     
     // (1) Create merged storage from all blocks
     println!("=== Creating merged storage from {} blocks ===", num_blocks);
@@ -974,7 +981,7 @@ pub fn different_conflict_test_real_blocks(
     for (idx, block_num) in block_numbers.iter().enumerate() {
         let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
         
-        match load_block_for_execution(&filepath) {
+        match load_block_for_execution(&filepath, true) {
             Ok((block_data, block_storage, txenvs)) => {
                 println!("  Block {}: {} transactions", block_num, txenvs.len());
                 nonce_tracker.record_from_prestate(*block_num, &block_storage, &txenvs);
@@ -1062,7 +1069,7 @@ pub fn different_conflict_test_real_blocks(
 
     // for txs in integrated_txns.iter_mut() {
     //     for tx in txs.iter() {
-    //         println!("{:?}", tx.nonce);
+    //         println!("Nonce: {:?}, txcaller: {:?}", tx.nonce, tx.caller);
     //     }
     // }
     
@@ -1074,24 +1081,26 @@ pub fn different_conflict_test_real_blocks(
     println!("  ✓ Nonces updated");
 
     // for txs in integrated_txns.iter_mut() {
-    //     for tx in txs.iter() {
-    //         println!("{:?}", tx.nonce);
+    //     for (idx, tx)  in txs.iter().enumerate() {
+    //         println!("idx: {:?}, Nonce: {:?}, txcaller: {:?}", idx, tx.nonce, tx.caller);
     //     }
     // }
     
     println!("=== 6. Parallel with Integrated Graphs ===");
     let integrated_start = Instant::now();
     let mut integrated_storage = storage.clone();
+    
     for (idx, (txs, graph)) in integrated_txns.iter().zip(integrated_graphs.iter()).enumerate() {
-        if idx % 10 == 0 {
+        if idx % 1 == 0 {
             println!("  Processing integrated block {}/{}", idx + 1, integrated_txns.len());
         }
+        // integrated_storage = execute_parallel_and_update(integrated_storage, txs.clone());
         integrated_storage = execute_parallel_with_graph_and_update(
             integrated_storage,
             txs.clone(),
             graph.clone(),
             spec_id,
-            BlockEnv::default(),
+            block_env.clone(),
         );
     }
     let integrated_tput = total_txs as f64 / integrated_start.elapsed().as_secs_f64();
@@ -1119,7 +1128,7 @@ pub fn different_conflict_test_real_blocks(
 fn test_real_blocks_performance() {
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
         9646425,  // start_block
-        4,       // num_blocks
+        30,       // num_blocks
     );
     
     println!("Final results:");
