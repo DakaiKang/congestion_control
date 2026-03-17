@@ -49,7 +49,7 @@ impl std::fmt::Debug for GraphScheduler {
 impl GraphScheduler {
     /// Create a new GraphScheduler with the given dependency graph
     pub fn new(block_size: usize, dependency_graph: TransactionGraph) -> Self {
-        println!("\n=== GraphScheduler Initialization ===");
+        // println!("\n=== GraphScheduler Initialization ===");
         
         // Step 1: Initialize remaining_dependencies with parent count for each transaction
         let remaining_dependencies: Vec<AtomicUsize> = dependency_graph.nodes.iter()
@@ -64,17 +64,17 @@ impl GraphScheduler {
             if node.parent_indices.is_empty() {
                 executable_txs.push(Reverse(tx_idx));
                 root_count += 1;
-                if root_count <= 10 {
-                    println!("  Root node: tx {}", tx_idx);
-                }
+                // if root_count <= 10 {
+                //     println!("  Root node: tx {}", tx_idx);
+                // }
             }
         }
         
-        println!("Total transactions: {}", block_size);
-        println!("Root nodes (initial executable): {}", root_count);
-        println!("Total edges in graph: {}", 
-                 dependency_graph.nodes.iter().map(|n| n.children_indices.len()).sum::<usize>());
-        println!("=====================================\n");
+        // println!("Total transactions: {}", block_size);
+        // println!("Root nodes (initial executable): {}", root_count);
+        // println!("Total edges in graph: {}", 
+        //          dependency_graph.nodes.iter().map(|n| n.children_indices.len()).sum::<usize>());
+        // println!("=====================================\n");
         
         Self {
             block_size,

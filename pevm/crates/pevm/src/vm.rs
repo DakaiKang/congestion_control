@@ -382,7 +382,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                 return if self.tx_idx > 0 {
                     // TODO: Better retry strategy -- immediately, to the
                     // closest sender tx, to the missing sender tx, etc.
-                    println!("Tx #{} has invalid nonce {}, expected {}", self.tx_idx, self.tx.nonce.unwrap(), account.nonce);
+                    // println!("Tx #{} has invalid nonce {}, expected {}", self.tx_idx, self.tx.nonce.unwrap(), account.nonce);
                     Err(ReadError::Blocking(self.tx_idx - 1))
                 } else {
                     Err(ReadError::InvalidNonce(self.tx_idx))

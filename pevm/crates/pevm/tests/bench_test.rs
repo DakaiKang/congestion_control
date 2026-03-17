@@ -558,12 +558,14 @@ pub fn different_conflict_test(
     
     let mut seq_tput = 0.0;
     let mut par_tput = 0.0;
+    
+    let spec_id = SpecId::LATEST;
     // 1. Sequential
     println!("Sequential...");
     let seq_start = Instant::now();
     let mut seq_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        seq_storage = execute_sequential_and_update(seq_storage, txs);
+        seq_storage = execute_sequential_and_update(seq_storage, spec_id, txs);
     }
     let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
     
@@ -572,14 +574,14 @@ pub fn different_conflict_test(
     let par_start = Instant::now();
     let mut par_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        par_storage = execute_parallel_and_update(par_storage, txs);
+        par_storage = execute_parallel_and_update(par_storage, spec_id, txs);
     }
     let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     
     // 3. Generate graphs and parallel with graphs
     println!("Generating graphs...");
     let (_, reordered_blocks_txs, dependency_graphs) = 
-        generate_dependency_graphs(storage.clone(), blocks_txs);
+        generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
     
     println!("Parallel with graphs...");
     let graph_par_start = Instant::now();
@@ -635,6 +637,7 @@ pub fn different_conflict_test(
 
 fn generate_dependency_graphs(
     storage: InMemoryStorage, 
+    spec_id: SpecId,
     blocks_txs: Vec<Vec<TxEnv>>
 ) -> (InMemoryStorage, Vec<Vec<TxEnv>>, Vec<pevm::dependency_graph::TransactionGraph>) {
     
@@ -652,7 +655,6 @@ fn generate_dependency_graphs(
         let txs = blocks_txs[i].clone();
 
         let chain = PevmEthereum::mainnet();
-        let spec_id = SpecId::LATEST;
         let block_env = BlockEnv::default();
 
         // Construct graph using the same storage for all batches
@@ -682,10 +684,10 @@ fn generate_dependency_graphs(
 
 fn execute_sequential_and_update(
     mut storage: InMemoryStorage, 
+    spec_id: SpecId,
     txs: Vec<TxEnv>
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::FRONTIER;
     let mut block_env = BlockEnv::default();
     block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues in sequential execution
     block_env.basefee = U256::from(1u64); // 1 wei
@@ -705,10 +707,10 @@ fn execute_sequential_and_update(
 
 fn execute_parallel_and_update(
     mut storage: InMemoryStorage, 
+    spec_id: SpecId,
     txs: Vec<TxEnv>
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let spec_id = SpecId::FRONTIER;
     let mut block_env = BlockEnv::default();
     block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues 
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
@@ -1006,7 +1008,7 @@ pub fn different_conflict_test_real_blocks(
     let seq_start = Instant::now();
     let mut seq_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        seq_storage = execute_sequential_and_update(seq_storage, txs);
+        seq_storage = execute_sequential_and_update(seq_storage, spec_id, txs);
     }
     let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
     println!("Sequential throughput: {:.2} tx/s", seq_tput);
@@ -1016,7 +1018,7 @@ pub fn different_conflict_test_real_blocks(
     let par_start = Instant::now();
     let mut par_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        par_storage = execute_parallel_and_update(par_storage, txs);
+        par_storage = execute_parallel_and_update(par_storage, spec_id, txs);
     }
     let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     println!("Parallel throughput: {:.2} tx/s", par_tput);
@@ -1024,7 +1026,7 @@ pub fn different_conflict_test_real_blocks(
     // 3. Generate graphs and parallel with graphs
     println!("\n=== 3. Generating Dependency Graphs ===");
     let (_, reordered_blocks_txs, dependency_graphs) = 
-        generate_dependency_graphs(storage.clone(), blocks_txs);
+        generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
     
     println!("=== 4. Parallel with Graphs ===");
     let graph_par_start = Instant::now();
@@ -1118,6 +1120,8 @@ pub fn different_conflict_test_real_blocks(
     println!("║ Graph Speedup:        {:>10.2}x                          ║", graph_par_tput / seq_tput);
     println!("║ Integrated Speedup:   {:>10.2}x                          ║", integrated_tput / seq_tput);
     println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    println!("spec_id: {:?}", spec_id);
     
     (seq_tput, par_tput, graph_par_tput, integrated_tput)
 }
@@ -1127,8 +1131,10 @@ pub fn different_conflict_test_real_blocks(
 #[test]
 fn test_real_blocks_performance() {
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
-        9646425,  // start_block
-        30,       // num_blocks
+        9646423,  // start_block
+        // 16774645,    // start_block,
+        // 18581726,   // start_block,
+        49,       // num_blocks
     );
     
     println!("Final results:");
