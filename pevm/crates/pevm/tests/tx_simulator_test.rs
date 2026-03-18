@@ -862,8 +862,8 @@ fn test_calibrate_sload_vs_sstore_ns() {
 /// (executionTime_ns / T_SLOAD_NS) rather than gasUsed / 100.
 #[test]
 fn test_throughput_comparison_v2() {
-    const NUM_BLOCKS: usize = 10;
-    const GREEDY_BATCH: usize = 10;
+    const NUM_BLOCKS: usize = 100;
+    const GREEDY_BATCH: usize = 20;
     const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
 
     let (state, bytecodes, _addr, blocks_txs) =

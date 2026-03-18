@@ -253,7 +253,7 @@ pub fn load_n_rw_gas_blocks(
 ///   1-loop tx  ≈ 11 500 ns  (test_calibrate_sload_ns)
 ///   500-loop tx ≈ 500 000 ns (test_per_tx_execution_time median)
 ///   → T_SLOAD_NS ≈ (500 000 - 11 500) / 499 ≈ 979 ns
-pub const T_SLOAD_NS: u64 = 1_000;
+pub const T_SLOAD_NS: u64 = 1000;
 
 /// Fixed per-tx EVM overhead (ns): ABI decoding, account loading, etc.
 pub const T_OVERHEAD_NS: u64 = 10_500;
@@ -339,8 +339,11 @@ pub fn load_n_rw_time_blocks(
             .enumerate()
             .map(|(i, tx)| {
                 let target = (tx.execution_time_ns.saturating_sub(T_OVERHEAD_NS) / T_SLOAD_NS).max(1);
-                // 100 gas per storage op × GAS_MULTIPLIER safety factor
-                let gas_limit = target.saturating_mul(100).saturating_mul(GAS_MULTIPLIER);
+                // Gas budget: base tx cost + cold SLOAD/SSTORE on first pass + hot remainder.
+                // Cold SLOAD = 2100 gas, cold SSTORE (0→1) = 22100 gas, hot = 100 gas each.
+                let cold_gas = tx.reads.len() as u64 * 2100 + tx.writes.len() as u64 * 22100;
+                let hot_gas = target.saturating_mul(100).saturating_mul(GAS_MULTIPLIER);
+                let gas_limit = 21_000u64.saturating_add(cold_gas).saturating_add(hot_gas);
                 let calldata =
                     TxSimulatorV2::encode_execute(&tx.reads, &tx.writes, target);
                 TxEnv {

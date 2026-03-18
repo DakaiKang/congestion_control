@@ -472,19 +472,11 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
                 // Success - no print
                 // println!("✅ Transaction {} executed successfully", tx_idx);
             }
-            ExecutionResult::Revert { gas_used, output } => {
+            ExecutionResult::Revert { .. } => {
                 count_failed += 1;
-                // println!("❌ Transaction {} REVERTED", tx_idx);
-                // println!("  Gas used: {}", gas_used);
-                // if !output.is_empty() {
-                //     println!("  Revert reason: {}", String::from_utf8_lossy(output));
-                // }
             }
-            ExecutionResult::Halt { reason, gas_used } => {
+            ExecutionResult::Halt { .. } => {
                 count_failed += 1;
-                // println!("❌ Transaction {} HALTED", tx_idx);
-                // println!("  Gas used: {}", gas_used);
-                // println!("  Halt reason: {:?}", reason);  
             }
         }
 
