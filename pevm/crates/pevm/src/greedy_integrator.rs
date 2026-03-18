@@ -17,7 +17,7 @@ pub struct GreedyIntegratorConfig {
 impl Default for GreedyIntegratorConfig {
     fn default() -> Self {
         Self {
-            tau_cv: 0.1,  // Default threshold - adjust as needed
+            tau_cv: 0.2,  // Tuned on 10 real ETH blocks (16774645-16774654): best throughput
             num_threads: std::thread::available_parallelism()
                 .unwrap_or(std::num::NonZeroUsize::MIN)
                 .get(),
