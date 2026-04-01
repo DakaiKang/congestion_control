@@ -637,7 +637,7 @@ fn test_per_tx_execution_time() {
 fn test_generate_rw_time() {
     use std::fs;
     use std::path::Path;
-    use std::collections::HashMap;
+    use pevm::execute_revm_sequential_timed;
     use pevm::storage::block_loader::{load_block_for_execution, get_spec_id};
 
     let rw_gas_dir = Path::new(RW_GAS_DIR);
@@ -674,71 +674,25 @@ fn test_generate_rw_time() {
         let spec_id = get_spec_id(block_num);
         let block_env = pevm::storage::block_loader::create_block_env(&block_data);
 
-        // Build txHash → measured execution time map by running txns one-by-one.
-        let mut hash_to_time_ns: HashMap<String, u64> = HashMap::new();
-        for tx in &txenvs {
-            // Recover txHash from the original block transactions list using
-            // the caller + nonce as a key (TxEnv doesn't carry the hash directly).
-            // We time the execution and will match by position after.
-            let start = Instant::now();
-            let results = execute_revm_sequential(
-                &chain, &storage, spec_id, block_env.clone(), vec![tx.clone()],
-            ).unwrap_or_else(|e| panic!("block {block_num} tx failed: {e:?}"));
-            let elapsed_ns = start.elapsed().as_nanos() as u64;
-            update_storage_with_results(&mut storage, results);
-            // Use caller+nonce as key (unique per tx within a block)
-            let key = format!("{:?}:{}", tx.caller, tx.nonce.unwrap_or(0));
-            hash_to_time_ns.insert(key, elapsed_ns);
-        }
+        // Execute all txns in one pass; tx_times_ns[i] covers only
+        // evm.transact() + evm.db_mut().commit(), excluding EVM init overhead.
+        let (results, tx_times_ns) = execute_revm_sequential_timed(
+            &chain, &storage, spec_id, block_env, txenvs.clone(),
+        ).unwrap_or_else(|e| panic!("block {block_num} failed: {e:?}"));
+        update_storage_with_results(&mut storage, results);
 
-        // Build the same key from block JSON transactions to look up hash
-        let block_txns_owned = block_data.transactions.clone();
-        let mut from_nonce_to_hash: HashMap<String, String> = HashMap::new();
-        for tx in &block_txns_owned {
-            if let (Some(from), Some(nonce), Some(hash)) = (
-                tx.get("from").and_then(|v| v.as_str()),
-                tx.get("nonce").and_then(|v| v.as_u64()),
-                tx.get("hash").and_then(|v| v.as_str()),
-            ) {
-                let key = format!("{}:{}", from.to_lowercase(), nonce);
-                from_nonce_to_hash.insert(key, hash.to_string());
-            }
-        }
-
-        // Load rw_gas entries and match by txHash
+        // Load rw_gas entries; they are in the same order as block transactions,
+        // so tx_times_ns[i] maps directly to rw_entries[i].
         let content = fs::read_to_string(rw_gas_path).expect("read failed");
         let rw_entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse failed");
 
+        assert_eq!(rw_entries.len(), tx_times_ns.len(),
+            "block {block_num}: rw_gas entry count ({}) != txenv count ({})",
+            rw_entries.len(), tx_times_ns.len());
+
         let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(rw_entries.len());
-        let mut matched = 0usize;
 
-        for entry in &rw_entries {
-            let tx_hash = entry["txHash"].as_str().unwrap_or("").to_lowercase();
-
-            // Find the from+nonce key for this txHash
-            let execution_time_ns = from_nonce_to_hash
-                .iter()
-                .find(|(_, h)| h.to_lowercase() == tx_hash)
-                .and_then(|(key, _)| {
-                    // key is "from:nonce", translate to the TxEnv key format
-                    // TxEnv caller is Address, printed as 0x... in debug
-                    // We stored key as "{:?}:nonce" which is "0xABCD...:N"
-                    // Block key is "0xabcd...:N" (lowercase)
-                    hash_to_time_ns.iter()
-                        .find(|(k, _)| k.to_lowercase() == key.to_lowercase())
-                        .map(|(_, &t)| t)
-                })
-                .unwrap_or_else(|| {
-                    // Fallback: match by position if hash lookup fails
-                    let idx = out_entries.len();
-                    if idx < txenvs.len() {
-                        let key = format!("{:?}:{}", txenvs[idx].caller, txenvs[idx].nonce.unwrap_or(0));
-                        *hash_to_time_ns.get(&key).unwrap_or(&0)
-                    } else { 0 }
-                });
-
-            if execution_time_ns > 0 { matched += 1; }
-
+        for (entry, &execution_time_ns) in rw_entries.iter().zip(tx_times_ns.iter()) {
             let mut out = entry.clone();
             let obj = out.as_object_mut().unwrap();
             obj.remove("gasUsed");
@@ -751,51 +705,87 @@ fn test_generate_rw_time() {
         fs::write(&out_path, serde_json::to_string_pretty(&out_entries).unwrap())
             .expect("write failed");
 
-        println!("wrote {} ({} txns, {matched} matched)", out_path.display(), out_entries.len());
+        println!("wrote {} ({} txns)", out_path.display(), out_entries.len());
     }
 }
 
 #[test]
 fn test_calibrate_sload_ns() {
-    use revm::primitives::TransactTo;
+    use pevm::{execute_revm_sequential_timed, Bytecodes, ChainState, EvmAccount};
+    use revm::primitives::{Address, TransactTo};
+    use tx_simulator::contract_v2::TxSimulatorV2;
 
-    let (state, bytecodes, simulator_address, accounts) =
-        tx_simulator::build_storage_n(1);
+    // Build a minimal storage with TxSimulatorV2 and one caller per target level.
+    const TARGETS: &[u64] = &[1, 10, 50, 100, 500, 1000];
+    const SAMPLES: usize = 300;
+
+    let simulator_address = Address::new(rand::random());
+    let simulator_account = TxSimulatorV2::build();
+    let caller = Address::new(rand::random());
+
+    let mut state: ChainState = [(simulator_address, simulator_account)].into_iter().collect();
+    state.insert(caller, EvmAccount { balance: U256::from(u128::MAX), ..Default::default() });
+
+    let mut bytecodes = Bytecodes::default();
+    for account in state.values_mut() {
+        if let Some(code) = account.code.take() {
+            bytecodes.insert(account.code_hash.unwrap(), code);
+        }
+    }
+
     let storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
     let chain = PevmEthereum::mainnet();
     let spec_id = SpecId::LATEST;
+    let read_slot = B256::from([0x42u8; 32]);
 
-    // target = 1: exactly one hot SLOAD
-    let one_read = [B256::from([0x42u8; 32])];
-    let calldata = tx_simulator::contract::TxSimulator::encode_execute(&one_read, &[], 100);
-    let tx = TxEnv {
-        caller: accounts[0],
-        gas_limit: 100 * tx_simulator::GAS_MULTIPLIER,
-        gas_price: U256::from(1),
-        transact_to: TransactTo::Call(simulator_address),
-        data: calldata,
-        nonce: Some(0),
-        ..TxEnv::default()
-    };
+    println!("\n=== TxSimulatorV2 calibration (execute_revm_sequential_timed) ===");
+    println!("{:<10} {:>10} {:>10} {:>10}  ({SAMPLES} samples each)", "target", "p10 ns", "p50 ns", "p90 ns");
+    println!("{}", "-".repeat(50));
 
-    const N: usize = 500;
-    let mut times: Vec<u64> = (0..N).map(|_| {
-        let start = Instant::now();
-        let _ = execute_revm_sequential(
-            &chain, &storage, spec_id, BlockEnv::default(), vec![tx.clone()],
-        );
-        start.elapsed().as_nanos() as u64
-    }).collect();
+    let mut points: Vec<(f64, f64)> = Vec::new(); // (target, median_ns)
 
-    times.sort();
-    let median = times[N / 2];
-    let p10   = times[N / 10];
-    let p90   = times[9 * N / 10];
+    for &target in TARGETS {
+        let cold_gas = read_slot.len() as u64 * 2100;
+        let gas_limit = 21_000u64 + cold_gas + target * 100 * tx_simulator::GAS_MULTIPLIER;
+        let calldata = TxSimulatorV2::encode_execute(&[read_slot], &[], target);
+        let tx = TxEnv {
+            caller,
+            gas_limit,
+            gas_price: U256::from(1),
+            transact_to: TransactTo::Call(simulator_address),
+            data: calldata,
+            nonce: Some(0),
+            ..TxEnv::default()
+        };
 
-    println!("1-SLOAD tx timing over {N} samples:");
-    println!("  p10    = {} ns", p10);
-    println!("  median = {} ns  ← t_sload_ns", median);
-    println!("  p90    = {} ns", p90);
+        let mut times: Vec<u64> = (0..SAMPLES).map(|_| {
+            let (_, ns) = execute_revm_sequential_timed(
+                &chain, &storage, spec_id, BlockEnv::default(), vec![tx.clone()],
+            ).unwrap();
+            ns[0]
+        }).collect();
+        times.sort_unstable();
+
+        let p10 = times[SAMPLES / 10];
+        let p50 = times[SAMPLES / 2];
+        let p90 = times[9 * SAMPLES / 10];
+        println!("{:<10} {:>10} {:>10} {:>10}", target, p10, p50, p90);
+        points.push((target as f64, p50 as f64));
+    }
+
+    // Least-squares linear fit: t = T_OVERHEAD + target * T_SLOAD
+    let n = points.len() as f64;
+    let sum_x: f64 = points.iter().map(|(x, _)| x).sum();
+    let sum_y: f64 = points.iter().map(|(_, y)| y).sum();
+    let sum_xx: f64 = points.iter().map(|(x, _)| x * x).sum();
+    let sum_xy: f64 = points.iter().map(|(x, y)| x * y).sum();
+    let t_sload = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+    let t_overhead = (sum_y - t_sload * sum_x) / n;
+
+    println!("\nFitted (least-squares):");
+    println!("  T_SLOAD_NS   = {:.0} ns", t_sload);
+    println!("  T_OVERHEAD_NS= {:.0} ns", t_overhead);
+    println!("\nUpdate these constants in tests/tx_simulator/mod.rs");
 }
 
 #[test]
@@ -882,12 +872,16 @@ fn test_throughput_comparison_v2() {
     let mut reordered_blocks = Vec::new();
 
     for (i, txs) in blocks_txs.iter().enumerate() {
+        let t = Instant::now();
         let (mut graph, results) = GraphPevm::construct_graph_pevm_by_sequential(
             &chain, &prep_storage, spec_id, BlockEnv::default(), txs.clone(), i as u64,
         ).unwrap_or_else(|e| panic!("graph build failed on block {i}: {e:?}"));
+        let exec_ms = t.elapsed().as_millis();
         update_storage_with_results(&mut prep_storage, results);
         let (reordered, new_graph) =
             GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut graph, concurrency.get());
+        let total_ms = t.elapsed().as_millis();
+        println!("block {i:3}: {} txns, exec={exec_ms}ms, total={total_ms}ms", txs.len());
         dep_graphs.push(new_graph);
         reordered_blocks.push(reordered);
     }

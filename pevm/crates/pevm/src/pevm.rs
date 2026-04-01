@@ -3,6 +3,7 @@ use std::{
     num::NonZeroUsize,
     sync::{mpsc, Mutex, OnceLock},
     thread,
+    time::Instant,
 };
 
 use std::collections::{HashSet};
@@ -493,6 +494,47 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
     }
     println!("✅ Executed {} transactions, {} failed.", x + results.len(), count_failed);
     Ok(results)
+}
+
+/// Like [`execute_revm_sequential`] but also returns per-transaction timing.
+///
+/// For each transaction the timer starts immediately before `evm.transact()`
+/// and stops immediately after `evm.db_mut().commit(...)`, capturing only the
+/// core execute-and-commit cost and excluding EVM/CacheDB construction and
+/// result conversion overhead.
+///
+/// Returns `(results, tx_times_ns)` where `tx_times_ns[i]` is the
+/// nanoseconds spent on transaction `i`.
+pub fn execute_revm_sequential_timed<S: Storage, C: PevmChain>(
+    chain: &C,
+    storage: &S,
+    spec_id: SpecId,
+    block_env: BlockEnv,
+    txs: Vec<TxEnv>,
+) -> Result<(Vec<PevmTxExecutionResult>, Vec<u64>), PevmError<C>> {
+    let mut db = CacheDB::new(StorageWrapper(storage));
+    let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
+    let mut results = Vec::with_capacity(txs.len());
+    let mut tx_times_ns = Vec::with_capacity(txs.len());
+    let mut cumulative_gas_used: u64 = 0;
+    for tx in txs.into_iter() {
+        *evm.tx_mut() = tx;
+
+        let t = Instant::now();
+        let result_and_state = evm
+            .transact()
+            .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+        evm.db_mut().commit(result_and_state.state.clone());
+        tx_times_ns.push(t.elapsed().as_nanos() as u64);
+
+        let mut execution_result =
+            PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
+        cumulative_gas_used =
+            cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+        execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+        results.push(execution_result);
+    }
+    Ok((results, tx_times_ns))
 }
 
 #[derive(Debug, Clone)]

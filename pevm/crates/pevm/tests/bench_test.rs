@@ -1131,10 +1131,10 @@ pub fn different_conflict_test_real_blocks(
 #[test]
 fn test_real_blocks_performance() {
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
-        9646423,  // start_block
+        16774645,  // start_block
         // 16774645,    // start_block,
         // 18581726,   // start_block,
-        49,       // num_blocks
+        100,       // num_blocks
     );
     
     println!("Final results:");
