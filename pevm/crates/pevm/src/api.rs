@@ -1434,7 +1434,7 @@ pub fn test_read_write_set() -> Result<(), Box<dyn std::error::Error>> {
 
         // Simple debug print
         for (i, access_set) in access_sets.iter().enumerate() {
-            println!("Transaction {}: {:?}", i, access_set);
+            println!("Transaction {}: reads={} writes={}", i, access_set.read_set.len(), access_set.write_set.len());
         }
 
         let elapsed: Duration = time1.elapsed();

@@ -214,13 +214,12 @@ impl TransactionGraph {
                 // Verify the transaction still exists and check for conflicts
                 if let Some(tail_node) = self.get_node(&tail_tx_id) {
                     // Check for conflicts
-                    let has_conflict = 
-                        // Write-After-Write conflict
-                        (!tail_node.write_set.is_disjoint(&node.write_set)) ||
-                        // Read-After-Write conflict 
-                        (!tail_node.write_set.is_disjoint(&node.read_set)) || 
-                        // Write-After-Read conflict 
-                        (!tail_node.read_set.is_disjoint(&node.write_set));
+                    let has_conflict =
+                        // Write-After-Write conflict only.
+                        // RAW and WAR are handled by OCC validation and don't need
+                        // explicit graph edges — including them over-constrains the graph
+                        // and kills parallelism.
+                        !tail_node.write_set.is_disjoint(&node.write_set);
                     if has_conflict {
                         // println!("Conflicting with Txn {}", tail_tx_id.id);
                         parent_transactions.insert(tail_tx_id.clone());

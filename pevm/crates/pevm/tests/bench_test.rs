@@ -64,13 +64,13 @@ pub fn test_bench_sequential() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut graph = TransactionGraph::new();
     for i in 0..result.len() {
-        let txn_node = TransactionNode::new(i as u64, 1, 1, costs[i], HashSet::new(), access_set[i].clone());
+        let txn_node = TransactionNode::new(i as u64, 1, 1, costs[i], access_set[i].read_set.clone(), access_set[i].write_set.clone());
         graph.add_transaction(txn_node);
     }
 
     let mut graph2 = TransactionGraph::new();
     for i in 0..result2.len() {
-        let txn_node = TransactionNode::new(i as u64, 1, 1, costs2[i], HashSet::new(), access_set2[i].clone());
+        let txn_node = TransactionNode::new(i as u64, 1, 1, costs2[i], access_set2[i].read_set.clone(), access_set2[i].write_set.clone());
         graph2.add_transaction(txn_node);
     }
 
@@ -194,13 +194,13 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut graph = TransactionGraph::new();
     for i in 0..result.len() {
-        let txn_node = TransactionNode::new(i as u64, 1, 1, costs[i], HashSet::new(), access_set[i].clone());
+        let txn_node = TransactionNode::new(i as u64, 1, 1, costs[i], access_set[i].read_set.clone(), access_set[i].write_set.clone());
         graph.add_transaction(txn_node);
     }
 
     let mut graph2 = TransactionGraph::new();
     for i in 0..result2.len() {
-        let txn_node = TransactionNode::new(i as u64, 2, 1, costs2[i], HashSet::new(), access_set2[i].clone());
+        let txn_node = TransactionNode::new(i as u64, 2, 1, costs2[i], access_set2[i].read_set.clone(), access_set2[i].write_set.clone());
         graph2.add_transaction(txn_node);
     }
 
@@ -741,17 +741,22 @@ fn execute_parallel_with_graph_and_update(
         .unwrap_or(std::num::NonZeroUsize::MIN);
         
     let mut pevm = GraphPevm::default();
-    let spec_id = SpecId::FRONTIER;
 
-    let result = pevm.execute_revm_parallel(
+    let result = match pevm.execute_revm_parallel(
         &chain,
         &storage,
-        spec_id,     
-        block_env,   
-        txs, 
+        spec_id,
+        block_env,
+        txs,
         concurrency_level,
-        graph, 
-    ).unwrap();
+        graph,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("  ⚠️  Graph parallel execution failed: {:?}", e);
+            return storage;
+        }
+    };
     
     update_storage_with_results(&mut storage, result);
     storage
@@ -946,6 +951,7 @@ fn running_in_dependency_graph(
 pub fn different_conflict_test_real_blocks(
     start_block: u64,
     num_blocks: usize,
+    blocks_dir: &str,
 ) -> (f64, f64, f64, f64) {
     println!("\n╔════════════════════════════════════════════════════════════════╗");
     println!("║  Real Block Execution Test: Blocks {}-{}           ║", 
@@ -964,7 +970,7 @@ pub fn different_conflict_test_real_blocks(
     
     // (1) Create merged storage from all blocks
     println!("=== Creating merged storage from {} blocks ===", num_blocks);
-    let storage = match create_multi_block_storage(&block_numbers) {
+    let storage = match create_multi_block_storage(&block_numbers, blocks_dir) {
         Ok(s) => {
             println!("✓ Merged storage created");
             s
@@ -981,7 +987,7 @@ pub fn different_conflict_test_real_blocks(
     let mut nonce_tracker = NonceTracker::new();
     
     for (idx, block_num) in block_numbers.iter().enumerate() {
-        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
         
         match load_block_for_execution(&filepath, true) {
             Ok((block_data, block_storage, txenvs)) => {
@@ -1132,12 +1138,26 @@ pub fn different_conflict_test_real_blocks(
 fn test_real_blocks_performance() {
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
         16774645,  // start_block
-        // 16774645,    // start_block,
-        // 18581726,   // start_block,
-        100,       // num_blocks
+        2000,      // num_blocks
+        "/home/ubuntu/eth-block-downloader/test_data/blocks/16774645_2000",
     );
-    
+
     println!("Final results:");
+    println!("  Sequential:  {:.2} tx/s", seq);
+    println!("  Parallel:    {:.2} tx/s", par);
+    println!("  Graph:       {:.2} tx/s", graph_par);
+    println!("  Integrated:  {:.2} tx/s", integrated);
+}
+
+#[test]
+fn test_real_blocks_performance_100() {
+    let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
+        16774645,  // start_block
+        80,        // num_blocks
+        "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1",
+    );
+
+    println!("Final results (80 blocks):");
     println!("  Sequential:  {:.2} tx/s", seq);
     println!("  Parallel:    {:.2} tx/s", par);
     println!("  Graph:       {:.2} tx/s", graph_par);

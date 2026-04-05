@@ -13,7 +13,7 @@ use alloy_rpc_types_eth::{Block, BlockTransactions};
 use hashbrown::HashMap;
 use revm::{
     db::CacheDB,
-    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState, ExecutionResult},
+    primitives::{AccountInfo, Bytecode, BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState, ExecutionResult, B256},
     DatabaseCommit,
     Database,
     Evm,
@@ -537,10 +537,72 @@ pub fn execute_revm_sequential_timed<S: Storage, C: PevmChain>(
     Ok((results, tx_times_ns))
 }
 
-#[derive(Debug, Clone)]
-pub struct AccessSets {
-    pub read_writes: HashMap<Address, HashSet<U256>>,
-    pub balance_updated_accounts: HashSet<Address>,
+#[derive(Debug, Clone, Default)]
+pub struct TxAccessSets {
+    pub read_set: HashSet<u64>,
+    pub write_set: HashSet<u64>,
+}
+
+/// A transparent DB wrapper that records every `basic()` and `storage()` call
+/// made by the EVM. Placed between the EVM and CacheDB so that ALL reads —
+/// both cold (cache-miss) and warm (cache-hit) — are captured.
+///
+/// Architecture: EVM → TrackingDB → CacheDB → StorageWrapper → S
+///
+/// Mirrors pevm's parallel path exclusions:
+/// - `coinbase` is never recorded (pevm uses `with_reward_beneficiary=false` +
+///   `LazyRecipient` delta writes, so coinbase never appears in read/write sets).
+/// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
+///   `recipient` are excluded from the read set (pevm returns a mock account and
+///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
+struct TrackingDB<DB> {
+    pub inner: DB,
+    pub reads: HashSet<u64>,
+    /// Block-level: coinbase address, excluded from all sets.
+    coinbase: Address,
+    /// Tx-level: caller + recipient for lazy (pure-ETH-transfer) txs.
+    /// Cleared and repopulated before each transaction.
+    lazy_addresses: HashSet<Address>,
+}
+
+impl<DB: Database> TrackingDB<DB> {
+    fn should_skip(&self, address: &Address) -> bool {
+        *address == Address::ZERO
+            || *address == self.coinbase
+            || self.lazy_addresses.contains(address)
+    }
+}
+
+impl<DB: Database> Database for TrackingDB<DB> {
+    type Error = DB::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if !self.should_skip(&address) {
+            self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
+        }
+        self.inner.basic(address)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.inner.code_by_hash(code_hash)
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        if !self.should_skip(&address) {
+            self.reads.insert(hash_deterministic(MemoryLocation::Storage(address, index)));
+        }
+        self.inner.storage(address, index)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.inner.block_hash(number)
+    }
+}
+
+impl<DB: DatabaseCommit> DatabaseCommit for TrackingDB<DB> {
+    fn commit(&mut self, changes: std::collections::HashMap<Address, revm::primitives::Account, alloy_primitives::map::foldhash::fast::RandomState>) {
+        self.inner.commit(changes)
+    }
 }
 
 pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
@@ -549,24 +611,63 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
         spec_id: SpecId,
         block_env: BlockEnv,
         txs: Vec<TxEnv>,
-    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<HashSet<u64>>), PevmError<C>> {
-    let mut db = CacheDB::new(StorageWrapper(storage));
-    let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
+    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<TxAccessSets>), PevmError<C>> {
+    let coinbase = block_env.coinbase;
+    let cache_db = CacheDB::new(StorageWrapper(storage));
+    let tracking_db = TrackingDB {
+        inner: cache_db,
+        reads: HashSet::new(),
+        coinbase,
+        lazy_addresses: HashSet::new(),
+    };
+    let mut evm = build_evm(tracking_db, chain, spec_id, block_env, None, true);
     let mut results = Vec::with_capacity(txs.len());
     let mut access_sets = Vec::with_capacity(txs.len());
     let mut cumulative_gas_used: u64 = 0;
-    
+
     for tx in txs {
-        *evm.tx_mut() = tx;   
+        // Determine if this is a lazy tx (pure ETH transfer: recipient is an EOA).
+        // Mirrors pevm's `is_lazy` check in VmDb: if `to` has no code, pevm skips
+        // recording caller/recipient in the read set and uses delta writes instead.
+        let caller = tx.caller;
+        let recipient = tx.transact_to.to().copied();
+        let is_lazy = if let Some(to) = recipient {
+            evm.db_mut()
+                .inner
+                .basic(to)
+                .map(|a| a.map_or(true, |acc| acc.is_empty_code_hash()))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        {
+            let db = evm.db_mut();
+            db.lazy_addresses.clear();
+            if is_lazy {
+                db.lazy_addresses.insert(caller);
+                if let Some(to) = recipient {
+                    db.lazy_addresses.insert(to);
+                }
+            }
+        }
+
+        *evm.tx_mut() = tx;
         let result_and_state = evm
             .transact()
             .map_err(|err| ExecutionError::Custom(err.to_string()))?;
 
-        // Extract access sets from result_and_state and journaled_state
-        let tx_access_sets = extract_access_sets_from_result(&evm, &result_and_state);
-        access_sets.push(tx_access_sets);
+        // Collect read set from TrackingDB (all basic/storage calls made by the EVM).
+        let db = evm.db_mut();
+        let read_set = std::mem::take(&mut db.reads);
 
-        evm.db_mut().commit(result_and_state.state.clone());
+        // Derive write set from result state: touched accounts + changed storage slots,
+        // excluding only coinbase (handled via LazyRecipient in pevm).
+        // lazy_addresses (pure-ETH-transfer sender/recipient) are intentionally kept in
+        // write_set so that downstream txs that read their balance get a proper RAW edge.
+        let write_set = extract_write_set_from_result(&result_and_state, coinbase);
+
+        db.commit(result_and_state.state.clone());
 
         let mut execution_result =
             PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
@@ -576,55 +677,38 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
         execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
 
         results.push(execution_result);
+        access_sets.push(TxAccessSets { read_set, write_set });
     }
-    
+
     Ok((results, access_sets))
 }
-    
-fn extract_access_sets_from_result<DB: Database>(
-    evm: &Evm<'_, (), DB>,
-    result_and_state: &ResultAndState
-) -> HashSet<u64> {
-    let mut read_writes = HashMap::new();
-    let mut balance_updated_accounts = HashSet::new();
-    
-    // Also check result_and_state for write information
-    // // println!("DEBUG: result_and_state has {} accounts", result_and_state.state.len());
-    for (address, account) in &result_and_state.state {
-        if account.storage.len() == 0 {
-            balance_updated_accounts.insert(*address);
-            continue;
-        }
-        
-        // println!("  Result account {:?}: {} storage slots", address, account.storage.len());
-        
-        for (slot, _) in &account.storage {
-            read_writes
-                .entry(*address)
-                .or_insert_with(HashSet::new)
-                .insert(*slot);
-        }
-    }
 
-    // let mut read_set = HashSet::new();
+/// Extract write set from execution result:
+/// - Basic(addr): account was touched (balance/nonce modified)
+/// - Storage(addr, slot): slot value changed
+///
+/// Excludes only `coinbase` (pevm applies gas rewards via LazyRecipient, never as
+/// a full write). Lazy sender/recipient ARE included so downstream txs reading
+/// their balance get proper RAW dependency edges.
+fn extract_write_set_from_result(
+    result_and_state: &ResultAndState,
+    coinbase: Address,
+) -> HashSet<u64> {
     let mut write_set = HashSet::new();
 
-    for (address, slots) in &read_writes {
-        for slot in slots.iter() {
-            write_set.insert(hash_deterministic(MemoryLocation::Storage(*address, *slot)));
-        }
-    }
-
-    for address in balance_updated_accounts.iter() {
-        if let &Address::ZERO = address {
+    for (address, account) in &result_and_state.state {
+        if *address == Address::ZERO || *address == coinbase {
             continue;
         }
-        // println!("add basic: {} of address {}", hash_deterministic(MemoryLocation::Basic(*address)), address);
-        write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+        if account.is_touched() {
+            write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+        }
+        for (slot, storage_slot) in &account.storage {
+            if storage_slot.is_changed() {
+                write_set.insert(hash_deterministic(MemoryLocation::Storage(*address, *slot)));
+            }
+        }
     }
-
-    // println!("read_set: {:#?}", read_set);
-    // println!("write_set: {:#?}", write_set);
 
     write_set
 }

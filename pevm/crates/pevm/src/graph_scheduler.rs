@@ -32,6 +32,10 @@ pub struct GraphScheduler {
     executable_txs: Mutex<BinaryHeap<Reverse<TxIdx>>>,
     task_available: Condvar,
     remaining_dependencies: Vec<AtomicUsize>,
+    /// Whether each tx has already released its children's graph dependencies.
+    /// Each tx must decrement children's remaining_deps exactly once (on first
+    /// successful execution). This prevents u64 underflow from multiple re-executions.
+    children_released: Vec<AtomicBool>,
 }
 
 impl std::fmt::Debug for GraphScheduler {
@@ -89,6 +93,7 @@ impl GraphScheduler {
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
+            children_released: (0..block_size).map(|_| AtomicBool::new(false)).collect(),
             dependency_graph,
             executable_txs: Mutex::new(executable_txs),
             task_available: Condvar::new(),
@@ -98,6 +103,10 @@ impl GraphScheduler {
     
     pub fn abort(&self) {
         self.aborted.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::Relaxed)
     }
     
     /// Get the next task for a worker thread to execute
@@ -241,30 +250,31 @@ impl GraphScheduler {
     
     fn try_execute(&self, tx_idx: TxIdx) -> Option<TxVersion> {
         if tx_idx >= self.block_size {
-            // println!("DEBUG [TryExec] Tx {} out of bounds", tx_idx);
             return None;
         }
-        
-        let remaining = self.remaining_dependencies[tx_idx].load(Ordering::Relaxed);
+
         if !self.all_dependencies_satisfied(tx_idx) {
-            // println!("DEBUG [TryExec] Tx {} deps not satisfied (remaining={})", tx_idx, remaining);
             return None;
         }
-        
+
         let mut tx = self.transactions_status[tx_idx].lock().unwrap();
-        // println!("DEBUG [TryExec] Tx {} status={:?}", tx_idx, tx.status);
-        
-        if tx.status == IncarnationStatus::ReadyToExecute {
-            tx.status = IncarnationStatus::Executing;
-            // println!("DEBUG [TryExec] Tx {} NOW EXECUTING (incarnation {})", tx_idx, tx.incarnation);
-            return Some(TxVersion {
-                tx_idx,
-                tx_incarnation: tx.incarnation,
-            });
+
+        match tx.status {
+            IncarnationStatus::ReadyToExecute => {
+                tx.status = IncarnationStatus::Executing;
+                Some(TxVersion { tx_idx, tx_incarnation: tx.incarnation })
+            }
+            IncarnationStatus::Aborting => {
+                // OCC-aborted tx whose graph deps are now satisfied: treat as re-executable.
+                // This happens when the OCC blocking tx completed while graph deps were still
+                // pending — finish_execution left the tx in Aborting without calling
+                // set_ready_status. Now that graph deps are satisfied, we can execute it.
+                tx.incarnation += 1;
+                tx.status = IncarnationStatus::Executing;
+                Some(TxVersion { tx_idx, tx_incarnation: tx.incarnation })
+            }
+            _ => None,
         }
-        
-        // println!("DEBUG [TryExec] Tx {} not ReadyToExecute, returning None", tx_idx);
-        None
     }
     
     fn all_dependencies_satisfied(&self, tx_idx: TxIdx) -> bool {
@@ -306,25 +316,29 @@ impl GraphScheduler {
         debug_assert_eq!(tx.status, IncarnationStatus::Executing);
         debug_assert_eq!(tx.incarnation, tx_version.tx_incarnation);
 
-        // Release dependency graph children
-        let children_indices = self.dependency_graph.nodes[tx_version.tx_idx]
-            .children_indices.clone();
-        
-        for &child_idx in &children_indices {
-            let prev_count = self.remaining_dependencies[child_idx]
-                .fetch_sub(1, Ordering::Relaxed);
-            
-            if prev_count == 1 {
-                let mut heap = self.executable_txs.lock().unwrap();
-                heap.push(Reverse(child_idx));
-                drop(heap);
-                self.task_available.notify_one();
-                
-                // println!("DEBUG [FinishExec] Tx {} released child {} (now executable)", 
-                        //  tx_version.tx_idx, child_idx);
-            } else if prev_count > 1 {
-                // println!("DEBUG [FinishExec] Tx {} released child {} ({} deps remaining)", 
-                        //  tx_version.tx_idx, child_idx, prev_count - 1);
+        // Release dependency graph children — exactly once per tx (on first successful
+        // execution, regardless of incarnation number). Graph ordering is purely for initial
+        // scheduling efficiency; correctness is handled by OCC validation.
+        // Re-executions must NOT decrement children's remaining_deps again, as that causes
+        // u64 underflow and leaves children permanently stuck in Aborting state.
+        let already_released = self.children_released[tx_version.tx_idx]
+            .swap(true, Ordering::Relaxed);
+        if !already_released {
+            let children_indices = self.dependency_graph.nodes[tx_version.tx_idx]
+                .children_indices.clone();
+
+            for &child_idx in &children_indices {
+                let prev_count = self.remaining_dependencies[child_idx]
+                    .fetch_sub(1, Ordering::Relaxed);
+
+                if prev_count == 1 {
+                    // Child's graph deps are now all satisfied. Add to heap regardless of
+                    // current status — try_execute handles ReadyToExecute and Aborting both.
+                    let mut heap = self.executable_txs.lock().unwrap();
+                    heap.push(Reverse(child_idx));
+                    drop(heap);
+                    self.task_available.notify_one();
+                }
             }
         }
         
@@ -413,15 +427,10 @@ impl GraphScheduler {
             self.validation_idx
                 .fetch_min(tx_version.tx_idx + 1, Ordering::Relaxed);
             
-            // Reset child dependencies
-            let children_indices = self.dependency_graph.nodes[tx_version.tx_idx]
-                .children_indices.clone();
-            
-            for &child_idx in &children_indices {
-                self.remaining_dependencies[child_idx].fetch_add(1, Ordering::Relaxed);
-                // println!("DEBUG [FinishVal] Reset child {} dependency (parent re-executing)", child_idx);
-            }
-            
+            // Do NOT re-increment children's remaining_deps here. Graph ordering is only
+            // for initial scheduling; OCC validation ensures correctness on re-executions.
+            // Re-incrementing causes the u64 underflow bug (extra decrements from
+            // re-executions accumulate without matching increments).
             if self.all_dependencies_satisfied(tx_version.tx_idx) {
                 return self.try_execute(tx_version.tx_idx).map(Task::Execution);
             }
@@ -452,19 +461,29 @@ impl GraphScheduler {
                  self.num_validated.load(Ordering::Relaxed), 
                  self.block_size);
         
+        // Show which txs are waiting as OCC dependents of each tx
+        println!("\nOCC dependents (Aborting txs waiting for which tx):");
+        for idx in 0..self.block_size {
+            let deps = self.transactions_dependents[idx].lock().unwrap();
+            if !deps.is_empty() {
+                let tx = index_mutex!(self.transactions_status, idx);
+                println!("  Tx {} (status={:?}) has OCC dependents: {:?}", idx, tx.status, *deps);
+            }
+        }
+
         println!("\nStuck transactions:");
         let mut stuck_count = 0;
-        
+
         for idx in 0..self.block_size {
             let tx = index_mutex!(self.transactions_status, idx);
             let remaining = self.remaining_dependencies[idx].load(Ordering::Relaxed);
-            
+
             if !matches!(tx.status, IncarnationStatus::Validated) || remaining > 0 {
                 stuck_count += 1;
                 if stuck_count <= 20 {
-                    println!("  Tx {}: status={:?}, remaining_deps={}", 
+                    println!("  Tx {}: status={:?}, remaining_deps={}",
                              idx, tx.status, remaining);
-                    
+
                     if remaining > 0 {
                         let parents = &self.dependency_graph.nodes[idx].parent_indices;
                         println!("    Parents: {:?}", parents);
@@ -479,7 +498,7 @@ impl GraphScheduler {
                 }
             }
         }
-        
+
         println!("\nTotal stuck: {}/{}", stuck_count, self.block_size);
         println!("=== END DIAGNOSTICS ===\n");
 

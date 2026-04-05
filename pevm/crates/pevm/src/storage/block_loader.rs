@@ -513,12 +513,13 @@ fn merge_transaction_prestates(prestate_array: &Value) -> HashMap<String, Presta
 
 /// Merge prestates from multiple blocks by block numbers
 pub fn merge_multiple_blocks_prestates(
-    block_numbers: &[u64]
+    block_numbers: &[u64],
+    blocks_dir: &str,
 ) -> Result<HashMap<String, PrestateAccount>> {
     let mut merged = HashMap::new();
-    
+
     for block_num in block_numbers {
-        let filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_num);
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
         println!("Loading prestate from block {}: {}", block_num, filepath);
         
         // Load block data
@@ -576,13 +577,14 @@ fn merge_account_into(
 
 /// Create a combined InMemoryStorage from multiple blocks
 pub fn create_multi_block_storage(
-    block_numbers: &[u64]
+    block_numbers: &[u64],
+    blocks_dir: &str,
 ) -> Result<InMemoryStorage> {
     // Merge all prestates
-    let merged_prestate = merge_multiple_blocks_prestates(block_numbers)?;
-    
+    let merged_prestate = merge_multiple_blocks_prestates(block_numbers, blocks_dir)?;
+
     // Get the first block's number and parent_hash for block_hashes
-    let first_filepath = format!("/home/ubuntu/eth-block-downloader/test_data/blocks/block_{}.json", block_numbers[0]);
+    let first_filepath = format!("{}/block_{}.json", blocks_dir, block_numbers[0]);
     let first_block = load_block_from_file(&first_filepath)?;
     
     // Convert to InMemoryStorage
@@ -832,8 +834,8 @@ pub fn analyze_hot_resources_from_execution(
         // Count access frequency for each resource
         let mut resource_count: HashMap<u64, usize> = HashMap::new();
         
-        for (tx_idx, access_set) in access_sets.iter().enumerate() {
-            for &key in access_set {
+        for access_set in access_sets.iter() {
+            for &key in access_set.read_set.iter().chain(access_set.write_set.iter()) {
                 *resource_count.entry(key).or_insert(0) += 1;
             }
         }

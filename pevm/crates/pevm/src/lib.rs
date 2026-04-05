@@ -220,7 +220,7 @@ pub mod chain;
 mod compat;
 mod mv_memory;
 mod pevm;
-pub use pevm::{execute_revm_sequential, execute_revm_sequential_timed, Pevm, PevmError, PevmResult, execute_revm_sequential_with_access_sets};
+pub use pevm::{execute_revm_sequential, execute_revm_sequential_timed, Pevm, PevmError, PevmResult, execute_revm_sequential_with_access_sets, TxAccessSets};
 mod scheduler;
 pub mod storage;
 pub use storage::{

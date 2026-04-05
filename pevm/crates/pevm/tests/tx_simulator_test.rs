@@ -13,6 +13,7 @@ use pevm::{
     api::update_storage_with_results,
     chain::PevmEthereum,
     execute_revm_sequential,
+    execute_revm_sequential_with_access_sets,
     graph_pevm::GraphPevm,
     greedy_integrator::{GreedyIntegrator, GreedyIntegratorConfig},
     InMemoryStorage,
@@ -1043,4 +1044,121 @@ fn test_v1_first_tx_gas() {
     ).unwrap();
     println!("V1 tx[0]: gas_used={} gas_limit={}",
         results[0].receipt.cumulative_gas_used, txs[0].gas_limit);
+}
+
+/// Verify that `execute_revm_sequential_with_access_sets` correctly builds read/write sets.
+///
+/// Note: TxSimulatorV2's `reads` array is dead code (Solidity optimizer eliminates the SLOAD
+/// because the result is unused). Only `writes` produce real storage operations.
+///
+/// Two transactions:
+///   tx_a: writes=[k1, k2]  → SSTOREs k1 and k2 (each SSTORE first SLOADs the original value)
+///   tx_b: writes=[k2, k3]  → SSTOREs k2 and k3
+///
+/// Verified invariants:
+///   1. write_set ⊆ read_set  (SSTORE always reads before writing)
+///   2. Each write_set has ≥2 entries (the 2 storage slots + Basic account locations)
+///   3. tx_a.write_set ∩ tx_b.write_set is non-empty  (WW conflict on k2)
+#[test]
+fn test_access_sets_read_write_distinction() {
+    use tx_simulator::contract_v2::TxSimulatorV2;
+    use std::sync::Arc;
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+
+    let simulator_address = revm::primitives::Address::new(rand::random());
+    let caller_a = revm::primitives::Address::new(rand::random());
+    let caller_b = revm::primitives::Address::new(rand::random());
+
+    let simulator_account = TxSimulatorV2::build();
+    let eoa = pevm::EvmAccount {
+        balance: U256::from(u128::MAX),
+        nonce: 0,
+        ..pevm::EvmAccount::default()
+    };
+
+    let state: pevm::ChainState = [
+        (simulator_address, simulator_account),
+        (caller_a, eoa.clone()),
+        (caller_b, eoa.clone()),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut bytecodes = pevm::Bytecodes::default();
+    let mut state_no_code = state.clone();
+    for account in state_no_code.values_mut() {
+        if let Some(code) = account.code.take() {
+            bytecodes.insert(account.code_hash.unwrap(), code);
+        }
+    }
+    let storage = InMemoryStorage::new(state_no_code, Arc::new(bytecodes), Default::default());
+
+    let k1 = B256::from([1u8; 32]);
+    let k2 = B256::from([2u8; 32]);
+    let k3 = B256::from([3u8; 32]);
+
+    // 2 cold SSTOREs = 2 * 22100 gas + base tx + margin
+    let gas = 21_000 + 2 * 22_100 + 50_000;
+
+    let tx_a = TxEnv {
+        caller: caller_a,
+        gas_limit: gas,
+        gas_price: U256::from(1),
+        transact_to: TransactTo::Call(simulator_address),
+        data: TxSimulatorV2::encode_execute(&[], &[k1, k2], 2),
+        nonce: Some(0),
+        ..TxEnv::default()
+    };
+    let tx_b = TxEnv {
+        caller: caller_b,
+        gas_limit: gas,
+        gas_price: U256::from(1),
+        transact_to: TransactTo::Call(simulator_address),
+        data: TxSimulatorV2::encode_execute(&[], &[k2, k3], 2),
+        nonce: Some(0),
+        ..TxEnv::default()
+    };
+
+    let (results, access_sets) = execute_revm_sequential_with_access_sets(
+        &chain,
+        &storage,
+        spec_id,
+        BlockEnv::default(),
+        vec![tx_a, tx_b],
+    )
+    .expect("execution failed");
+
+    for (i, r) in results.iter().enumerate() {
+        println!("tx[{}]: gas_used={} status={:?}", i, r.receipt.cumulative_gas_used, r.receipt.status);
+    }
+
+    let asets_a = &access_sets[0];
+    let asets_b = &access_sets[1];
+    println!("tx_a: read_set={}, write_set={}", asets_a.read_set.len(), asets_a.write_set.len());
+    println!("tx_b: read_set={}, write_set={}", asets_b.read_set.len(), asets_b.write_set.len());
+
+    // Invariant 1: write_set ⊆ read_set for both txs (SSTORE first reads original value).
+    assert!(asets_a.write_set.is_subset(&asets_a.read_set),
+        "tx_a: write_set must be ⊆ read_set");
+    assert!(asets_b.write_set.is_subset(&asets_b.read_set),
+        "tx_b: write_set must be ⊆ read_set");
+
+    // Invariant 2: each tx has at least 2 write_set entries (2 storage slots written).
+    assert!(asets_a.write_set.len() >= 2,
+        "tx_a: expected ≥2 write_set entries, got {}", asets_a.write_set.len());
+    assert!(asets_b.write_set.len() >= 2,
+        "tx_b: expected ≥2 write_set entries, got {}", asets_b.write_set.len());
+
+    // Invariant 3: the two txs share at least one write_set entry (k2 → WW conflict).
+    let shared: usize = asets_a.write_set.iter()
+        .filter(|k| asets_b.write_set.contains(*k))
+        .count();
+    println!("shared write_set entries (WW conflicts): {}", shared);
+    assert!(shared >= 1,
+        "tx_a and tx_b should share ≥1 write_set entry (k2), got {}", shared);
+
+    println!("✓ write_set ⊆ read_set");
+    println!("✓ WW conflict on k2 detected in write_sets");
 }

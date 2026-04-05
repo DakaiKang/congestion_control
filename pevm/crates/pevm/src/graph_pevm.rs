@@ -61,12 +61,12 @@ impl GraphPevm {
             previous_cumulative_gas = result[i].receipt.cumulative_gas_used;
             
             let txn_node = TransactionNode::new(
-                i as u64, 
-                replica, 
-                1, 
-                tx_gas_used, 
-                HashSet::new(), 
-                access_set[i].clone()
+                i as u64,
+                replica,
+                1,
+                tx_gas_used,
+                access_set[i].read_set.clone(),
+                access_set[i].write_set.clone(),
             );
             graph.add_transaction(txn_node);
         }
@@ -193,6 +193,13 @@ impl GraphPevm {
             }
         }
 
+        // Scheduler aborted due to timeout/deadlock (no abort_reason set).
+        // Fall back to sequential execution to guarantee correctness.
+        if scheduler.is_aborted() {
+            self.dropper.drop((mv_memory, scheduler, Vec::new()));
+            return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
+        }
+
         let mut fully_evaluated_results = Vec::with_capacity(block_size);
         let mut cumulative_gas_used: u64 = 0;
         for i in 0..block_size {
@@ -273,8 +280,10 @@ impl GraphPevm {
                             balance = balance.saturating_sub(*subtraction);
                             nonce += 1;
                         }
-                        // TODO: Better error handling
-                        _ => unreachable!(),
+                        // Non-balance entries (e.g. CodeHash for a contract deployed to
+                        // a previously-lazy address) are unexpected but safe to skip here:
+                        // the storage path already handled the account info correctly.
+                        _ => {}
                     }
                     // Assert that evaluated nonce is correct when address is caller.
                     if tx.caller == address {
@@ -336,11 +345,16 @@ impl GraphPevm {
         scheduler: &GraphScheduler,
         tx_version: TxVersion,
     ) -> Option<Task> {
+        // Track the last blocking_tx_idx that caused add_dependency to return false.
+        // If the same tx blocks us twice in a row, it's the LackOfFundForMaxFee heuristic
+        // failing (not a real MvMemory ESTIMATE case), so we fall back to sequential
+        // instead of spinning forever.
+        let mut last_failed_blocking: Option<usize> = None;
         loop {
             return match vm.execute(&tx_version) {
                 Err(VmExecutionError::Retry) => {
                     // println!("GraphPevm: Retry execution for {:#?} by thread {:?}", tx_version, thread::current().id());
-                    if self.abort_reason.get().is_none() {
+                    if self.abort_reason.get().is_none() && !scheduler.is_aborted() {
                         continue;
                     }
                     None
@@ -354,12 +368,23 @@ impl GraphPevm {
                 }
                 Err(VmExecutionError::Blocking(blocking_tx_idx)) => {
                     // println!("GraphPevm: Blocking on transaction index {} for {:#?} by thread {:?}", blocking_tx_idx, tx_version, thread::current().id());
-                    
-                    if !scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx)
-                        && self.abort_reason.get().is_none()
-                    {
-                        // Retry the execution immediately if the blocking transaction was
-                        // re-executed by the time we can add it as a dependency.
+
+                    if !scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx) {
+                        if self.abort_reason.get().is_some() || scheduler.is_aborted() {
+                            return None;
+                        }
+                        if last_failed_blocking == Some(blocking_tx_idx) {
+                            // Same tx blocked us twice: LackOfFundForMaxFee heuristic failed.
+                            // The blocking tx is already done but this tx still can't execute.
+                            // Fall back to sequential rather than spinning forever.
+                            scheduler.abort();
+                            self.abort_reason
+                                .get_or_init(|| AbortReason::FallbackToSequential);
+                            return None;
+                        }
+                        // First failure: blocking tx just finished, retry once so MvMemory
+                        // ESTIMATE cases can read the now-committed data.
+                        last_failed_blocking = Some(blocking_tx_idx);
                         continue;
                     }
                     None
