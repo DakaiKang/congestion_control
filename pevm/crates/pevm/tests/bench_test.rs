@@ -1165,6 +1165,440 @@ fn test_real_blocks_performance_100() {
 }
 
 
+#[test]
+fn test_first_block_critical_path() {
+    let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";
+    let block_num = 16774645u64;
+    let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = get_spec_id(block_num);
+    let (_block_data, _single_storage, txs) = load_block_for_execution(&filepath, true).unwrap();
+    // Use merged storage (like different_conflict_test_real_blocks) to ensure enough funds
+    let storage = create_multi_block_storage(&[block_num], blocks_dir).unwrap();
+    let block_env = BlockEnv::default();
+    let num_txs = txs.len();
+
+    // Also capture access sets for conflict analysis
+    let (results, access_sets) = pevm::execute_revm_sequential_with_access_sets(
+        &chain, &storage, spec_id, block_env.clone(), txs.clone(),
+    ).unwrap();
+    let (mut graph, _results2) = GraphPevm::construct_graph_pevm_by_sequential(
+        &chain, &storage, spec_id, block_env, txs, 1,
+    ).unwrap();
+
+    // 统计图的基本属性
+    let num_edges: usize = graph.nodes.iter().map(|n| n.children_indices.len()).sum();
+    let num_roots = graph.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
+    let max_parents = graph.nodes.iter().map(|n| n.parent_indices.len()).max().unwrap_or(0);
+    let max_children = graph.nodes.iter().map(|n| n.children_indices.len()).max().unwrap_or(0);
+
+    println!("=== Block {} Dependency Graph Analysis ===", block_num);
+    println!("Transactions:  {}", num_txs);
+    println!("Edges (WW):    {}", num_edges);
+    println!("Root nodes:    {} ({:.1}% of txs)", num_roots, 100.0 * num_roots as f64 / num_txs as f64);
+    println!("Max in-degree: {}", max_parents);
+    println!("Max out-degree:{}", max_children);
+
+    // 模拟并行执行，获取 critical path (makespan)
+    for threads in [1, 2, 4, 8, 16] {
+        let mut g = graph.clone();
+        g.simulate_parallel_execution(threads);
+        if let Some(ref sim) = g.simulation_result {
+            let total_exec_time: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+            let critical_path_pct = 100.0 * sim.total_time as f64 / total_exec_time as f64;
+            println!(
+                "  {:2} threads → makespan={} ns, critical_path/total={:.1}%, speedup={:.2}x",
+                threads,
+                sim.total_time,
+                critical_path_pct,
+                total_exec_time as f64 / sim.total_time as f64,
+            );
+        }
+    }
+
+    // 找出关键路径上的 tx 链（longest_suffix 最大的根节点往下追踪）
+    graph.simulate_parallel_execution(8);
+    graph.update_longest_suffix_postorder();
+    let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+    let cp_root = graph.nodes.iter().enumerate()
+        .filter(|(_, n)| n.parent_indices.is_empty())
+        .max_by_key(|(_, n)| n.longest_suffix)
+        .map(|(i, _)| i);
+
+    if let Some(mut idx) = cp_root {
+        println!("\nCritical path (8 threads, WW conflict source):");
+        let mut depth = 0;
+        let mut prev_idx: Option<usize> = None;
+        loop {
+            let node = &graph.nodes[idx];
+            // Print conflict with previous tx in the chain
+            if let Some(prev) = prev_idx {
+                let overlap: Vec<u64> = access_sets[prev].write_set
+                    .intersection(&access_sets[idx].write_set)
+                    .copied().collect();
+                println!("    WW conflict on {} location(s): {:?}", overlap.len(), &overlap[..overlap.len().min(3)]);
+            }
+            println!("  [{}] tx_idx={} write_set_size={} exec_time={}ns",
+                depth, idx, access_sets[idx].write_set.len(), node.execution_time);
+            depth += 1;
+            prev_idx = Some(idx);
+            let next = node.children_indices.iter()
+                .max_by_key(|&&c| graph.nodes[c].longest_suffix);
+            match next {
+                Some(&c) => idx = c,
+                None => break,
+            }
+        }
+        println!("\n  Critical path depth: {} txs", depth);
+        println!("  Total exec time: {} ns", total_exec_time);
+    }
+    let _ = results;
+}
+
+#[test]
+fn test_50_blocks_speedup_analysis() {
+    let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";
+    let start_block = 16774645u64;
+    let num_blocks = 50;
+
+    struct BlockStats {
+        block_num: u64,
+        num_txs: usize,
+        num_edges: usize,
+        root_pct: f64,
+        critical_path_depth: usize,
+        max_speedup_8t: f64,
+    }
+
+    let mut stats: Vec<BlockStats> = Vec::new();
+
+    println!("\n{:-<80}", "");
+    println!("{:^80}", "50-Block Critical Path / Max Speedup Analysis (8 threads)");
+    println!("{:-<80}", "");
+    println!("{:<12} {:>7} {:>7} {:>7} {:>8} {:>10}",
+        "Block", "#Txs", "#Edges", "Root%", "CPDepth", "MaxSpdup");
+    println!("{:-<80}", "");
+
+    for i in 0..num_blocks {
+        let block_num = start_block + i as u64;
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+
+        // Load txs
+        let (_, _, txs) = match load_block_for_execution(&filepath, true) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  block {} SKIP (load error: {:?})", block_num, e);
+                continue;
+            }
+        };
+        if txs.is_empty() {
+            println!("  block {} SKIP (0 txs)", block_num);
+            continue;
+        }
+
+        let chain = PevmEthereum::mainnet();
+        let spec_id = get_spec_id(block_num);
+        let storage = match create_multi_block_storage(&[block_num], blocks_dir) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("  block {} SKIP (storage error: {:?})", block_num, e);
+                continue;
+            }
+        };
+        let block_env = BlockEnv::default();
+        let num_txs = txs.len();
+
+        // Build dependency graph
+        let (mut graph, _) = match GraphPevm::construct_graph_pevm_by_sequential(
+            &chain, &storage, spec_id, block_env, txs, block_num,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  block {} SKIP (graph error: {:?})", block_num, e);
+                continue;
+            }
+        };
+
+        let num_edges: usize = graph.nodes.iter().map(|n| n.children_indices.len()).sum();
+        let num_roots = graph.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
+        let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
+        let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+
+        // Simulate at 8 threads
+        graph.simulate_parallel_execution(8);
+        let max_speedup_8t = if let Some(ref sim) = graph.simulation_result {
+            if sim.total_time > 0 { total_exec_time as f64 / sim.total_time as f64 } else { 1.0 }
+        } else { 1.0 };
+
+        // Critical path depth: trace from the root with longest_suffix
+        graph.update_longest_suffix_postorder();
+        let cp_root = graph.nodes.iter().enumerate()
+            .filter(|(_, n)| n.parent_indices.is_empty())
+            .max_by_key(|(_, n)| n.longest_suffix)
+            .map(|(i, _)| i);
+
+        let critical_path_depth = if let Some(mut idx) = cp_root {
+            let mut depth = 0usize;
+            loop {
+                depth += 1;
+                let next = graph.nodes[idx].children_indices.iter()
+                    .max_by_key(|&&c| graph.nodes[c].longest_suffix)
+                    .copied();
+                match next {
+                    Some(c) => idx = c,
+                    None => break,
+                }
+            }
+            depth
+        } else { 1 };
+
+        println!("{:<12} {:>7} {:>7} {:>6.1}% {:>8} {:>10.2}x",
+            block_num, num_txs, num_edges, root_pct, critical_path_depth, max_speedup_8t);
+
+        stats.push(BlockStats {
+            block_num, num_txs, num_edges, root_pct, critical_path_depth, max_speedup_8t,
+        });
+    }
+
+    if stats.is_empty() {
+        println!("No blocks processed.");
+        return;
+    }
+
+    // Aggregate statistics
+    let mut speedups: Vec<f64> = stats.iter().map(|s| s.max_speedup_8t).collect();
+    speedups.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let n = speedups.len() as f64;
+    let mean = speedups.iter().sum::<f64>() / n;
+    let median = if speedups.len() % 2 == 0 {
+        (speedups[speedups.len()/2 - 1] + speedups[speedups.len()/2]) / 2.0
+    } else {
+        speedups[speedups.len()/2]
+    };
+    let p25 = speedups[(speedups.len() as f64 * 0.25) as usize];
+    let p75 = speedups[(speedups.len() as f64 * 0.75).min(speedups.len() as f64 - 1.0) as usize];
+
+    let total_txs: usize = stats.iter().map(|s| s.num_txs).sum();
+    let avg_edges: f64 = stats.iter().map(|s| s.num_edges as f64).sum::<f64>() / n;
+    let avg_root_pct: f64 = stats.iter().map(|s| s.root_pct).sum::<f64>() / n;
+    let avg_cp_depth: f64 = stats.iter().map(|s| s.critical_path_depth as f64).sum::<f64>() / n;
+
+    println!("{:-<80}", "");
+    println!("\n=== Aggregate Statistics ({} blocks) ===", stats.len());
+    println!("  Total txs:          {}", total_txs);
+    println!("  Avg txs/block:      {:.1}", total_txs as f64 / n);
+    println!("  Avg WW edges:       {:.1}", avg_edges);
+    println!("  Avg root%:          {:.1}%", avg_root_pct);
+    println!("  Avg critical depth: {:.1}", avg_cp_depth);
+    println!("\n  Max Speedup @ 8 threads (theoretical):");
+    println!("    Min:    {:.2}x  (block {})", speedups[0],
+        stats.iter().min_by(|a,b| a.max_speedup_8t.partial_cmp(&b.max_speedup_8t).unwrap()).unwrap().block_num);
+    println!("    P25:    {:.2}x", p25);
+    println!("    Median: {:.2}x", median);
+    println!("    Mean:   {:.2}x", mean);
+    println!("    P75:    {:.2}x", p75);
+    println!("    Max:    {:.2}x  (block {})", speedups[speedups.len()-1],
+        stats.iter().max_by(|a,b| a.max_speedup_8t.partial_cmp(&b.max_speedup_8t).unwrap()).unwrap().block_num);
+
+    // Distribution buckets
+    println!("\n  Speedup distribution:");
+    let buckets = [(1.0f64, 1.5), (1.5, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 6.0), (6.0, f64::MAX)];
+    for (lo, hi) in buckets {
+        let count = speedups.iter().filter(|&&x| x >= lo && x < hi).count();
+        let label = if hi == f64::MAX { format!("{:.1}x+", lo) } else { format!("{:.1}x–{:.1}x", lo, hi) };
+        let bar: String = "#".repeat(count * 2);
+        println!("    {:12} {:3} blocks  {}", label, count, bar);
+    }
+}
+
+#[test]
+fn test_50_blocks_speedup_real_time() {
+    let rw_dir = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
+    let start_block = 16774645u64;
+    let num_blocks = 50;
+
+    // Parse one tx entry from rw_time JSON
+    struct RwEntry {
+        writes: Vec<u64>,  // storage key → u64 (last 8 bytes of 32-byte hex)
+        reads:  Vec<u64>,
+        exec_ns: u64,
+    }
+
+    fn hex_to_u64(s: &str) -> u64 {
+        let s = s.trim_start_matches("0x");
+        // Take last 16 hex chars = last 8 bytes
+        let start = s.len().saturating_sub(16);
+        u64::from_str_radix(&s[start..], 16).unwrap_or(0)
+    }
+
+    fn load_rw_file(path: &str) -> Vec<RwEntry> {
+        let content = std::fs::read_to_string(path).unwrap();
+        let arr: serde_json::Value = serde_json::from_str(&content).unwrap();
+        arr.as_array().unwrap().iter().map(|v| {
+            let writes = v["writes"].as_array().unwrap_or(&vec![])
+                .iter().map(|s| hex_to_u64(s.as_str().unwrap())).collect();
+            let reads = v["reads"].as_array().unwrap_or(&vec![])
+                .iter().map(|s| hex_to_u64(s.as_str().unwrap())).collect();
+            let exec_ns = v["executionTime"].as_u64().unwrap_or(0);
+            RwEntry { writes, reads, exec_ns }
+        }).collect()
+    }
+
+    struct BlockStats {
+        block_num: u64,
+        num_txs: usize,
+        num_edges: usize,
+        root_pct: f64,
+        cp_depth: usize,
+        speedup_gas: f64,   // old: gas-based
+        speedup_real: f64,  // new: real execution time
+        total_ns: u64,
+        makespan_ns: u64,
+    }
+
+    let mut stats: Vec<BlockStats> = Vec::new();
+
+    println!("\n{:-<90}", "");
+    println!("{:^90}", "50-Block Theoretical Speedup: Gas-proxy vs Real ExecutionTime (8 threads)");
+    println!("{:-<90}", "");
+    println!("{:<12} {:>6} {:>6} {:>7} {:>8} {:>10} {:>10}",
+        "Block", "#Txs", "#Edges", "Root%", "CPDepth", "SpeedGas", "SpeedReal");
+    println!("{:-<90}", "");
+
+    for i in 0..num_blocks {
+        let block_num = start_block + i as u64;
+        let rw_path = format!("{}/rw_time_{}.json", rw_dir, block_num);
+
+        if !std::path::Path::new(&rw_path).exists() {
+            println!("{:<12} SKIP (no rw_time file)", block_num);
+            continue;
+        }
+
+        let entries = load_rw_file(&rw_path);
+        if entries.is_empty() {
+            continue;
+        }
+        let num_txs = entries.len();
+
+        // Build TransactionGraph with real exec time
+        let mut graph_real = TransactionGraph::new();
+        for (i, e) in entries.iter().enumerate() {
+            let write_set: std::collections::HashSet<u64> = e.writes.iter().copied().collect();
+            let read_set:  std::collections::HashSet<u64> = e.reads.iter().copied().collect();
+            let node = pevm::dependency_graph::TransactionNode::new(
+                i as u64, 1, 1, e.exec_ns, read_set, write_set,
+            );
+            graph_real.add_transaction(node);
+        }
+
+        // Also build with gas proxy (using exec_ns as a stand-in — but we need the gas
+        // values; load from block file)
+        let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+        let chain = PevmEthereum::mainnet();
+        let spec_id = get_spec_id(block_num);
+
+        let speedup_gas = if let Ok((_, _, txs)) = load_block_for_execution(&filepath, true) {
+            if let Ok(storage) = create_multi_block_storage(&[block_num], blocks_dir) {
+                if let Ok((mut g, _)) = GraphPevm::construct_graph_pevm_by_sequential(
+                    &chain, &storage, spec_id, BlockEnv::default(), txs, block_num,
+                ) {
+                    let total: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+                    g.simulate_parallel_execution(8);
+                    if let Some(ref sim) = g.simulation_result {
+                        if sim.total_time > 0 { total as f64 / sim.total_time as f64 } else { 1.0 }
+                    } else { 1.0 }
+                } else { f64::NAN }
+            } else { f64::NAN }
+        } else { f64::NAN };
+
+        // Graph stats (from real-time graph)
+        let num_edges: usize = graph_real.nodes.iter().map(|n| n.children_indices.len()).sum();
+        let num_roots = graph_real.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
+        let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
+        let total_ns: u64 = graph_real.nodes.iter().map(|n| n.execution_time).sum();
+
+        graph_real.simulate_parallel_execution(8);
+        let makespan_ns = graph_real.simulation_result.as_ref()
+            .map(|s| s.total_time).unwrap_or(total_ns);
+        let speedup_real = if makespan_ns > 0 { total_ns as f64 / makespan_ns as f64 } else { 1.0 };
+
+        // Critical path depth
+        graph_real.update_longest_suffix_postorder();
+        let cp_depth = if let Some(mut idx) = graph_real.nodes.iter().enumerate()
+            .filter(|(_, n)| n.parent_indices.is_empty())
+            .max_by_key(|(_, n)| n.longest_suffix)
+            .map(|(i, _)| i)
+        {
+            let mut depth = 0usize;
+            loop {
+                depth += 1;
+                let next = graph_real.nodes[idx].children_indices.iter()
+                    .max_by_key(|&&c| graph_real.nodes[c].longest_suffix)
+                    .copied();
+                match next { Some(c) => idx = c, None => break }
+            }
+            depth
+        } else { 1 };
+
+        let gas_str = if speedup_gas.is_nan() { "  N/A  ".to_string() }
+                      else { format!("{:>9.2}x", speedup_gas) };
+        println!("{:<12} {:>6} {:>6} {:>6.1}% {:>8} {} {:>9.2}x",
+            block_num, num_txs, num_edges, root_pct, cp_depth, gas_str, speedup_real);
+
+        stats.push(BlockStats {
+            block_num, num_txs, num_edges, root_pct, cp_depth,
+            speedup_gas, speedup_real, total_ns, makespan_ns,
+        });
+    }
+
+    if stats.is_empty() {
+        println!("No blocks processed.");
+        return;
+    }
+
+    // Aggregate
+    let n = stats.len() as f64;
+    let mut real_speedups: Vec<f64> = stats.iter().map(|s| s.speedup_real).collect();
+    real_speedups.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean_real = real_speedups.iter().sum::<f64>() / n;
+    let median_real = real_speedups[real_speedups.len() / 2];
+
+    let gas_valid: Vec<f64> = stats.iter().filter(|s| !s.speedup_gas.is_nan()).map(|s| s.speedup_gas).collect();
+    let mean_gas = gas_valid.iter().sum::<f64>() / gas_valid.len() as f64;
+    let mut gas_sorted = gas_valid.clone(); gas_sorted.sort_by(|a,b| a.partial_cmp(b).unwrap());
+    let median_gas = gas_sorted[gas_sorted.len() / 2];
+
+    let total_work_ns: u64 = stats.iter().map(|s| s.total_ns).sum();
+    let total_makespan_ns: u64 = stats.iter().map(|s| s.makespan_ns).sum();
+
+    println!("{:-<90}", "");
+    println!("\n=== Aggregate Statistics ({} blocks, 8 threads) ===", stats.len());
+    println!("\n  Metric              Gas-proxy    Real-time");
+    println!("  ─────────────────────────────────────────");
+    println!("  Median speedup     {:>8.2}x    {:>8.2}x", median_gas, median_real);
+    println!("  Mean speedup       {:>8.2}x    {:>8.2}x", mean_gas, mean_real);
+    println!("  Min speedup        {:>8.2}x    {:>8.2}x",
+        gas_sorted[0], real_speedups[0]);
+    println!("  Max speedup        {:>8.2}x    {:>8.2}x",
+        gas_sorted[gas_sorted.len()-1], real_speedups[real_speedups.len()-1]);
+    println!("\n  Aggregate (all blocks as one):");
+    println!("  Total work (ns):   {:>15}", total_work_ns);
+    println!("  Total makespan(ns):{:>15}", total_makespan_ns);
+    println!("  Agg. real speedup: {:>8.2}x", total_work_ns as f64 / total_makespan_ns as f64);
+
+    // Distribution
+    println!("\n  Real-time speedup distribution:");
+    let buckets: &[(f64, f64)] = &[(1.0, 2.0),(2.0,3.0),(3.0,5.0),(5.0,8.0),(8.0,f64::MAX)];
+    for &(lo, hi) in buckets {
+        let count = real_speedups.iter().filter(|&&x| x >= lo && x < hi).count();
+        let label = if hi == f64::MAX { format!("{:.0}x+", lo) } else { format!("{:.0}x–{:.0}x", lo, hi) };
+        println!("    {:10} {:3} blocks  {}", label, count, "#".repeat(count));
+    }
+}
+
 fn has_cycle(graph: &TransactionGraph) -> bool {
     let n = graph.node_count();
     let mut visited = vec![false; n];

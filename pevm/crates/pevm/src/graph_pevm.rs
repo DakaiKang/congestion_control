@@ -200,6 +200,10 @@ impl GraphPevm {
             return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
         }
 
+        let re_execs = scheduler.re_execution_count.load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!("[GraphPevm] block_size={} re_executions={} rate={:.1}%",
+            block_size, re_execs, 100.0 * re_execs as f64 / block_size as f64);
+
         let mut fully_evaluated_results = Vec::with_capacity(block_size);
         let mut cumulative_gas_used: u64 = 0;
         for i in 0..block_size {

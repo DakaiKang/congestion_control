@@ -684,12 +684,18 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
 }
 
 /// Extract write set from execution result:
-/// - Basic(addr): account was touched (balance/nonce modified)
+/// - Basic(addr): account's ETH balance/nonce/code actually changed.
+///   We detect this by checking whether the account has no storage changes:
+///   - EOA sending/receiving ETH: always has storage.is_empty() → Basic added ✓
+///   - Contract with only storage changes (DeFi swap reserves, balanceOf): storage non-empty
+///     → Basic NOT added, avoiding spurious WW edges between txs sharing the same contract
+///   - Contract that both receives ETH AND modifies storage: Basic missed, but it already
+///     has WW conflict on storage slots with any tx touching the same contract, so the
+///     dependency graph edge still exists.
+///   - Newly created contract: status Created → Basic added ✓
 /// - Storage(addr, slot): slot value changed
 ///
-/// Excludes only `coinbase` (pevm applies gas rewards via LazyRecipient, never as
-/// a full write). Lazy sender/recipient ARE included so downstream txs reading
-/// their balance get proper RAW dependency edges.
+/// Excludes `coinbase` (pevm applies gas rewards via LazyRecipient, never as a full write).
 fn extract_write_set_from_result(
     result_and_state: &ResultAndState,
     coinbase: Address,
@@ -700,13 +706,23 @@ fn extract_write_set_from_result(
         if *address == Address::ZERO || *address == coinbase {
             continue;
         }
-        if account.is_touched() {
+
+        let changed_storage_slots: Vec<_> = account.storage.iter()
+            .filter(|(_, s)| s.is_changed())
+            .collect();
+
+        // Add Basic(address) only when balance/nonce/code changed, not merely storage.
+        // Heuristic: if no storage slots changed, the account must have had a Basic-level
+        // change (ETH transfer, nonce increment, contract creation/destruction).
+        // Newly created contracts also get Basic regardless.
+        let info_changed = changed_storage_slots.is_empty() && account.is_touched()
+            || account.is_created();
+        if info_changed {
             write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
         }
-        for (slot, storage_slot) in &account.storage {
-            if storage_slot.is_changed() {
-                write_set.insert(hash_deterministic(MemoryLocation::Storage(*address, *slot)));
-            }
+
+        for (slot, _) in &changed_storage_slots {
+            write_set.insert(hash_deterministic(MemoryLocation::Storage(*address, **slot)));
         }
     }
 

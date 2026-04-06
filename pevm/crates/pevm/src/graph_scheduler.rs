@@ -36,6 +36,8 @@ pub struct GraphScheduler {
     /// Each tx must decrement children's remaining_deps exactly once (on first
     /// successful execution). This prevents u64 underflow from multiple re-executions.
     children_released: Vec<AtomicBool>,
+    /// Total number of re-executions (incarnation > 0) for diagnostics.
+    pub re_execution_count: AtomicUsize,
 }
 
 impl std::fmt::Debug for GraphScheduler {
@@ -94,6 +96,7 @@ impl GraphScheduler {
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
             children_released: (0..block_size).map(|_| AtomicBool::new(false)).collect(),
+            re_execution_count: AtomicUsize::new(0),
             dependency_graph,
             executable_txs: Mutex::new(executable_txs),
             task_available: Condvar::new(),
@@ -261,15 +264,15 @@ impl GraphScheduler {
 
         match tx.status {
             IncarnationStatus::ReadyToExecute => {
+                if tx.incarnation > 0 {
+                    self.re_execution_count.fetch_add(1, Ordering::Relaxed);
+                }
                 tx.status = IncarnationStatus::Executing;
                 Some(TxVersion { tx_idx, tx_incarnation: tx.incarnation })
             }
             IncarnationStatus::Aborting => {
-                // OCC-aborted tx whose graph deps are now satisfied: treat as re-executable.
-                // This happens when the OCC blocking tx completed while graph deps were still
-                // pending — finish_execution left the tx in Aborting without calling
-                // set_ready_status. Now that graph deps are satisfied, we can execute it.
                 tx.incarnation += 1;
+                self.re_execution_count.fetch_add(1, Ordering::Relaxed);
                 tx.status = IncarnationStatus::Executing;
                 Some(TxVersion { tx_idx, tx_incarnation: tx.incarnation })
             }

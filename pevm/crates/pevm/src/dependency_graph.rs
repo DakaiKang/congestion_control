@@ -201,10 +201,10 @@ impl TransactionGraph {
         let mut all_addresses: HashSet<u64> = HashSet::new();
         all_addresses.extend(node.read_set.iter().cloned());
         all_addresses.extend(node.write_set.iter().cloned());
-        
+
         // Step 1: Add the node to the graph
         let new_idx = self.add_node(node.clone());
-        
+
         // Step 2: Find dependencies (parent transactions) based on conflicts
         let mut parent_transactions: HashSet<TransactionId> = HashSet::new();
 
@@ -239,7 +239,7 @@ impl TransactionGraph {
             if !self.head_txns.contains_key(addr) {
                 self.head_txns.insert(*addr, tx_id.clone());
             }
-            
+
             // Always update tail to this new transaction
             self.tail_txns.insert(*addr, tx_id.clone());
         }
