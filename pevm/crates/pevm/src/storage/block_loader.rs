@@ -415,8 +415,8 @@ pub fn load_block_for_execution(
     let block_data = load_block_from_file(filepath)?;
     let storage = prestate_to_storage(&block_data);
     let mut txenvs = transactions_to_txenvs(&block_data)?;
-    for txenv in &mut txenvs {
-        if large_gas_limit {
+    if large_gas_limit {
+        for txenv in &mut txenvs {    
             if txenv.gas_limit < 30_000_000 {
                 txenv.gas_limit = 30_000_000; 
             }

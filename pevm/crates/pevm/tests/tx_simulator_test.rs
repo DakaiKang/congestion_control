@@ -853,12 +853,14 @@ fn test_calibrate_sload_vs_sstore_ns() {
 /// (executionTime_ns / T_SLOAD_NS) rather than gasUsed / 100.
 #[test]
 fn test_throughput_comparison_v2() {
-    const NUM_BLOCKS: usize = 100;
-    const GREEDY_BATCH: usize = 20;
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    let greedy_batch: usize = std::env::var("GREEDY_BATCH")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(50);
     const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
 
     let (state, bytecodes, _addr, blocks_txs) =
-        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, NUM_BLOCKS)
+        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, num_blocks)
             .expect("failed to load rw_time blocks");
 
     let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
@@ -893,8 +895,8 @@ fn test_throughput_comparison_v2() {
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
     let mut integrated_graphs = Vec::new();
-    for chunk_start in (0..NUM_BLOCKS).step_by(GREEDY_BATCH) {
-        let chunk_end = (chunk_start + GREEDY_BATCH).min(NUM_BLOCKS);
+    for chunk_start in (0..num_blocks).step_by(greedy_batch) {
+        let chunk_end = (chunk_start + greedy_batch).min(num_blocks);
         let (itxns, igraphs) = integrator.integrate_pevm_graphs(
             dep_graphs[chunk_start..chunk_end].to_vec(),
             reordered_blocks[chunk_start..chunk_end].to_vec(),
@@ -904,65 +906,82 @@ fn test_throughput_comparison_v2() {
     }
 
     println!(
-        "\n=== Throughput comparison V2 (rw_time): {NUM_BLOCKS} blocks, {total_txs} txns, {} threads ===",
+        "\n=== Throughput comparison V2 (rw_time): {num_blocks} blocks, {total_txs} txns, {} threads ===",
         concurrency
     );
     println!("{:<38} {:>10} {:>12} {:>10}", "Mode", "Time (ms)", "Txns/s", "Speedup");
     println!("{}", "-".repeat(73));
 
+    let gas_sum = |results: &[pevm::PevmTxExecutionResult]| -> u64 {
+        results.last().map(|r| r.receipt.cumulative_gas_used).unwrap_or(0)
+    };
+
     // ── 1. Sequential ─────────────────────────────────────────────────────────
     let mut s = base_storage.clone();
+    let mut seq_gas: u64 = 0;
     let t = Instant::now();
     for txs in &blocks_txs {
         let r = execute_revm_sequential(&chain, &s, spec_id, BlockEnv::default(), txs.clone()).unwrap();
+        seq_gas += gas_sum(&r);
         update_storage_with_results(&mut s, r);
     }
     let seq_ms = t.elapsed().as_secs_f64() * 1000.0;
     let seq_tput = total_txs as f64 / (seq_ms / 1000.0);
-    println!("{:<38} {:>10.1} {:>12.0} {:>10}", "Sequential", seq_ms, seq_tput, "1.00x");
+    println!("{:<38} {:>10.1} {:>12.0} {:>10}  gas={}", "Sequential", seq_ms, seq_tput, "1.00x", seq_gas);
 
     // ── 2. Pevm parallel ──────────────────────────────────────────────────────
     let mut s = base_storage.clone();
+    let mut par_gas: u64 = 0;
     let t = Instant::now();
     for txs in &blocks_txs {
         let r = Pevm::default().execute_revm_parallel(
             &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency,
         ).unwrap();
+        par_gas += gas_sum(&r);
         update_storage_with_results(&mut s, r);
     }
     let par_ms = t.elapsed().as_secs_f64() * 1000.0;
     let par_tput = total_txs as f64 / (par_ms / 1000.0);
-    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x", "Pevm parallel", par_ms, par_tput, par_tput / seq_tput);
+    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x  gas={} {}",
+        "Pevm parallel", par_ms, par_tput, par_tput / seq_tput,
+        par_gas, if par_gas == seq_gas { "✓" } else { "✗ MISMATCH" });
 
     // ── 3. GraphPevm parallel ─────────────────────────────────────────────────
     let mut s = base_storage.clone();
+    let mut graph_gas: u64 = 0;
     let t = Instant::now();
     for (txs, graph) in reordered_blocks.iter().zip(dep_graphs.iter()) {
         let r = GraphPevm::default().execute_revm_parallel(
             &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone(),
         ).unwrap();
+        graph_gas += gas_sum(&r);
         update_storage_with_results(&mut s, r);
     }
     let graph_ms = t.elapsed().as_secs_f64() * 1000.0;
     let graph_tput = total_txs as f64 / (graph_ms / 1000.0);
-    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x", "GraphPevm parallel", graph_ms, graph_tput, graph_tput / seq_tput);
+    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x  gas={} {}",
+        "GraphPevm parallel", graph_ms, graph_tput, graph_tput / seq_tput,
+        graph_gas, if graph_gas == seq_gas { "✓" } else { "✗ MISMATCH" });
 
     // ── 4. Greedy + GraphPevm ─────────────────────────────────────────────────
     let mut s = base_storage.clone();
+    let mut greedy_gas: u64 = 0;
     let t = Instant::now();
     for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
         let r = GraphPevm::default().execute_revm_parallel(
             &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone(),
         ).unwrap();
+        greedy_gas += gas_sum(&r);
         update_storage_with_results(&mut s, r);
     }
     let greedy_ms = t.elapsed().as_secs_f64() * 1000.0;
     let greedy_tput = total_txs as f64 / (greedy_ms / 1000.0);
-    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x",
-        format!("Greedy(batch={GREEDY_BATCH}) + GraphPevm"), greedy_ms, greedy_tput, greedy_tput / seq_tput);
+    println!("{:<38} {:>10.1} {:>12.0} {:>9.2}x  gas={} {}",
+        format!("Greedy(batch={greedy_batch}) + GraphPevm"), greedy_ms, greedy_tput, greedy_tput / seq_tput,
+        greedy_gas, if greedy_gas == seq_gas { "✓" } else { "✗ MISMATCH" });
 
     println!("{}", "-".repeat(73));
-    println!("(greedy: {} groups from {NUM_BLOCKS} blocks)", integrated_txns.len());
+    println!("(greedy: {} groups from {num_blocks} blocks)", integrated_txns.len());
 }
 
 #[test]

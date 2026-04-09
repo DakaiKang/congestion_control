@@ -682,84 +682,85 @@ fn generate_dependency_graphs(
     (storage, reordered_txns_list, new_graphs)  // Fixed: return the list, not single item
 }
 
-fn execute_sequential_and_update(
-    mut storage: InMemoryStorage, 
-    spec_id: SpecId,
-    txs: Vec<TxEnv>
-) -> InMemoryStorage {
-    let chain = PevmEthereum::mainnet();
+fn make_block_env() -> BlockEnv {
     let mut block_env = BlockEnv::default();
-    block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues in sequential execution
-    block_env.basefee = U256::from(1u64); // 1 wei
-    
+    block_env.gas_limit = U256::from(30_000_000u64);
+    block_env.basefee = U256::ZERO;
+    block_env
+}
+
+fn execute_sequential_and_update(
+    mut storage: InMemoryStorage,
+    spec_id: SpecId,
+    txs: Vec<TxEnv>,
+) -> InMemoryStorage {
+    let (s, _) = execute_sequential_and_update_with_gas(storage, spec_id, txs);
+    s
+}
+
+fn execute_sequential_and_update_with_gas(
+    mut storage: InMemoryStorage,
+    spec_id: SpecId,
+    txs: Vec<TxEnv>,
+) -> (InMemoryStorage, u64) {
+    let chain = PevmEthereum::mainnet();
     let result = pevm::execute_revm_sequential(
-        &chain,
-        &storage,
-        spec_id,
-        block_env,
-        txs.clone(),
+        &chain, &storage, spec_id, make_block_env(), txs,
     ).unwrap();
-    
+    let gas = result.last().map(|r| r.receipt.cumulative_gas_used).unwrap_or(0);
     update_storage_with_results(&mut storage, result);
-    storage
+    (storage, gas)
 }
 
 
 fn execute_parallel_and_update(
-    mut storage: InMemoryStorage, 
+    mut storage: InMemoryStorage,
     spec_id: SpecId,
-    txs: Vec<TxEnv>
+    txs: Vec<TxEnv>,
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let mut block_env = BlockEnv::default();
-    block_env.gas_limit = U256::MAX; // Set to max to avoid out-of-gas issues 
     let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
-    
     let result = Pevm::default().execute_revm_parallel(
-        &chain,
-        &storage,
-        spec_id,
-        block_env,
-        txs.clone(),
-        concurrency_level,
+        &chain, &storage, spec_id, make_block_env(), txs, concurrency_level,
     ).unwrap();
-    
     update_storage_with_results(&mut storage, result);
     storage
 }
 
 
 fn execute_parallel_with_graph_and_update(
-    mut storage: InMemoryStorage, 
+    mut storage: InMemoryStorage,
     txs: Vec<TxEnv>,
     graph: pevm::dependency_graph::TransactionGraph,
-    spec_id: SpecId,    
-    block_env: BlockEnv, 
+    spec_id: SpecId,
+    _block_env: BlockEnv,
 ) -> InMemoryStorage {
+    let (s, _) = execute_parallel_with_graph_and_update_with_gas(storage, txs, graph, spec_id);
+    s
+}
+
+fn execute_parallel_with_graph_and_update_with_gas(
+    mut storage: InMemoryStorage,
+    txs: Vec<TxEnv>,
+    graph: pevm::dependency_graph::TransactionGraph,
+    spec_id: SpecId,
+) -> (InMemoryStorage, u64) {
     let chain = PevmEthereum::mainnet();
     let concurrency_level = std::thread::available_parallelism()
         .unwrap_or(std::num::NonZeroUsize::MIN);
-        
     let mut pevm = GraphPevm::default();
-
     let result = match pevm.execute_revm_parallel(
-        &chain,
-        &storage,
-        spec_id,
-        block_env,
-        txs,
-        concurrency_level,
-        graph,
+        &chain, &storage, spec_id, make_block_env(), txs, concurrency_level, graph,
     ) {
         Ok(r) => r,
         Err(e) => {
             println!("  ⚠️  Graph parallel execution failed: {:?}", e);
-            return storage;
+            return (storage, 0);
         }
     };
-    
+    let gas = result.last().map(|r| r.receipt.cumulative_gas_used).unwrap_or(0);
     update_storage_with_results(&mut storage, result);
-    storage
+    (storage, gas)
 }
 
 
@@ -1013,12 +1014,16 @@ pub fn different_conflict_test_real_blocks(
     println!("\n=== 1. Sequential Execution ===");
     let seq_start = Instant::now();
     let mut seq_storage = storage.clone();
+    let mut seq_gas_per_block: Vec<u64> = Vec::new();
     for txs in blocks_txs.clone() {
-        seq_storage = execute_sequential_and_update(seq_storage, spec_id, txs);
+        let (new_s, gas) = execute_sequential_and_update_with_gas(seq_storage, spec_id, txs);
+        seq_storage = new_s;
+        seq_gas_per_block.push(gas);
     }
+    let seq_total_gas: u64 = seq_gas_per_block.iter().sum();
     let seq_tput = total_txs as f64 / seq_start.elapsed().as_secs_f64();
-    println!("Sequential throughput: {:.2} tx/s", seq_tput);
-    
+    println!("Sequential throughput: {:.2} tx/s  total_gas={}", seq_tput, seq_total_gas);
+
     // 2. Parallel (original)
     println!("\n=== 2. Parallel Execution ===");
     let par_start = Instant::now();
@@ -1028,29 +1033,48 @@ pub fn different_conflict_test_real_blocks(
     }
     let par_tput = total_txs as f64 / par_start.elapsed().as_secs_f64();
     println!("Parallel throughput: {:.2} tx/s", par_tput);
-    
+
     // 3. Generate graphs and parallel with graphs
     println!("\n=== 3. Generating Dependency Graphs ===");
-    let (_, reordered_blocks_txs, dependency_graphs) = 
+    let (_, reordered_blocks_txs, dependency_graphs) =
         generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
-    
+
     println!("=== 4. Parallel with Graphs ===");
     let graph_par_start = Instant::now();
     let mut graph_par_storage = storage.clone();
-    for (idx, (txs, graph)) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()).enumerate() {
-        if idx % 10 == 0 {
-            println!("  Processing block {}/{}", idx + 1, reordered_blocks_txs.len());
-        }
-        graph_par_storage = execute_parallel_with_graph_and_update(
-            graph_par_storage, 
-            txs.clone(),
-            graph.clone(),
-            spec_id,
-            BlockEnv::default(),
+    let mut graph_gas_per_block: Vec<u64> = Vec::new();
+    for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
+        let (new_s, gas) = execute_parallel_with_graph_and_update_with_gas(
+            graph_par_storage, txs.clone(), graph.clone(), spec_id,
         );
+        graph_par_storage = new_s;
+        graph_gas_per_block.push(gas);
     }
+    let graph_total_gas: u64 = graph_gas_per_block.iter().sum();
     let graph_par_tput = total_txs as f64 / graph_par_start.elapsed().as_secs_f64();
-    println!("Parallel with graphs throughput: {:.2} tx/s", graph_par_tput);
+    println!("Parallel with graphs throughput: {:.2} tx/s  total_gas={}", graph_par_tput, graph_total_gas);
+
+    // Per-block gas comparison
+    println!("\n{:>5}  {:>14}  {:>14}  {:>12}  {}", "Block", "Seq Gas", "Graph Gas", "Diff", "Status");
+    println!("{}", "-".repeat(60));
+    let mut first_mismatch = None;
+    for (i, (sg, gg)) in seq_gas_per_block.iter().zip(graph_gas_per_block.iter()).enumerate() {
+        let diff = *gg as i64 - *sg as i64;
+        let status = if sg == gg { "✓" } else { "✗" };
+        println!("{:>5}  {:>14}  {:>14}  {:>+12}  {}",
+            block_numbers[i], sg, gg, diff, status);
+        if sg != gg && first_mismatch.is_none() {
+            first_mismatch = Some(i);
+        }
+    }
+    println!("{}", "-".repeat(60));
+    println!("Total  {:>14}  {:>14}  {:>+12}  {}",
+        seq_total_gas, graph_total_gas,
+        graph_total_gas as i64 - seq_total_gas as i64,
+        if seq_total_gas == graph_total_gas { "✓ MATCH" } else { "✗ MISMATCH" });
+    if let Some(i) = first_mismatch {
+        println!("First mismatch at block index {} (block {})", i, block_numbers[i]);
+    }
     
     // 4. Greedy integration
     println!("\n=== 5. Greedy Integration ===");
@@ -1151,13 +1175,22 @@ fn test_real_blocks_performance() {
 
 #[test]
 fn test_real_blocks_performance_100() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let start_block: u64 = std::env::var("START_BLOCK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16774645);
+
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
-        16774645,  // start_block
-        80,        // num_blocks
+        start_block,
+        num_blocks,
         "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1",
     );
 
-    println!("Final results (80 blocks):");
+    println!("Final results ({} blocks from {}):", num_blocks, start_block);
     println!("  Sequential:  {:.2} tx/s", seq);
     println!("  Parallel:    {:.2} tx/s", par);
     println!("  Graph:       {:.2} tx/s", graph_par);
