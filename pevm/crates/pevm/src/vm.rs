@@ -121,9 +121,9 @@ impl From<ReadError> for VmExecutionError {
     }
 }
 
-pub(crate) struct VmExecutionResult {
-    pub(crate) execution_result: PevmTxExecutionResult,
-    pub(crate) flags: FinishExecFlags,
+pub struct VmExecutionResult {
+    pub execution_result: PevmTxExecutionResult,
+    pub flags: FinishExecFlags,
 }
 
 // A database interface that intercepts reads while executing a specific
@@ -206,6 +206,7 @@ impl<'a, S: Storage, C: PevmChain> VmDb<'a, S, C> {
     }
 
     fn get_code_hash(&mut self, address: Address) -> Result<Option<B256>, ReadError> {
+        // [DK] The way to get A 
         let location_hash = hash_deterministic(MemoryLocation::CodeHash(address));
         let read_origins = self.read_set.entry(location_hash).or_default();
 
@@ -381,6 +382,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                 return if self.tx_idx > 0 {
                     // TODO: Better retry strategy -- immediately, to the
                     // closest sender tx, to the missing sender tx, etc.
+                    // println!("Tx #{} has invalid nonce {}, expected {}", self.tx_idx, self.tx.nonce.unwrap(), account.nonce);
                     Err(ReadError::Blocking(self.tx_idx - 1))
                 } else {
                     Err(ReadError::InvalidNonce(self.tx_idx))
@@ -470,7 +472,9 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                             )?;
                             return Ok(*value);
                         }
-                        MemoryEntry::Estimate => return Err(ReadError::Blocking(*closest_idx)),
+                        MemoryEntry::Estimate => {
+                            return Err(ReadError::Blocking(*closest_idx));
+                        }
                         _ => return Err(ReadError::InvalidMemoryValueType),
                     }
                 }
@@ -549,6 +553,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
     ) -> Result<VmExecutionResult, VmExecutionError> {
         // SAFETY: A correct scheduler would guarantee this index to be inbound.
         let tx = unsafe { self.txs.get_unchecked(tx_version.tx_idx) };
+        // println!("tx_idx: {}, tx_caller: {}", tx_version.tx_idx, tx.caller);
         let from_hash = hash_deterministic(MemoryLocation::Basic(tx.caller));
         let to_hash = tx
             .transact_to
@@ -573,6 +578,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                 // There are at least three locations most of the time: the sender,
                 // the recipient, and the beneficiary accounts.
                 let mut write_set = WriteSet::with_capacity(3);
+                // println!("state: {:#?}", result_and_state.state);
                 for (address, account) in &result_and_state.state {
                     if account.is_selfdestructed() {
                         // TODO: Also write [SelfDestructed] to the basic location?
@@ -678,6 +684,9 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                 } else {
                     FinishExecFlags::empty()
                 };
+
+                // println!("REAL read sets of size {} : {:#?}", db.read_set.len(), &db.read_set);
+                // println!("REAL write sets of size {} : {:#?}", write_set.len(), &write_set);
 
                 if self.mv_memory.record(tx_version, db.read_set, write_set) {
                     flags |= FinishExecFlags::WroteNewLocation;

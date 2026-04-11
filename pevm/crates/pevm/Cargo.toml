@@ -19,12 +19,19 @@ rpc-storage = [
   "dep:alloy-transport",
   "dep:alloy-transport-http",
   "dep:reqwest",
-  "dep:tokio",
 ]
 
 global-alloc = ["dep:rpmalloc", "dep:snmalloc-rs", "dep:tikv-jemallocator"]
 
 [dependencies]
+anyhow = "1"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rand = "0.8"
+ethers.workspace=true
+rlp = "0.5"
+ethereum-types = "0.14"
+hex = "0.4"
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-provider.workspace = true
@@ -38,10 +45,23 @@ dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
+serde_with = "3.8.1"
 smallvec.workspace = true
 thiserror.workspace = true
 
 revm.workspace = true
+
+tracing.workspace = true
+flate2.workspace = true
+bincode.workspace = true
+serde_json.workspace = true
+
+crossbeam-deque.workspace = true
+crossbeam-channel.workspace = true
+crossbeam-utils.workspace = true
+revme.workspace = true
+
+rand_distr = "0.4"
 
 # OP dependencies
 op-alloy-consensus = { workspace = true, optional = true }
@@ -52,7 +72,7 @@ op-alloy-rpc-types = { workspace = true, optional = true }
 alloy-transport = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true }
 
 # Various allocators for benchmarks
 rpmalloc = { workspace = true, optional = true }
@@ -60,14 +80,10 @@ snmalloc-rs = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
-bincode.workspace = true
 criterion.workspace = true
-flate2.workspace = true
 rand.workspace = true
 rayon.workspace = true
 reqwest.workspace = true
-revme.workspace = true
-serde_json.workspace = true
 walkdir.workspace = true
 
 [lints]

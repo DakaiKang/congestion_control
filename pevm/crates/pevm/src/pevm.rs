@@ -3,15 +3,20 @@ use std::{
     num::NonZeroUsize,
     sync::{mpsc, Mutex, OnceLock},
     thread,
+    time::Instant,
 };
+
+use std::collections::{HashSet};
 
 use alloy_primitives::{TxNonce, U256};
 use alloy_rpc_types_eth::{Block, BlockTransactions};
 use hashbrown::HashMap;
 use revm::{
     db::CacheDB,
-    primitives::{BlockEnv, InvalidTransaction, SpecId, TxEnv},
+    primitives::{AccountInfo, Bytecode, BlockEnv, InvalidTransaction, SpecId, TxEnv, Address, ResultAndState, ExecutionResult, B256},
     DatabaseCommit,
+    Database,
+    Evm,
 };
 
 use crate::{
@@ -71,14 +76,14 @@ pub enum PevmError<C: PevmChain> {
 pub type PevmResult<C> = Result<Vec<PevmTxExecutionResult>, PevmError<C>>;
 
 #[derive(Debug)]
-enum AbortReason {
+pub enum AbortReason {
     FallbackToSequential,
     ExecutionError(ExecutionError),
 }
 
 // TODO: Better implementation
 #[derive(Debug)]
-struct AsyncDropper<T> {
+pub struct AsyncDropper<T> {
     sender: mpsc::Sender<T>,
     _handle: thread::JoinHandle<()>,
 }
@@ -94,7 +99,7 @@ impl<T: Send + 'static> Default for AsyncDropper<T> {
 }
 
 impl<T> AsyncDropper<T> {
-    fn drop(&self, t: T) {
+    pub fn drop(&self, t: T) {
         // TODO: Better error handling
         self.sender.send(t).unwrap();
     }
@@ -453,13 +458,28 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
     let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
     let mut results = Vec::with_capacity(txs.len());
     let mut cumulative_gas_used: u64 = 0;
-    for tx in txs {
+    let mut x = 0;
+    let mut count_failed = 0;
+    for (tx_idx, tx) in txs.into_iter().enumerate() {
         *evm.tx_mut() = tx;
-
+        
         // TODO: More concrete type for `EVMError<StorageWrapperError<S>>`
         let result_and_state = evm
             .transact()
             .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+
+        match &result_and_state.result {
+            ExecutionResult::Success { .. } => {
+                // Success - no print
+                // println!("✅ Transaction {} executed successfully", tx_idx);
+            }
+            ExecutionResult::Revert { .. } => {
+                count_failed += 1;
+            }
+            ExecutionResult::Halt { .. } => {
+                count_failed += 1;
+            }
+        }
 
         evm.db_mut().commit(result_and_state.state.clone());
 
@@ -472,5 +492,239 @@ pub fn execute_revm_sequential<S: Storage, C: PevmChain>(
 
         results.push(execution_result);
     }
+    println!("✅ Executed {} transactions, {} failed.", x + results.len(), count_failed);
     Ok(results)
+}
+
+/// Like [`execute_revm_sequential`] but also returns per-transaction timing.
+///
+/// For each transaction the timer starts immediately before `evm.transact()`
+/// and stops immediately after `evm.db_mut().commit(...)`, capturing only the
+/// core execute-and-commit cost and excluding EVM/CacheDB construction and
+/// result conversion overhead.
+///
+/// Returns `(results, tx_times_ns)` where `tx_times_ns[i]` is the
+/// nanoseconds spent on transaction `i`.
+pub fn execute_revm_sequential_timed<S: Storage, C: PevmChain>(
+    chain: &C,
+    storage: &S,
+    spec_id: SpecId,
+    block_env: BlockEnv,
+    txs: Vec<TxEnv>,
+) -> Result<(Vec<PevmTxExecutionResult>, Vec<u64>), PevmError<C>> {
+    let mut db = CacheDB::new(StorageWrapper(storage));
+    let mut evm = build_evm(&mut db, chain, spec_id, block_env, None, true);
+    let mut results = Vec::with_capacity(txs.len());
+    let mut tx_times_ns = Vec::with_capacity(txs.len());
+    let mut cumulative_gas_used: u64 = 0;
+    for tx in txs.into_iter() {
+        *evm.tx_mut() = tx;
+
+        let t = Instant::now();
+        let result_and_state = evm
+            .transact()
+            .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+        evm.db_mut().commit(result_and_state.state.clone());
+        tx_times_ns.push(t.elapsed().as_nanos() as u64);
+
+        let mut execution_result =
+            PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
+        cumulative_gas_used =
+            cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+        execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+        results.push(execution_result);
+    }
+    Ok((results, tx_times_ns))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TxAccessSets {
+    pub read_set: HashSet<u64>,
+    pub write_set: HashSet<u64>,
+}
+
+/// A transparent DB wrapper that records every `basic()` and `storage()` call
+/// made by the EVM. Placed between the EVM and CacheDB so that ALL reads —
+/// both cold (cache-miss) and warm (cache-hit) — are captured.
+///
+/// Architecture: EVM → TrackingDB → CacheDB → StorageWrapper → S
+///
+/// Mirrors pevm's parallel path exclusions:
+/// - `coinbase` is never recorded (pevm uses `with_reward_beneficiary=false` +
+///   `LazyRecipient` delta writes, so coinbase never appears in read/write sets).
+/// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
+///   `recipient` are excluded from the read set (pevm returns a mock account and
+///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
+struct TrackingDB<DB> {
+    pub inner: DB,
+    pub reads: HashSet<u64>,
+    /// Block-level: coinbase address, excluded from all sets.
+    coinbase: Address,
+    /// Tx-level: caller + recipient for lazy (pure-ETH-transfer) txs.
+    /// Cleared and repopulated before each transaction.
+    lazy_addresses: HashSet<Address>,
+}
+
+impl<DB: Database> TrackingDB<DB> {
+    fn should_skip(&self, address: &Address) -> bool {
+        *address == Address::ZERO
+            || *address == self.coinbase
+            || self.lazy_addresses.contains(address)
+    }
+}
+
+impl<DB: Database> Database for TrackingDB<DB> {
+    type Error = DB::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if !self.should_skip(&address) {
+            self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
+        }
+        self.inner.basic(address)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.inner.code_by_hash(code_hash)
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        if !self.should_skip(&address) {
+            self.reads.insert(hash_deterministic(MemoryLocation::Storage(address, index)));
+        }
+        self.inner.storage(address, index)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.inner.block_hash(number)
+    }
+}
+
+impl<DB: DatabaseCommit> DatabaseCommit for TrackingDB<DB> {
+    fn commit(&mut self, changes: std::collections::HashMap<Address, revm::primitives::Account, alloy_primitives::map::foldhash::fast::RandomState>) {
+        self.inner.commit(changes)
+    }
+}
+
+pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
+        chain: &C,
+        storage: &S,
+        spec_id: SpecId,
+        block_env: BlockEnv,
+        txs: Vec<TxEnv>,
+    ) -> Result<(Vec<PevmTxExecutionResult>, Vec<TxAccessSets>), PevmError<C>> {
+    let coinbase = block_env.coinbase;
+    let cache_db = CacheDB::new(StorageWrapper(storage));
+    let tracking_db = TrackingDB {
+        inner: cache_db,
+        reads: HashSet::new(),
+        coinbase,
+        lazy_addresses: HashSet::new(),
+    };
+    let mut evm = build_evm(tracking_db, chain, spec_id, block_env, None, true);
+    let mut results = Vec::with_capacity(txs.len());
+    let mut access_sets = Vec::with_capacity(txs.len());
+    let mut cumulative_gas_used: u64 = 0;
+
+    for tx in txs {
+        // Determine if this is a lazy tx (pure ETH transfer: recipient is an EOA).
+        // Mirrors pevm's `is_lazy` check in VmDb: if `to` has no code, pevm skips
+        // recording caller/recipient in the read set and uses delta writes instead.
+        let caller = tx.caller;
+        let recipient = tx.transact_to.to().copied();
+        let is_lazy = if let Some(to) = recipient {
+            evm.db_mut()
+                .inner
+                .basic(to)
+                .map(|a| a.map_or(true, |acc| acc.is_empty_code_hash()))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        {
+            let db = evm.db_mut();
+            db.lazy_addresses.clear();
+            if is_lazy {
+                db.lazy_addresses.insert(caller);
+                if let Some(to) = recipient {
+                    db.lazy_addresses.insert(to);
+                }
+            }
+        }
+
+        *evm.tx_mut() = tx;
+        let result_and_state = evm
+            .transact()
+            .map_err(|err| ExecutionError::Custom(err.to_string()))?;
+
+        // Collect read set from TrackingDB (all basic/storage calls made by the EVM).
+        let db = evm.db_mut();
+        let read_set = std::mem::take(&mut db.reads);
+
+        // Derive write set from result state: touched accounts + changed storage slots,
+        // excluding only coinbase (handled via LazyRecipient in pevm).
+        // lazy_addresses (pure-ETH-transfer sender/recipient) are intentionally kept in
+        // write_set so that downstream txs that read their balance get a proper RAW edge.
+        let write_set = extract_write_set_from_result(&result_and_state, coinbase);
+
+        db.commit(result_and_state.state.clone());
+
+        let mut execution_result =
+            PevmTxExecutionResult::from_revm(chain, spec_id, result_and_state);
+
+        cumulative_gas_used =
+            cumulative_gas_used.saturating_add(execution_result.receipt.cumulative_gas_used);
+        execution_result.receipt.cumulative_gas_used = cumulative_gas_used;
+
+        results.push(execution_result);
+        access_sets.push(TxAccessSets { read_set, write_set });
+    }
+
+    Ok((results, access_sets))
+}
+
+/// Extract write set from execution result:
+/// - Basic(addr): account's ETH balance/nonce/code actually changed.
+///   We detect this by checking whether the account has no storage changes:
+///   - EOA sending/receiving ETH: always has storage.is_empty() → Basic added ✓
+///   - Contract with only storage changes (DeFi swap reserves, balanceOf): storage non-empty
+///     → Basic NOT added, avoiding spurious WW edges between txs sharing the same contract
+///   - Contract that both receives ETH AND modifies storage: Basic missed, but it already
+///     has WW conflict on storage slots with any tx touching the same contract, so the
+///     dependency graph edge still exists.
+///   - Newly created contract: status Created → Basic added ✓
+/// - Storage(addr, slot): slot value changed
+///
+/// Excludes `coinbase` (pevm applies gas rewards via LazyRecipient, never as a full write).
+fn extract_write_set_from_result(
+    result_and_state: &ResultAndState,
+    coinbase: Address,
+) -> HashSet<u64> {
+    let mut write_set = HashSet::new();
+
+    for (address, account) in &result_and_state.state {
+        if *address == Address::ZERO || *address == coinbase {
+            continue;
+        }
+
+        let changed_storage_slots: Vec<_> = account.storage.iter()
+            .filter(|(_, s)| s.is_changed())
+            .collect();
+
+        // Add Basic(address) only when balance/nonce/code changed, not merely storage.
+        // Heuristic: if no storage slots changed, the account must have had a Basic-level
+        // change (ETH transfer, nonce increment, contract creation/destruction).
+        // Newly created contracts also get Basic regardless.
+        let info_changed = changed_storage_slots.is_empty() && account.is_touched()
+            || account.is_created();
+        if info_changed {
+            write_set.insert(hash_deterministic(MemoryLocation::Basic(*address)));
+        }
+
+        for (slot, _) in &changed_storage_slots {
+            write_set.insert(hash_deterministic(MemoryLocation::Storage(*address, **slot)));
+        }
+    }
+
+    write_set
 }

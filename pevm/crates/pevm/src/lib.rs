@@ -151,7 +151,7 @@ struct TxStatus {
 // transactions have written to a location, the value would be read from the
 // storage state before block execution.
 #[derive(Clone, Debug, PartialEq)]
-struct TxVersion {
+pub struct TxVersion {
     tx_idx: TxIdx,
     tx_incarnation: TxIncarnation,
 }
@@ -182,13 +182,13 @@ type WriteSet = Vec<(MemoryLocationHash, MemoryValue)>;
 // the end of block execution, while waiting for a huge blocking
 // transaction to resolve, etc.
 #[derive(Debug)]
-enum Task {
+pub enum Task {
     Execution(TxVersion),
     Validation(TxVersion),
 }
 
 bitflags! {
-    struct FinishExecFlags: u8 {
+    pub struct FinishExecFlags: u8 {
         // Do we need to validate from this transaction?
         // The first and lazy transactions don't need validation. Note
         // that this is used to tune the min validation index in the
@@ -214,19 +214,31 @@ macro_rules! index_mutex {
     };
 }
 
+
+
 pub mod chain;
 mod compat;
 mod mv_memory;
 mod pevm;
-pub use pevm::{execute_revm_sequential, Pevm, PevmError, PevmResult};
+pub use pevm::{execute_revm_sequential, execute_revm_sequential_timed, Pevm, PevmError, PevmResult, execute_revm_sequential_with_access_sets, TxAccessSets};
 mod scheduler;
-mod storage;
+pub mod storage;
 pub use storage::{
     AccountBasic, BlockHashes, Bytecodes, ChainState, EvmAccount, EvmCode, InMemoryStorage,
     Storage, StorageWrapper,
 };
 mod vm;
 pub use vm::{ExecutionError, PevmTxExecutionResult};
+pub mod api;
+pub use api::{APIError, PevmAPI};
+pub mod serialization;
+pub mod erc20;
+pub mod dependency_graph;
+pub mod graph_pevm;
+pub mod graph_scheduler;
+pub mod greedy_integrator;
+pub mod utils;
+mod common;
 
 #[cfg(feature = "rpc-storage")]
 pub use storage::RpcStorage;

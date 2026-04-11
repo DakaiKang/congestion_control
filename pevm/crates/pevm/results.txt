@@ -1,0 +1,243 @@
+txns: [
+    TxEnv {
+        caller: 0x91cb9a19a1f7c74cf92af7ddb513988afddd6b1d,
+        gas_limit: 44800000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a600000000000000000000000000000000000000000000000000000000000001c100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a2a5,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0xc47677c77decb37fa1d82b955166dbe4cd2069bf,
+        gas_limit: 500000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a048,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 39200000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000018800000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000a2a2000000000000000000000000000000000000000000000000000000000000a296,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 21800000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a600000000000000000000000000000000000000000000000000000000000000da000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000008f23000000000000000000000000000000000000000000000000000000000000a256,
+        nonce: Some(
+            1,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 1700000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000001100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a24a,
+        nonce: Some(
+            2,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+]
+Debug: result_and_state has 3 accounts
+  Result account 0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac: 1 storage slots
+add basic: 305239312131735080 of address 0x91CB9a19a1f7C74cf92AF7ddb513988aFdDD6b1D
+write_set: {
+    1230072434372745807,
+    305239312131735080,
+}
+Debug: result_and_state has 3 accounts
+  Result account 0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac: 1 storage slots
+add basic: 1298653948161726696 of address 0xc47677C77DEcb37FA1D82B955166dBE4cD2069Bf
+write_set: {
+    1298653948161726696,
+    10449801896734814315,
+}
+Debug: result_and_state has 3 accounts
+  Result account 0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac: 2 storage slots
+add basic: 7411448911579967720 of address 0x6E63E9BD6a981E3dE8D2A5CF21B675bfCDB9D9Ba
+write_set: {
+    6185359338756116366,
+    7411448911579967720,
+    8019093867624461353,
+}
+Debug: result_and_state has 3 accounts
+  Result account 0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac: 2 storage slots
+add basic: 7411448911579967720 of address 0x6E63E9BD6a981E3dE8D2A5CF21B675bfCDB9D9Ba
+write_set: {
+    7411448911579967720,
+    1896809845246845985,
+    8851971999170528892,
+}
+Debug: result_and_state has 3 accounts
+  Result account 0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac: 1 storage slots
+add basic: 7411448911579967720 of address 0x6E63E9BD6a981E3dE8D2A5CF21B675bfCDB9D9Ba
+write_set: {
+    7411448911579967720,
+    18348986200940683590,
+}
+Adding Txn 0
+Adding Txn 1
+Adding Txn 2
+Adding Txn 3
+Conflicting with Txn 2
+Adding Txn 4
+Conflicting with Txn 3
+Time 0: Thread 0 starts transaction (2, 1) [execution_time: 420123, expected_completion: 420123]
+Time 0: Thread 1 starts transaction (0, 1) [execution_time: 448605, expected_completion: 448605]
+Time 0: Thread 2 starts transaction (1, 1) [execution_time: 49437, expected_completion: 49437]
+Time 420123: Thread 0 starts transaction (3, 1) [execution_time: 263685, expected_completion: 683808]
+Time 683808: Thread 0 starts transaction (4, 1) [execution_time: 60225, expected_completion: 744033]
+reorder_txns: [
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 39200000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000018800000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000a2a2000000000000000000000000000000000000000000000000000000000000a296,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x91cb9a19a1f7c74cf92af7ddb513988afddd6b1d,
+        gas_limit: 44800000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a600000000000000000000000000000000000000000000000000000000000001c100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a2a5,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0xc47677c77decb37fa1d82b955166dbe4cd2069bf,
+        gas_limit: 500000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a048,
+        nonce: Some(
+            0,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 21800000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a600000000000000000000000000000000000000000000000000000000000000da000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000008f23000000000000000000000000000000000000000000000000000000000000a256,
+        nonce: Some(
+            1,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+    TxEnv {
+        caller: 0x6e63e9bd6a981e3de8d2a5cf21b675bfcdb9d9ba,
+        gas_limit: 1700000000000,
+        gas_price: 1,
+        transact_to: Call(
+            0x26e2ebb146149a92f89d20a1d608abcf3d8fd7ac,
+        ),
+        value: 0,
+        data: 0x179521a6000000000000000000000000000000000000000000000000000000000000001100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a24a,
+        nonce: Some(
+            2,
+        ),
+        chain_id: None,
+        access_list: [],
+        gas_priority_fee: None,
+        blob_hashes: [],
+        max_fee_per_blob_gas: None,
+        authorization_list: None,
+    },
+]
