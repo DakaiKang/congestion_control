@@ -151,7 +151,7 @@ impl GraphPevm {
                         task = match task.unwrap() {
                             Task::Execution(tx_version) => {
                                 // println!("GraphPevm: Working on execution task of {:#?} by thread {:?}", tx_version, thread::current().id());
-                                self.try_execute(&vm, &scheduler, tx_version)
+                                self.try_execute(&vm, &scheduler, &mv_memory, tx_version)
                             }
                             Task::Validation(tx_version) => {
                                 // println!("GraphPevm: Working on validation task of {:#?} by thread {:?}", tx_version.tx_idx, thread::current().id());
@@ -200,9 +200,27 @@ impl GraphPevm {
             return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
         }
 
-        let re_execs = scheduler.re_execution_count.load(std::sync::atomic::Ordering::Relaxed);
-        eprintln!("[GraphPevm] block_size={} re_executions={} rate={:.1}%",
-            block_size, re_execs, 100.0 * re_execs as f64 / block_size as f64);
+        #[cfg(feature = "diagnostics")]
+        {
+            let re_execs = scheduler.re_execution_count.load(std::sync::atomic::Ordering::Relaxed);
+            let blocking = scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_est = mv_memory.blocking_estimate.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_nonce = mv_memory.blocking_nonce.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_retry = mv_memory.blocking_retry.load(std::sync::atomic::Ordering::Relaxed);
+            let wnl = mv_memory.wrote_new_location.load(std::sync::atomic::Ordering::Relaxed);
+            let cascade = mv_memory.cascade_aborts.load(std::sync::atomic::Ordering::Relaxed);
+            let total_aborts = mv_memory.total_aborts.load(std::sync::atomic::Ordering::Relaxed);
+            let validation_reexecs = total_aborts;
+            eprintln!(
+                "[GraphPevm] block_size={} re_exec={} | A)blocking={} [est={} nonce={}] B)validation={} C)retry={} | wnl={} cascade={}/{} ({:.0}%)",
+                block_size, re_execs,
+                blocking, blk_est, blk_nonce,
+                validation_reexecs,
+                blk_retry,
+                wnl,
+                cascade, total_aborts, if total_aborts > 0 { cascade as f64 / total_aborts as f64 * 100.0 } else { 0.0 },
+            );
+        }
 
         let mut fully_evaluated_results = Vec::with_capacity(block_size);
         let mut cumulative_gas_used: u64 = 0;
@@ -347,6 +365,7 @@ impl GraphPevm {
         &self,
         vm: &Vm<'_, S, C>,
         scheduler: &GraphScheduler,
+        mv_memory: &MvMemory,
         tx_version: TxVersion,
     ) -> Option<Task> {
         // Track the last blocking_tx_idx that caused add_dependency to return false.
@@ -370,10 +389,19 @@ impl GraphPevm {
                         .get_or_init(|| AbortReason::FallbackToSequential);
                     None
                 }
-                Err(VmExecutionError::Blocking(blocking_tx_idx)) => {
-                    // println!("GraphPevm: Blocking on transaction index {} for {:#?} by thread {:?}", blocking_tx_idx, tx_version, thread::current().id());
-
-                    if !scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx) {
+                Err(VmExecutionError::Blocking(blocking_tx_idx, cause)) => {
+                    if scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx) {
+                        // Successfully blocked: increment cause-specific counter now that
+                        // we know this will result in an actual re-execution (incarnation++).
+                        #[cfg(feature = "diagnostics")]
+                        match cause {
+                            crate::vm::BlockingCause::Estimate =>
+                                mv_memory.blocking_estimate.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                            crate::vm::BlockingCause::Nonce =>
+                                mv_memory.blocking_nonce.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        };
+                        None
+                    } else {
                         if self.abort_reason.get().is_some() || scheduler.is_aborted() {
                             return None;
                         }
@@ -389,9 +417,10 @@ impl GraphPevm {
                         // First failure: blocking tx just finished, retry once so MvMemory
                         // ESTIMATE cases can read the now-committed data.
                         last_failed_blocking = Some(blocking_tx_idx);
+                        #[cfg(feature = "diagnostics")]
+                        mv_memory.blocking_retry.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
-                    None
                 }
                 Err(VmExecutionError::ExecutionError(err)) => {
                     // println!("GraphPevm: Execution error for {:#?} by thread {:?}: {:?}", tx_version, thread::current().id(), err);

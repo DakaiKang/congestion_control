@@ -38,6 +38,8 @@ pub struct GraphScheduler {
     children_released: Vec<AtomicBool>,
     /// Total number of re-executions (incarnation > 0) for diagnostics.
     pub re_execution_count: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub blocking_reexecs: AtomicUsize,
 }
 
 impl std::fmt::Debug for GraphScheduler {
@@ -97,6 +99,8 @@ impl GraphScheduler {
             aborted: AtomicBool::new(false),
             children_released: (0..block_size).map(|_| AtomicBool::new(false)).collect(),
             re_execution_count: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            blocking_reexecs: AtomicUsize::new(0),
             dependency_graph,
             executable_txs: Mutex::new(executable_txs),
             task_available: Condvar::new(),
@@ -300,9 +304,11 @@ impl GraphScheduler {
         let mut blocking_dependents = index_mutex!(self.transactions_dependents, blocking_tx_idx);
         blocking_dependents.push(tx_idx);
 
+        #[cfg(feature = "diagnostics")]
+        self.blocking_reexecs.fetch_add(1, Ordering::Relaxed);
         true
     }
-    
+
     fn set_ready_status(&self, tx_idx: TxIdx) {
         let mut tx = index_mutex!(self.transactions_status, tx_idx);
         debug_assert_eq!(tx.status, IncarnationStatus::Aborting);

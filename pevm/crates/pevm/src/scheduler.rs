@@ -60,6 +60,8 @@ pub(crate) struct Scheduler {
     // True if the scheduler has been aborted, likely due to fatal execution
     // errors.
     aborted: AtomicBool,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) blocking_reexecs: AtomicUsize,
 }
 
 // TODO: Better error handling.
@@ -84,6 +86,8 @@ impl Scheduler {
             min_validation_idx: AtomicUsize::new(block_size),
             num_validated: AtomicUsize::new(0),
             aborted: AtomicBool::new(false),
+            #[cfg(feature = "diagnostics")]
+            blocking_reexecs: AtomicUsize::new(0),
         }
     }
 
@@ -186,6 +190,8 @@ impl Scheduler {
         let mut blocking_dependents = index_mutex!(self.transactions_dependents, blocking_tx_idx);
         blocking_dependents.push(tx_idx);
 
+        #[cfg(feature = "diagnostics")]
+        self.blocking_reexecs.fetch_add(1, Ordering::Relaxed);
         true
     }
 
@@ -298,5 +304,12 @@ impl Scheduler {
             }
         }
         None
+    }
+
+    pub(crate) fn total_reexecutions(&self) -> usize {
+        self.transactions_status
+            .iter()
+            .map(|s| s.lock().unwrap().incarnation as usize)
+            .sum()
     }
 }

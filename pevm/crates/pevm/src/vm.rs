@@ -71,10 +71,19 @@ impl PevmTxExecutionResult {
     }
 }
 
+/// The reason a blocking error was triggered, carried through to the scheduler
+/// so that diagnostic counters can be incremented only after `add_dependency`
+/// succeeds (i.e. only for actual re-executions, not retries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockingCause {
+    Estimate,
+    Nonce,
+}
+
 pub(crate) enum VmExecutionError {
     Retry,
     FallbackToSequential,
-    Blocking(TxIdx),
+    Blocking(TxIdx, BlockingCause),
     ExecutionError(ExecutionError),
 }
 
@@ -85,9 +94,13 @@ pub enum ReadError {
     // TODO: More concrete type
     #[error("Failed reading memory from storage: {0}")]
     StorageError(String),
-    /// This memory location has been written by a lower transaction.
-    #[error("Read of memory location is blocked by tx #{0}")]
-    Blocking(TxIdx),
+    /// This memory location has an ESTIMATE marker from a lower transaction.
+    #[error("Read of memory location is blocked (ESTIMATE) by tx #{0}")]
+    BlockingEstimate(TxIdx),
+    /// The previous transaction from the same sender has not yet committed,
+    /// so this transaction cannot validate its nonce yet.
+    #[error("Read of memory location is blocked (nonce) by tx #{0}")]
+    BlockingNonce(TxIdx),
     /// There has been an inconsistent read like reading the same
     /// location from storage in the first call but from [`VmMemory`] in
     /// the next.
@@ -115,7 +128,8 @@ impl From<ReadError> for VmExecutionError {
         match err {
             ReadError::InconsistentRead => Self::Retry,
             ReadError::SelfDestructedAccount => Self::FallbackToSequential,
-            ReadError::Blocking(tx_idx) => Self::Blocking(tx_idx),
+            ReadError::BlockingEstimate(tx_idx) => Self::Blocking(tx_idx, BlockingCause::Estimate),
+            ReadError::BlockingNonce(tx_idx) => Self::Blocking(tx_idx, BlockingCause::Nonce),
             _ => Self::ExecutionError(EVMError::Database(err)),
         }
     }
@@ -140,6 +154,8 @@ struct VmDb<'a, S: Storage, C: PevmChain> {
     // Only applied to raw transfers' senders & recipients at the moment.
     is_lazy: bool,
     read_set: ReadSet,
+    /// Storage-only read locations (excludes Basic/CodeHash), for divergence analysis
+    storage_read_keys: std::collections::HashSet<MemoryLocationHash>,
     // TODO: Clearer type for [AccountBasic] plus code hash
     read_accounts: HashMap<MemoryLocationHash, (AccountBasic, Option<B256>), BuildIdentityHasher>,
 }
@@ -163,6 +179,7 @@ impl<'a, S: Storage, C: PevmChain> VmDb<'a, S, C> {
             // Unless it is a raw transfer that is lazy updated, we'll
             // read at least from the sender and recipient accounts.
             read_set: ReadSet::with_capacity_and_hasher(2, BuildIdentityHasher::default()),
+            storage_read_keys: std::collections::HashSet::new(),
             read_accounts: HashMap::with_capacity_and_hasher(2, BuildIdentityHasher::default()),
         };
         // We only lazy update raw transfers that already have the sender
@@ -288,7 +305,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                 loop {
                     match iter.next_back() {
                         Some((blocking_idx, MemoryEntry::Estimate)) => {
-                            return Err(ReadError::Blocking(*blocking_idx))
+                            return Err(ReadError::BlockingEstimate(*blocking_idx))
                         }
                         Some((closest_idx, MemoryEntry::Data(tx_incarnation, value))) => {
                             // About to push a new origin
@@ -380,10 +397,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                 && self.tx.nonce.is_some_and(|nonce| nonce != account.nonce)
             {
                 return if self.tx_idx > 0 {
-                    // TODO: Better retry strategy -- immediately, to the
-                    // closest sender tx, to the missing sender tx, etc.
-                    // println!("Tx #{} has invalid nonce {}, expected {}", self.tx_idx, self.tx.nonce.unwrap(), account.nonce);
-                    Err(ReadError::Blocking(self.tx_idx - 1))
+                    Err(ReadError::BlockingNonce(self.tx_idx - 1))
                 } else {
                     Err(ReadError::InvalidNonce(self.tx_idx))
                 };
@@ -452,6 +466,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let location_hash = hash_deterministic(MemoryLocation::Storage(address, index));
+        self.storage_read_keys.insert(location_hash);
 
         let read_origins = self.read_set.entry(location_hash).or_default();
 
@@ -473,7 +488,7 @@ impl<S: Storage, C: PevmChain> Database for VmDb<'_, S, C> {
                             return Ok(*value);
                         }
                         MemoryEntry::Estimate => {
-                            return Err(ReadError::Blocking(*closest_idx));
+                            return Err(ReadError::BlockingEstimate(*closest_idx));
                         }
                         _ => return Err(ReadError::InvalidMemoryValueType),
                     }
@@ -688,7 +703,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                 // println!("REAL read sets of size {} : {:#?}", db.read_set.len(), &db.read_set);
                 // println!("REAL write sets of size {} : {:#?}", write_set.len(), &write_set);
 
-                if self.mv_memory.record(tx_version, db.read_set, write_set) {
+                if self.mv_memory.record(tx_version, db.read_set, db.storage_read_keys, write_set) {
                     flags |= FinishExecFlags::WroteNewLocation;
                 }
 
@@ -718,7 +733,7 @@ impl<'a, S: Storage, C: PevmChain> Vm<'a, S, C> {
                         )
                     )
                 {
-                    Err(VmExecutionError::Blocking(tx_version.tx_idx - 1))
+                    Err(VmExecutionError::Blocking(tx_version.tx_idx - 1, BlockingCause::Nonce))
                 } else {
                     Err(VmExecutionError::ExecutionError(err))
                 }

@@ -693,11 +693,12 @@ fn test_generate_rw_time() {
 
         let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(rw_entries.len());
 
-        for (entry, &execution_time_ns) in rw_entries.iter().zip(tx_times_ns.iter()) {
+        for ((entry, &execution_time_ns), txenv) in rw_entries.iter().zip(tx_times_ns.iter()).zip(txenvs.iter()) {
             let mut out = entry.clone();
             let obj = out.as_object_mut().unwrap();
             obj.remove("gasUsed");
             obj.insert("executionTime".to_string(), serde_json::json!(execution_time_ns));
+            obj.insert("from".to_string(), serde_json::json!(format!("{:?}", txenv.caller)));
             out_entries.push(out);
         }
 
@@ -860,8 +861,8 @@ fn test_throughput_comparison_v2() {
     const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
 
     let (state, bytecodes, _addr, blocks_txs) =
-        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, num_blocks)
-            .expect("failed to load rw_time blocks");
+        tx_simulator::load_n_rw_time_blocks_with_callers(RW_TIME_DIR, num_blocks)
+            .expect("failed to load rw_time blocks with callers");
 
     let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
     let chain = PevmEthereum::mainnet();
@@ -904,9 +905,18 @@ fn test_throughput_comparison_v2() {
         integrated_txns.extend(itxns);
         integrated_graphs.extend(igraphs);
     }
+    // Greedy integration reorders txs across block boundaries, so sequential
+    // per-block nonces are no longer valid.  Re-assign nonces in merged-block
+    // order so same-sender dependencies are preserved correctly.
+    {
+        let mut greedy_nonce_tracker = pevm::utils::nonce_tracker::NonceTracker::new();
+        for txs in &mut integrated_txns {
+            greedy_nonce_tracker.update_txenv_nonces(txs);
+        }
+    }
 
     println!(
-        "\n=== Throughput comparison V2 (rw_time): {num_blocks} blocks, {total_txs} txns, {} threads ===",
+        "\n=== Throughput comparison V2 (rw_time, caller-aware): {num_blocks} blocks, {total_txs} txns, {} threads ===",
         concurrency
     );
     println!("{:<38} {:>10} {:>12} {:>10}", "Mode", "Time (ms)", "Txns/s", "Speedup");
@@ -982,6 +992,61 @@ fn test_throughput_comparison_v2() {
 
     println!("{}", "-".repeat(73));
     println!("(greedy: {} groups from {num_blocks} blocks)", integrated_txns.len());
+}
+
+/// Compare incarnation-0 access sets vs sequential for synthetic (rw_time) workload.
+#[test]
+fn test_synthetic_incarnation0_divergence() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
+
+    let (state, bytecodes, _addr, blocks_txs) =
+        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, num_blocks).expect("load failed");
+
+    let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let concurrency = NonZeroUsize::new(8).unwrap();
+
+    let (mut total_txs, mut read_div, mut write_div, mut either_div) = (0usize, 0usize, 0usize, 0usize);
+    let mut storage = base_storage.clone();
+
+    for (blk_i, txs) in blocks_txs.iter().enumerate() {
+        let n = txs.len();
+
+        let (seq_results, seq_access) = pevm::execute_revm_sequential_with_access_sets(
+            &chain, &storage, spec_id, BlockEnv::default(), txs.clone(),
+        ).unwrap();
+
+        let mut pevm_inst = pevm::Pevm::default();
+        let par_results = pevm_inst.execute_revm_parallel(
+            &chain, &storage, spec_id, BlockEnv::default(), txs.clone(), concurrency,
+        ).unwrap();
+
+        // Use sequential results to advance storage
+        pevm::api::update_storage_with_results(&mut storage, seq_results);
+
+        let inc0 = &pevm_inst.last_incarnation0_keys;
+        let (mut rd, mut wd, mut ei) = (0, 0, 0);
+        for (seq_a, par_opt) in seq_access.iter().zip(inc0.iter()) {
+            let Some((par_read, par_write)) = par_opt else { continue };
+            let r = seq_a.read_set != *par_read;
+            let w = seq_a.write_set != *par_write;
+            if r { rd += 1; }
+            if w { wd += 1; }
+            if r || w { ei += 1; }
+        }
+        println!("Block {:3}: {} txs  read_div={}/{} ({:.0}%)  write_div={}/{} ({:.0}%)  either={}/{} ({:.0}%)",
+            blk_i, n, rd, n, rd as f64/n as f64*100.0, wd, n, wd as f64/n as f64*100.0, ei, n, ei as f64/n as f64*100.0);
+        total_txs += n; read_div += rd; write_div += wd; either_div += ei;
+        let _ = par_results;
+    }
+
+    println!("\n=== Synthetic Incarnation-0 Divergence ({} blocks, {} txs) ===", num_blocks, total_txs);
+    println!("  Read set diverged:  {}/{} = {:.1}%", read_div, total_txs, read_div as f64/total_txs as f64*100.0);
+    println!("  Write set diverged: {}/{} = {:.1}%", write_div, total_txs, write_div as f64/total_txs as f64*100.0);
+    println!("  Either diverged:    {}/{} = {:.1}%", either_div, total_txs, either_div as f64/total_txs as f64*100.0);
 }
 
 #[test]

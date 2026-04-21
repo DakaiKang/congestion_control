@@ -1198,6 +1198,83 @@ fn test_real_blocks_performance_100() {
 }
 
 
+/// Compare incarnation-0 access sets (first parallel execution) vs sequential access sets.
+/// Tests whether real EVM txs diverge from their sequential access patterns on first parallel run.
+#[test]
+fn test_incarnation0_divergence() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+    let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";
+    let start_block = 16774645u64;
+    let block_numbers: Vec<u64> = (0..num_blocks as u64).map(|i| start_block + i).collect();
+    let chain = PevmEthereum::mainnet();
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+
+    let storage = create_multi_block_storage(&block_numbers, blocks_dir).unwrap();
+
+    // Aggregate counters
+    let (mut total_txs, mut read_diverged, mut write_diverged, mut either_diverged) = (0usize, 0usize, 0usize, 0usize);
+
+    let mut seq_storage = storage.clone();
+    let mut par_storage = storage.clone();
+
+    for block_num in &block_numbers {
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+        let (_bd, _bs, txs) = load_block_for_execution(&filepath, true).unwrap();
+        let spec_id = get_spec_id(*block_num);
+        let n = txs.len();
+
+        // Sequential: capture access sets
+        let (seq_results, seq_access) = pevm::execute_revm_sequential_with_access_sets(
+            &chain, &seq_storage, spec_id, make_block_env(), txs.clone(),
+        ).unwrap();
+        update_storage_with_results(&mut seq_storage, seq_results);
+
+        // Parallel: capture incarnation-0 sets via Pevm
+        let mut pevm_instance = Pevm::default();
+        let par_results = pevm_instance.execute_revm_parallel(
+            &chain, &par_storage, spec_id, make_block_env(), txs, concurrency_level,
+        ).unwrap();
+        update_storage_with_results(&mut par_storage, par_results);
+
+        let inc0 = &pevm_instance.last_incarnation0_keys;
+
+        let mut blk_read_div = 0usize;
+        let mut blk_write_div = 0usize;
+        let mut blk_either = 0usize;
+
+        for (tx_idx, (seq_a, par_opt)) in seq_access.iter().zip(inc0.iter()).enumerate() {
+            let Some((par_read, par_write)) = par_opt else { continue };
+            let seq_read: std::collections::HashSet<u64> = seq_a.read_set.iter().copied().collect();
+            let seq_write: std::collections::HashSet<u64> = seq_a.write_set.iter().copied().collect();
+
+            let rd = seq_read != *par_read;
+            let wd = seq_write != *par_write;
+            if rd { blk_read_div += 1; }
+            if wd { blk_write_div += 1; }
+            if rd || wd { blk_either += 1; }
+        }
+
+        println!(
+            "Block {}: {} txs  read_diverged={}/{} ({:.0}%)  write_diverged={}/{} ({:.0}%)  either={}/{} ({:.0}%)",
+            block_num, n,
+            blk_read_div, n, blk_read_div as f64 / n as f64 * 100.0,
+            blk_write_div, n, blk_write_div as f64 / n as f64 * 100.0,
+            blk_either, n, blk_either as f64 / n as f64 * 100.0,
+        );
+
+        total_txs += n;
+        read_diverged += blk_read_div;
+        write_diverged += blk_write_div;
+        either_diverged += blk_either;
+    }
+
+    println!("\n=== Incarnation-0 Divergence Summary ({} blocks, {} txs) ===", num_blocks, total_txs);
+    println!("  Read set diverged:  {}/{} = {:.1}%", read_diverged, total_txs, read_diverged as f64 / total_txs as f64 * 100.0);
+    println!("  Write set diverged: {}/{} = {:.1}%", write_diverged, total_txs, write_diverged as f64 / total_txs as f64 * 100.0);
+    println!("  Either diverged:    {}/{} = {:.1}%", either_diverged, total_txs, either_diverged as f64 / total_txs as f64 * 100.0);
+}
+
 #[test]
 fn test_first_block_critical_path() {
     let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";

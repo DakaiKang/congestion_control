@@ -14,7 +14,7 @@
 /// Returns an error if the total number of transactions across all blocks
 /// exceeds the pool size.
 
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use pevm::{BuildSuffixHasher, Bytecodes, ChainState, EvmAccount};
 use revm::primitives::{Address, TransactTo, TxEnv, U256};
@@ -366,6 +366,135 @@ pub fn load_n_rw_time_blocks(
             })
             .collect();
         account_idx += txs_data.len();
+        all_blocks_txs.push(block_txs);
+    }
+
+    Ok((state, bytecodes, simulator_address, all_blocks_txs))
+}
+
+// ── Caller-aware loader: maps real ETH callers to simulated addresses ─────────
+
+/// rw_time JSON entry (with `from` field added by `test_generate_rw_time`).
+#[derive(Deserialize)]
+struct TxRwTimeDataFull {
+    from: String,
+    reads: Vec<revm::primitives::B256>,
+    writes: Vec<revm::primitives::B256>,
+    #[serde(rename = "executionTime")]
+    execution_time_ns: u64,
+}
+
+/// Load the first `max_blocks` rw_time files and generate caller-aware TxEnvs.
+///
+/// Requires that the rw_time JSON files contain a `from` field (populated by
+/// `test_generate_rw_time`). Every unique real caller is mapped to a freshly-
+/// generated simulated address, so txs from the same real caller share the
+/// same simulated caller. Sequential nonces are assigned per simulated caller
+/// across all blocks in block order, preserving same-sender dependencies.
+///
+/// For greedy integration the caller must re-assign nonces with a fresh
+/// `NonceTracker` after `integrate_pevm_graphs` reorders transactions across
+/// block boundaries.
+pub fn load_n_rw_time_blocks_with_callers(
+    rw_time_dir: &str,
+    max_blocks: usize,
+) -> Result<
+    (ChainState, Bytecodes, Address, Vec<Vec<TxEnv>>),
+    Box<dyn std::error::Error>,
+> {
+    // ── 1. Collect and sort rw_time files ────────────────────────────────────
+    let dir = Path::new(rw_time_dir);
+    let mut json_files: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|ext| ext == "json").unwrap_or(false))
+        .collect();
+    json_files.sort();
+    json_files.truncate(max_blocks);
+
+    if json_files.is_empty() {
+        return Err(format!("No JSON files found in {rw_time_dir}").into());
+    }
+
+    // ── 2. Parse all rw_time files ───────────────────────────────────────────
+    let mut all_tx_data: Vec<Vec<TxRwTimeDataFull>> =
+        Vec::with_capacity(json_files.len());
+    for file_path in &json_files {
+        all_tx_data.push(serde_json::from_str(&fs::read_to_string(file_path)?)?);
+    }
+
+    // ── 3. Assign a unique simulated address per unique real caller ──────────
+    let mut real_to_simulated: HashMap<Address, Address> = HashMap::new();
+    for block in &all_tx_data {
+        for tx in block {
+            let real_from: Address = tx.from.parse()
+                .map_err(|_| format!("invalid address: {}", tx.from))?;
+            real_to_simulated
+                .entry(real_from)
+                .or_insert_with(|| Address::new(rand::random()));
+        }
+    }
+
+    // ── 4. Build storage (simulator contract + one account per unique caller) ─
+    let simulator_address = Address::new(rand::random());
+    let simulator_account = TxSimulatorV2::build();
+
+    let mut state: ChainState =
+        [(simulator_address, simulator_account)].into_iter().collect();
+    for &sim_addr in real_to_simulated.values() {
+        state.insert(
+            sim_addr,
+            EvmAccount {
+                balance: U256::from(u128::MAX),
+                ..EvmAccount::default()
+            },
+        );
+    }
+
+    let mut bytecodes = Bytecodes::default();
+    for account in state.values_mut() {
+        if let Some(code) = account.code.take() {
+            bytecodes.insert(account.code_hash.unwrap(), code);
+        }
+    }
+
+    // ── 5. Build TxEnvs with sequential nonces per simulated caller ───────────
+    // nonce_state tracks the next nonce for each simulated caller across all blocks.
+    let mut nonce_state: HashMap<Address, u64> = HashMap::new();
+    let mut all_blocks_txs: Vec<Vec<TxEnv>> = Vec::with_capacity(all_tx_data.len());
+
+    for block in &all_tx_data {
+        let mut block_txs: Vec<TxEnv> = Vec::with_capacity(block.len());
+
+        for tx in block {
+            let real_from: Address = tx.from.parse().unwrap();
+            let sim_caller = *real_to_simulated.get(&real_from).unwrap();
+
+            let tx_nonce = *nonce_state.entry(sim_caller).or_insert(0);
+            *nonce_state.get_mut(&sim_caller).unwrap() += 1;
+
+            let target = (tx.execution_time_ns / T_SLOAD_NS).max(2).min(5000);
+            let cold_gas =
+                tx.reads.len() as u64 * 2100 + tx.writes.len() as u64 * 22100;
+            let hot_gas =
+                target.saturating_mul(100).saturating_mul(GAS_MULTIPLIER);
+            let gas_limit = 21_000u64
+                .saturating_add(cold_gas)
+                .saturating_add(hot_gas);
+            let calldata =
+                TxSimulatorV2::encode_execute(&tx.reads, &tx.writes, target);
+
+            block_txs.push(TxEnv {
+                caller: sim_caller,
+                gas_limit,
+                gas_price: U256::from(1),
+                transact_to: TransactTo::Call(simulator_address),
+                data: calldata,
+                nonce: Some(tx_nonce),
+                ..TxEnv::default()
+            });
+        }
+
         all_blocks_txs.push(block_txs);
     }
 
