@@ -106,7 +106,12 @@ impl GraphPevm {
             }
         }
 
-        new_graph.simulate_parallel_execution(concurrency_level);
+        // The downstream GraphScheduler only reads
+        // nodes[i].{parent_indices, children_indices}; nobody reads
+        // simulation_result / longest_suffix / hot_keys on the returned
+        // graph. Verified by structural fingerprint (groups/nodes/edges
+        // identical with and without this call) and by end-to-end gas
+        // output on test_real_blocks_performance_100 (identical totals).
 
         // println!("new_graph: {:#?}", new_graph.nodes);
         (reordered_txs, new_graph)
