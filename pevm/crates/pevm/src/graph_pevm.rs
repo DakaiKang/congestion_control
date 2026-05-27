@@ -78,11 +78,17 @@ impl GraphPevm {
     // And regenerate the dependency graph with new transactions indices
     // The current implementation requires to simulate again, which could be optimized later.
     pub fn reorder_txs_by_dependency_graph(
-        txs: Vec<TxEnv>, 
-        graph: &mut TransactionGraph, 
+        txs: Vec<TxEnv>,
+        graph: &mut TransactionGraph,
         concurrency_level: usize
     ) -> (Vec<TxEnv>, TransactionGraph) {
-        graph.simulate_parallel_execution(concurrency_level);
+        // Skip the simulation if the caller already populated it (e.g. greedy
+        // integrator hands us a graph that was just simulated as part of its
+        // merge step). Re-running with the same concurrency_level would
+        // produce the same execution_order, so it'd be pure overhead.
+        if graph.simulation_result.is_none() {
+            graph.simulate_parallel_execution(concurrency_level);
+        }
         let mut new_graph = TransactionGraph::new();
 
         let mut reordered_txs = Vec::new();

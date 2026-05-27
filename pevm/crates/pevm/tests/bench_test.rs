@@ -254,7 +254,7 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let duration1 = start.elapsed();
 
-    g1.integrate_graph(g2);
+    g1.integrate_graph(&g2);
 
     g1.simulate_parallel_execution(8);
 
@@ -389,7 +389,7 @@ pub fn graph_pevm_test() {
     ro_txns.extend(reordered_txns.clone());
     ro_txns.extend(reordered_txns2.clone());
 
-    new_graph.integrate_graph(new_graph2);
+    new_graph.integrate_graph(&new_graph2);
 
     // new_graph.simulate_parallel_execution(8);
 
@@ -819,7 +819,7 @@ pub fn long_test() {
         let mut integrated_graph = new_graphs[i * batch_size].clone();
         for j in 1..batch_size {
             if i * batch_size + j < batch_num {
-                integrated_graph.integrate_graph(new_graphs[i * batch_size + j].clone());
+                integrated_graph.integrate_graph(&new_graphs[i * batch_size + j]);
             }
         }
         println!("nodes count in integrated graph: {}", integrated_graph.nodes.len());

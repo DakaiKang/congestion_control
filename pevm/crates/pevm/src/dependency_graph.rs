@@ -450,7 +450,7 @@ impl TransactionGraph {
         }
     }
 
-    pub fn integrate_graph(&mut self, other: TransactionGraph) -> Result<usize, String> {
+    pub fn integrate_graph(&mut self, other: &TransactionGraph) -> Result<usize, String> {
         let mut edges_added = 0;
         
         // Step 1: Collect all addresses from both graphs
