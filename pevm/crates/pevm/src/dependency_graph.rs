@@ -9,6 +9,33 @@ use smallvec::SmallVec;
 /// dedup-`push`) are all O(1) or O(n) with tiny n.
 pub type ParentIndices = SmallVec<[usize; 4]>;
 
+/// Mirror of `ParentIndices` for child fan-out (mean ~0.5 on real ETH blocks).
+pub type ChildrenIndices = SmallVec<[usize; 4]>;
+
+/// Sorted-by-key, dedup'd vector of memory keys touched by one tx.
+/// Replaces `HashSet<u64>` for `TransactionNode::{read_set, write_set}`:
+/// `is_disjoint` becomes a linear merge scan (no hashing) and `clone()`
+/// becomes a contiguous memcpy. The set is built once at construction time
+/// and never modified afterwards.
+pub type KeySet = Vec<u64>;
+
+/// Test whether two sorted, deduplicated key vectors share any element.
+/// O(|a| + |b|); replaces `HashSet::is_disjoint`.
+#[inline]
+fn sorted_is_disjoint(a: &[u64], b: &[u64]) -> bool {
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        if a[i] == b[j] {
+            return false;
+        } else if a[i] < b[j] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TransactionId {
     pub id: u64,
@@ -33,15 +60,19 @@ pub struct TransactionNode {
     pub replica: u64,
     pub round: u64,
     pub execution_time: u64,
-    pub read_set: HashSet<u64>,
-    pub write_set: HashSet<u64>,
+    /// Sorted, dedup'd. See `KeySet`.
+    pub read_set: KeySet,
+    /// Sorted, dedup'd. See `KeySet`.
+    pub write_set: KeySet,
     pub longest_suffix: u64,
-    pub children_indices: Vec<usize>,
+    pub children_indices: ChildrenIndices,
     pub parent_indices: ParentIndices,
 }
 
 impl TransactionNode {
-    /// Creates a new TransactionNode with the given parameters
+    /// Creates a new TransactionNode. Accepts `HashSet<u64>` at the API
+    /// boundary (the existing callers all build sets that way) and sorts
+    /// once into the internal `KeySet` invariant.
     pub fn new(
         id: u64,
         replica: u64,
@@ -50,14 +81,18 @@ impl TransactionNode {
         read_set: HashSet<u64>,
         write_set: HashSet<u64>,
     ) -> Self {
+        let mut read_vec: KeySet = read_set.into_iter().collect();
+        read_vec.sort_unstable();
+        let mut write_vec: KeySet = write_set.into_iter().collect();
+        write_vec.sort_unstable();
         Self {
             id,
             replica,
             round,
             execution_time,
-            children_indices: Vec::new(),
-            read_set,
-            write_set,
+            children_indices: ChildrenIndices::new(),
+            read_set: read_vec,
+            write_set: write_vec,
             longest_suffix: execution_time,
             parent_indices: ParentIndices::new(),
         }
@@ -234,7 +269,7 @@ impl TransactionGraph {
                         // RAW and WAR are handled by OCC validation and don't need
                         // explicit graph edges — including them over-constrains the graph
                         // and kills parallelism.
-                        !tail_node.write_set.is_disjoint(&node.write_set);
+                        !sorted_is_disjoint(&tail_node.write_set, &node.write_set);
                     if has_conflict {
                         // println!("Conflicting with Txn {}", tail_tx_id.id);
                         parent_transactions.insert(tail_tx_id.clone());
