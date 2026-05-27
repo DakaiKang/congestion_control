@@ -1,4 +1,13 @@
 use std::collections::{HashSet, HashMap, BinaryHeap};
+use smallvec::SmallVec;
+
+/// In-line storage for `parent_indices`. Real ETH blocks see ~0.5 parents per
+/// node on average; this keeps the common 0–4 case heap-free, making
+/// `TransactionNode::clone()` (the dominant cost inside `integrate_graph`)
+/// substantially cheaper than the previous `HashSet<usize>`. Operations the
+/// codebase actually performs (`len`, `is_empty`, `iter`, `clone`, `clear`,
+/// dedup-`push`) are all O(1) or O(n) with tiny n.
+pub type ParentIndices = SmallVec<[usize; 4]>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TransactionId {
@@ -28,7 +37,7 @@ pub struct TransactionNode {
     pub write_set: HashSet<u64>,
     pub longest_suffix: u64,
     pub children_indices: Vec<usize>,
-    pub parent_indices: HashSet<usize>,
+    pub parent_indices: ParentIndices,
 }
 
 impl TransactionNode {
@@ -50,7 +59,7 @@ impl TransactionNode {
             read_set,
             write_set,
             longest_suffix: execution_time,
-            parent_indices: HashSet::new(),
+            parent_indices: ParentIndices::new(),
         }
     }
 
@@ -114,7 +123,11 @@ pub struct TransactionGraph {
     pub tail_txns: HashMap<u64, TransactionId>,    // The Map from Address to the tail Transaction Nodes in the graph
     pub txns_without_parent: BinaryHeap<HeapEntry>,  // A max_heap of TransactionId of TransactionNodes without parents, where the nodes are ordered by their longest_suffix 
     pub simulation_result: Option<SimulationResult>,
-    pub temp_parents: Vec<HashSet<usize>>, // Temporary storage for parent transactions during simulation
+    /// Per-tx count of parents that haven't completed yet, used by
+    /// `simulate_parallel_execution`. Replaces the previous
+    /// `Vec<HashSet<usize>>` — the simulator only ever decrements and tests
+    /// for zero, never iterates the actual parent ids.
+    pub temp_parents: Vec<u32>,
     pub hot_key_threshold: f64, // Threshold to classify hot keys based on access frequency
     pub hot_keys: HashSet<u64>,
 }
@@ -179,10 +192,12 @@ impl TransactionGraph {
         let child_idx = *self.id_to_index.get(&child_id)
             .ok_or_else(|| format!("Child node ({}, {}) not found", child_id.id, child_id.replica))?;
         
-        // Check if edge already exists
+        // Check if edge already exists. The dup guard on children_indices
+        // also covers parent_indices, so the SmallVec `push` is safe (no
+        // duplicates introduced) without a separate contains() check.
         if !self.nodes[parent_idx].children_indices.contains(&child_idx) {
             self.nodes[parent_idx].children_indices.push(child_idx);
-            self.nodes[child_idx].parent_indices.insert(parent_idx);
+            self.nodes[child_idx].parent_indices.push(parent_idx);
         }
         
         Ok(())
@@ -318,9 +333,11 @@ impl TransactionGraph {
 
     /// Simulate parallel execution with k threads using a min-heap for completion times
     pub fn simulate_parallel_execution(&mut self, k: usize) -> (){
-        // Initialize temporary parent storage
+        // Initialize temporary parent COUNTS (we only need to know how many
+        // parents remain, not which ones).
         self.temp_parents = self.nodes.iter()
-            .map(|node| node.parent_indices.clone()).collect();
+            .map(|node| node.parent_indices.len() as u32)
+            .collect();
         
         // Initialize threads
         let mut threads: Vec<ThreadState> = (0..k)
@@ -434,8 +451,12 @@ impl TransactionGraph {
         
         // Check each child to see if it's now free (no other parents)
         for &child_idx in &children_indices {
-            self.temp_parents[child_idx].remove(&tx_idx);
-            if self.temp_parents[child_idx].len() == 0 {
+            // `tx_idx` was a parent of `child_idx`; decrement the remaining
+            // parent count and check if the child is now ready.
+            let remaining = &mut self.temp_parents[child_idx];
+            debug_assert!(*remaining > 0, "tx {} had no remaining parents to decrement", child_idx);
+            *remaining -= 1;
+            if *remaining == 0 {
                 let child_node = &self.nodes[child_idx];
                 let child_tx_id = child_node.transaction_id();
                 let child_suffix = child_node.longest_suffix;
@@ -452,41 +473,40 @@ impl TransactionGraph {
 
     pub fn integrate_graph(&mut self, other: &TransactionGraph) -> Result<usize, String> {
         let mut edges_added = 0;
-        
+
         // Step 1: Collect all addresses from both graphs
         let mut all_addresses: HashSet<u64> = HashSet::new();
         all_addresses.extend(self.head_txns.keys().cloned());
         all_addresses.extend(self.tail_txns.keys().cloned());
         all_addresses.extend(other.head_txns.keys().cloned());
         all_addresses.extend(other.tail_txns.keys().cloned());
-        
-        // Step 2: Add all nodes from G2 to G1
-        let mut old_to_new_index: HashMap<usize, usize> = HashMap::new();
-        
-        for (old_idx, node) in other.nodes.iter().enumerate() {
+
+        // Step 2: Add all nodes from G2 to G1.
+        // Since we append `other.nodes` in order, the new index of `other`'s
+        // node `i` is simply `base + i`, where `base` is `self.nodes.len()`
+        // at the moment we start appending. No HashMap needed.
+        let base = self.nodes.len();
+        for node in other.nodes.iter() {
             let new_idx = self.nodes.len();
-            old_to_new_index.insert(old_idx, new_idx);
-            
             let tx_id = node.transaction_id();
             self.id_to_index.insert(tx_id, new_idx);
             self.nodes.push(node.clone());
         }
-        
-        // Step 3: Update children and parent indices for G2 nodes (remap to new indices)
-        for (old_idx, &new_idx) in &old_to_new_index {
-            let old_children = other.nodes[*old_idx].children_indices.clone();
-            let old_parents = other.nodes[*old_idx].parent_indices.clone();
-            let new_children: Vec<usize> = old_children
+
+        // Step 3: Remap children/parent indices via the `+ base` shift.
+        for old_idx in 0..other.nodes.len() {
+            let new_idx = base + old_idx;
+            let src = &other.nodes[old_idx];
+            self.nodes[new_idx].children_indices = src
+                .children_indices
                 .iter()
-                .map(|&old_child_idx| old_to_new_index[&old_child_idx])
+                .map(|&c| base + c)
                 .collect();
-            let new_parents: HashSet<usize> = old_parents
+            self.nodes[new_idx].parent_indices = src
+                .parent_indices
                 .iter()
-                .map(|&old_parent_idx| old_to_new_index[&old_parent_idx])
+                .map(|&p| base + p)
                 .collect();
-            
-            self.nodes[new_idx].children_indices = new_children;
-            self.nodes[new_idx].parent_indices = new_parents;
         }
 
         // Step 4: For each address, connect G1's tail to G2's head
