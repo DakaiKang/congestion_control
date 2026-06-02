@@ -59,7 +59,21 @@ pub struct TransactionNode {
     pub id: u64,
     pub replica: u64,
     pub round: u64,
-    pub execution_time: u64,
+    /// Per-tx cost used by `simulate_parallel_execution` as a notional time
+    /// unit when accumulating thread completion times and computing CV.
+    ///
+    /// Despite the previous name (`execution_time`), this field stores the
+    /// EVM **gas consumed** by the transaction, not wall-clock nanoseconds.
+    /// Gas is chosen deliberately:
+    /// - Deterministic: same (tx, prev-state) always produces the same gas,
+    ///   so two BFT replicas compute identical schedules without further
+    ///   communication.
+    /// - Robust to I/O noise: production EVM clients pay tens to hundreds of
+    ///   milliseconds of disk-trie latency per block; wall-clock would
+    ///   import that variance into the scheduling metric.
+    /// - Pre-execution available: estimable from prior runs / `eth_estimateGas`
+    ///   without actually executing the tx.
+    pub gas_cost: u64,
     /// Sorted, dedup'd. See `KeySet`.
     pub read_set: KeySet,
     /// Sorted, dedup'd. See `KeySet`.
@@ -77,7 +91,7 @@ impl TransactionNode {
         id: u64,
         replica: u64,
         round: u64,
-        execution_time: u64,
+        gas_cost: u64,
         read_set: HashSet<u64>,
         write_set: HashSet<u64>,
     ) -> Self {
@@ -89,11 +103,11 @@ impl TransactionNode {
             id,
             replica,
             round,
-            execution_time,
+            gas_cost,
             children_indices: ChildrenIndices::new(),
             read_set: read_vec,
             write_set: write_vec,
-            longest_suffix: execution_time,
+            longest_suffix: gas_cost,
             parent_indices: ParentIndices::new(),
         }
     }
@@ -354,8 +368,8 @@ impl TransactionGraph {
         }
         
         // Then update current node
-        let execution_time = self.nodes[node_idx].execution_time;
-        let new_suffix = execution_time + max_child_suffix;
+        let gas_cost = self.nodes[node_idx].gas_cost;
+        let new_suffix = gas_cost + max_child_suffix;
         self.nodes[node_idx].longest_suffix = new_suffix;
         
         new_suffix
@@ -402,25 +416,18 @@ impl TransactionGraph {
                             key_set.extend(&node.write_set);
                             key_set
                         };
-                        let execution_time = self.get_node(&tx_id)
-                            .map(|node| node.execution_time)
+                        let gas_cost = self.get_node(&tx_id)
+                            .map(|node| node.gas_cost)
                             .unwrap_or(0);
-                        
-                        let expected_completion_time = current_time + execution_time;
-                        
+
+                        let expected_completion_time = current_time + gas_cost;
+
                         // println!(
-                        //     "Time {}: Thread {} starts transaction {} ({}, {}) [execution_time: {}, expected_completion: {}] keys: {:?}",
-                        //     current_time,
-                        //     thread.thread_id,
-                        //     self.id_to_index[&tx_id],
-                        //     tx_id.id,
-                        //     tx_id.replica,
-                        //     execution_time,
-                        //     expected_completion_time,
-                        //     keys
-                        // );
-                        
-                        thread.assign_transaction(tx_id.clone(), current_time, execution_time);
+                        //     "Time {}: Thread {} starts transaction {} ({}, {}) [gas_cost: {}, expected_completion: {}] keys: {:?}",
+                        //     current_time, thread.thread_id, self.id_to_index[&tx_id],
+                        //     tx_id.id, tx_id.replica, gas_cost, expected_completion_time, keys);
+
+                        thread.assign_transaction(tx_id.clone(), current_time, gas_cost);
                         execution_order.push((
                             thread.thread_id,
                             tx_id,
@@ -863,9 +870,9 @@ impl ThreadState {
         self.current_transaction.is_none()
     }
     
-    pub fn assign_transaction(&mut self, tx_id: TransactionId, current_time: u64, execution_time: u64) {
+    pub fn assign_transaction(&mut self, tx_id: TransactionId, current_time: u64, cost: u64) {
         self.current_transaction = Some(tx_id);
-        self.completion_time = current_time + execution_time;
+        self.completion_time = current_time + cost;
     }
     
     pub fn complete_transaction(&mut self) -> Option<TransactionId> {

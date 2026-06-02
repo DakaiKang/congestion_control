@@ -339,7 +339,7 @@ fn test_throughput_comparison() {
 
     // Greedy integration in batches of GREEDY_BATCH blocks.
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 1.0,
         num_threads: concurrency.get(),
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
@@ -1082,8 +1082,13 @@ fn test_throughput_comparison_v2() {
         reordered_blocks.push(reordered);
     }
 
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| GreedyIntegratorConfig::default().tau_cv);
+    println!("V2 tau_cv = {}", tau_cv);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
         num_threads: concurrency.get(),
+        tau_cv,
         ..GreedyIntegratorConfig::default()
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();

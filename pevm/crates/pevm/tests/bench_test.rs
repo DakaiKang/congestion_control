@@ -613,7 +613,7 @@ pub fn different_conflict_test(
     // 4. Greedy integration
     println!("Greedy integration...");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 1.0,
         num_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(8),
@@ -1086,7 +1086,7 @@ pub fn different_conflict_test_real_blocks(
     // 4. Greedy integration
     println!("\n=== 5. Greedy Integration ===");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 1.0,
         num_threads: parallel_concurrency().get(),
     });
     
@@ -1320,7 +1320,7 @@ fn test_first_block_critical_path() {
         let mut g = graph.clone();
         g.simulate_parallel_execution(threads);
         if let Some(ref sim) = g.simulation_result {
-            let total_exec_time: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+            let total_exec_time: u64 = g.nodes.iter().map(|n| n.gas_cost).sum();
             let critical_path_pct = 100.0 * sim.total_time as f64 / total_exec_time as f64;
             println!(
                 "  {:2} threads → makespan={} ns, critical_path/total={:.1}%, speedup={:.2}x",
@@ -1335,7 +1335,7 @@ fn test_first_block_critical_path() {
     // 找出关键路径上的 tx 链（longest_suffix 最大的根节点往下追踪）
     graph.simulate_parallel_execution(8);
     graph.update_longest_suffix_postorder();
-    let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+    let total_exec_time: u64 = graph.nodes.iter().map(|n| n.gas_cost).sum();
     let cp_root = graph.nodes.iter().enumerate()
         .filter(|(_, n)| n.parent_indices.is_empty())
         .max_by_key(|(_, n)| n.longest_suffix)
@@ -1355,7 +1355,7 @@ fn test_first_block_critical_path() {
                 println!("    WW conflict on {} location(s): {:?}", overlap.len(), &overlap[..overlap.len().min(3)]);
             }
             println!("  [{}] tx_idx={} write_set_size={} exec_time={}ns",
-                depth, idx, access_sets[idx].write_set.len(), node.execution_time);
+                depth, idx, access_sets[idx].write_set.len(), node.gas_cost);
             depth += 1;
             prev_idx = Some(idx);
             let next = node.children_indices.iter()
@@ -1438,7 +1438,7 @@ fn test_50_blocks_speedup_analysis() {
         let num_edges: usize = graph.nodes.iter().map(|n| n.children_indices.len()).sum();
         let num_roots = graph.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
         let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
-        let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+        let total_exec_time: u64 = graph.nodes.iter().map(|n| n.gas_cost).sum();
 
         // Simulate at 8 threads
         graph.simulate_parallel_execution(8);
@@ -1620,7 +1620,7 @@ fn test_50_blocks_speedup_real_time() {
                 if let Ok((mut g, _)) = GraphPevm::construct_graph_pevm_by_sequential(
                     &chain, &storage, spec_id, BlockEnv::default(), txs, block_num,
                 ) {
-                    let total: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+                    let total: u64 = g.nodes.iter().map(|n| n.gas_cost).sum();
                     g.simulate_parallel_execution(8);
                     if let Some(ref sim) = g.simulation_result {
                         if sim.total_time > 0 { total as f64 / sim.total_time as f64 } else { 1.0 }
@@ -1633,7 +1633,7 @@ fn test_50_blocks_speedup_real_time() {
         let num_edges: usize = graph_real.nodes.iter().map(|n| n.children_indices.len()).sum();
         let num_roots = graph_real.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
         let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
-        let total_ns: u64 = graph_real.nodes.iter().map(|n| n.execution_time).sum();
+        let total_ns: u64 = graph_real.nodes.iter().map(|n| n.gas_cost).sum();
 
         graph_real.simulate_parallel_execution(8);
         let makespan_ns = graph_real.simulation_result.as_ref()
@@ -1837,7 +1837,7 @@ fn run_one_batch(
 
     // 4. Integrated (greedy multi-block merge)
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 1.0,
         num_threads: parallel_concurrency().get(),
     });
     let (mut integrated_txns, integrated_graphs) =
@@ -2070,9 +2070,11 @@ fn test_integration_vs_execution_smoke() {
         prep_s, dependency_graphs.len());
 
     // ── Timed: greedy integration ──────────────────────────────────────────
-    println!("\n=== Timed: greedy integration (only integrate_pevm_graphs) ===");
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    println!("\n=== Timed: greedy integration (tau_cv={}) ===", tau_cv);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv,
         num_threads: parallel_concurrency().get(),
     });
     let integ_t = Instant::now();

@@ -100,7 +100,7 @@ impl GraphPevm {
                     let mut txn_node = graph.nodes[index].clone();
                     txn_node.children_indices.clear();
                     txn_node.parent_indices.clear();
-                    txn_node.longest_suffix = txn_node.execution_time;
+                    txn_node.longest_suffix = txn_node.gas_cost;
                     new_graph.add_transaction(txn_node);
                 }
             }
