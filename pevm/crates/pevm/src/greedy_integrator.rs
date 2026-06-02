@@ -18,15 +18,18 @@ pub struct GreedyIntegratorConfig {
 impl Default for GreedyIntegratorConfig {
     fn default() -> Self {
         Self {
-            // Empirically: on real ETH blocks, group composition (which
-            // candidates land in which group) is decided by hot-key disjointness
-            // and the 10-merge cap, not by CV. Setting tau_cv ≥ ~1.0 lets the
-            // inner-loop early-exit fire after a few merges, which skips
-            // would-be `decent_integration` simulate calls on later candidates
-            // (they're picked up by the next anchor instead) without changing
-            // the group structure. tau_cv = 1.0 measured ~15% cheaper than
-            // 0.1 on 100 real blocks with identical 19-group output.
-            tau_cv: 1.0,
+            // Tuned via full 100-batch × 100-block sweep over real ETH
+            // mainnet workload (NUM_THREADS=16, hot_key_threshold=1.5):
+            //   tau_cv  mean integrated speedup
+            //   0.1     1.88×
+            //   0.3     1.89×
+            //   0.5     1.89×   ← chosen
+            //   1.0     1.86×
+            //   2.0     1.79×
+            // 0.3-0.5 are statistically indistinguishable. 0.5 picked because
+            // it lets the inner-loop early-exit fire just a little sooner than
+            // 0.3, saving a few simulate calls without measurable quality loss.
+            tau_cv: 0.5,
             num_threads: std::thread::available_parallelism()
                 .unwrap_or(std::num::NonZeroUsize::MIN)
                 .get(),

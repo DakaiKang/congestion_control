@@ -613,7 +613,7 @@ pub fn different_conflict_test(
     // 4. Greedy integration
     println!("Greedy integration...");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 1.0,
+        tau_cv: 0.5,
         num_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(8),
@@ -1086,7 +1086,7 @@ pub fn different_conflict_test_real_blocks(
     // 4. Greedy integration
     println!("\n=== 5. Greedy Integration ===");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 1.0,
+        tau_cv: 0.5,
         num_threads: parallel_concurrency().get(),
     });
     
@@ -1822,7 +1822,7 @@ fn run_one_batch(
     let par_tput = total_txs as f64 / par_time_s;
 
     // 3. Graph parallel (per-block dependency graph)
-    let (_, reordered_blocks_txs, dependency_graphs) =
+    let (_, reordered_blocks_txs, mut dependency_graphs) =
         generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
     let graph_start = Instant::now();
     let mut graph_storage = storage.clone();
@@ -1835,9 +1835,18 @@ fn run_one_batch(
     let graph_time_s = graph_start.elapsed().as_secs_f64();
     let graph_tput = total_txs as f64 / graph_time_s;
 
-    // 4. Integrated (greedy multi-block merge)
+    // 4. Integrated (greedy multi-block merge).
+    // Apply HOT_KEY_THRESHOLD before greedy simulates each graph (default 1.5);
+    // honor TAU_CV env override (default 1.0).
+    let hot_key_threshold: f64 = std::env::var("HOT_KEY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    for g in &mut dependency_graphs {
+        g.set_hot_key_threshold(hot_key_threshold);
+    }
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 1.0,
+        tau_cv,
         num_threads: parallel_concurrency().get(),
     });
     let (mut integrated_txns, integrated_graphs) =
@@ -2063,16 +2072,26 @@ fn test_integration_vs_execution_smoke() {
     // from the integration cost on purpose).
     println!("\n=== Untimed: per-block graph construction ===");
     let prep_t = Instant::now();
-    let (_, reordered_blocks_txs, dependency_graphs) =
+    let (_, reordered_blocks_txs, mut dependency_graphs) =
         generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
     let prep_s = prep_t.elapsed().as_secs_f64();
     println!("graph construction (excluded from integration): {:.3}s for {} blocks",
         prep_s, dependency_graphs.len());
 
+    // Apply hot_key_threshold to every per-block graph BEFORE the integrator
+    // simulates them (the simulate inside greedy picks up this field via
+    // analyze_key_access_spans → detect_hot_keys). Default is 1.5.
+    let hot_key_threshold: f64 = std::env::var("HOT_KEY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    for g in &mut dependency_graphs {
+        g.set_hot_key_threshold(hot_key_threshold);
+    }
+
     // ── Timed: greedy integration ──────────────────────────────────────────
     let tau_cv: f64 = std::env::var("TAU_CV")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    println!("\n=== Timed: greedy integration (tau_cv={}) ===", tau_cv);
+    println!("\n=== Timed: greedy integration (tau_cv={}, hot_key_threshold={}) ===",
+        tau_cv, hot_key_threshold);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
         tau_cv,
         num_threads: parallel_concurrency().get(),

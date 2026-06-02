@@ -339,7 +339,7 @@ fn test_throughput_comparison() {
 
     // Greedy integration in batches of GREEDY_BATCH blocks.
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 1.0,
+        tau_cv: 0.5,
         num_threads: concurrency.get(),
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
