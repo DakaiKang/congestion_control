@@ -1507,10 +1507,12 @@ fn test_v2_all_batches() {
     let spec_id = SpecId::LATEST;
     let overall = Instant::now();
 
-    // Helper to extract block number from rw_time_<N>.json path.
+    // Helper to extract block number from rw_time_<N>.json or rw_gas_<N>.json.
     let block_num_of = |p: &std::path::Path| -> u64 {
-        p.file_stem().unwrap().to_str().unwrap()
-            .trim_start_matches("rw_time_").parse::<u64>().unwrap()
+        let stem = p.file_stem().unwrap().to_str().unwrap();
+        stem.trim_start_matches("rw_time_")
+            .trim_start_matches("rw_gas_")
+            .parse::<u64>().unwrap()
     };
 
     for (batch_idx, chunk) in all_files.chunks(batch_size).enumerate() {

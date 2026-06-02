@@ -417,7 +417,7 @@ impl TxRwTimeDataFull {
         let raw = self
             .execution_time_ns
             .map(|t| t / T_SLOAD_NS)
-            .or_else(|| self.gas_used.map(|g| g / 100))
+            .or_else(|| self.gas_used.map(|g| g / 1000))
             .expect("rw_time entry missing both `executionTime` and `gasUsed`");
         raw.max(2).min(50000)
     }
