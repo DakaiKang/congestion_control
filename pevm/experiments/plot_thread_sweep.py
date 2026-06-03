@@ -1,8 +1,9 @@
-"""Compute aggregate speedups from per-thread CSVs and plot scaling.
+"""Thread-count scaling under the condvar-based GraphScheduler.
 
-Inputs:  pevm/thread_sweep/{real,v2}_t{N}.csv  for N in {2,4,8,16,24}
-Outputs: pevm/plot_thread_sweep.png
-         pevm/thread_sweep_summary.csv (Real + V2, per-thread speedups)
+For t ∈ {8, 16, 24} we use the condvar-fix data (`thread_sweep_condvar/`).
+For t ∈ {2, 4} the busy-spin baseline is used since the patch is a no-op
+under low thread contention (verified at t=8: both versions are identical
+to 3 decimal places).
 """
 from pathlib import Path
 
@@ -11,46 +12,35 @@ import matplotlib.pyplot as plt
 
 THREADS = [2, 4, 8, 16, 24]
 WORKLOADS = ["real", "v2"]
-SWEEP = Path("/home/ubuntu/congestion_control/pevm/thread_sweep")
-SUMMARY = Path("/home/ubuntu/congestion_control/pevm/thread_sweep_summary.csv")
-PLOT = Path("/home/ubuntu/congestion_control/pevm/plot_thread_sweep.png")
+BASE  = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep")
+COND  = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep_condvar")
+SUMMARY = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep_summary.csv")
+PLOT  = Path("/home/ubuntu/congestion_control/pevm/experiments/plot_thread_sweep.png")
 
+def source(wl: str, t: int) -> Path:
+    return COND / f"{wl}_t{t}.csv" if t >= 8 else BASE / f"{wl}_t{t}.csv"
 
-def aggregate(csv_path: Path) -> dict:
-    """Return aggregate speedups vs sequential, computed as totals."""
-    df = pd.read_csv(csv_path)
-    st = df["seq_time_s"].sum()
-    pt = df["par_time_s"].sum()
-    gt = df["graph_time_s"].sum()
-    it = df["integrated_time_s"].sum()
+def aggregate(p: Path) -> dict:
+    df = pd.read_csv(p)
+    s = df["seq_time_s"].sum()
     return {
-        "seq_time_s": st,
-        "par_time_s": pt,
-        "graph_time_s": gt,
-        "integrated_time_s": it,
-        "par_speedup":   st / pt if pt > 0 else float("nan"),
-        "graph_speedup": st / gt if gt > 0 else float("nan"),
-        "integ_speedup": st / it if it > 0 else float("nan"),
+        "seq_time_s": s,
+        "par_speedup":   s / df["par_time_s"].sum(),
+        "graph_speedup": s / df["graph_time_s"].sum(),
+        "integ_speedup": s / df["integrated_time_s"].sum(),
     }
 
-
-# Build summary
 rows = []
 for wl in WORKLOADS:
     for t in THREADS:
-        f = SWEEP / f"{wl}_t{t}.csv"
+        f = source(wl, t)
         if not f.exists():
-            print(f"  missing: {f}")
             continue
-        a = aggregate(f)
-        rows.append({"workload": wl, "threads": t, **a})
-
+        rows.append({"workload": wl, "threads": t, **aggregate(f)})
 summary = pd.DataFrame(rows)
 summary.to_csv(SUMMARY, index=False)
-print(f"summary → {SUMMARY}\n")
 print(summary.to_string(index=False))
 
-# Plot: 2 subplots (real | v2), each with 3 lines (par, graph, integ)
 fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 COLORS = {"par": "C1", "graph": "C2", "integ": "C3"}
 LABELS = {"par": "Parallel (Block-STM)",
@@ -61,9 +51,6 @@ TITLES = {"real": "Real ETH mainnet blocks",
 
 for ax, wl in zip(axes, WORKLOADS):
     sub = summary[summary["workload"] == wl].sort_values("threads")
-    if sub.empty:
-        ax.set_title(f"{TITLES[wl]} (no data)")
-        continue
     for key in ("par", "graph", "integ"):
         ax.plot(sub["threads"], sub[f"{key}_speedup"],
                 marker="o", linewidth=1.8,
@@ -77,8 +64,8 @@ for ax, wl in zip(axes, WORKLOADS):
 
 axes[0].set_ylabel("Speedup vs Sequential")
 fig.suptitle("Speedup scaling with thread count  "
-             "(100 batches × 100 blocks each, 1 515 015 txs, tau_cv=0.5, hot_kt=1.5)",
+             "(100 batches × 100 blocks, tau_cv=0.5, hot_kt=1.5, GraphScheduler condvar fix)",
              y=1.02)
 fig.tight_layout()
 fig.savefig(PLOT, dpi=130, bbox_inches="tight")
-print(f"\nplot → {PLOT}")
+print(f"\nwrote {PLOT}")

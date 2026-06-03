@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 
 THREADS = [2, 4, 8, 16, 24]
 COND_THREADS = [8, 16, 24]
-BASE = Path("/home/ubuntu/congestion_control/pevm/thread_sweep")
-COND = Path("/home/ubuntu/congestion_control/pevm/thread_sweep_condvar")
-OUT = Path("/home/ubuntu/congestion_control/pevm/plot_condvar_compare.png")
+BASE = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep")
+COND = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep_condvar")
+OUT = Path("/home/ubuntu/congestion_control/pevm/experiments/plot_condvar_compare.png")
 
 def agg(p):
     df = pd.read_csv(p)

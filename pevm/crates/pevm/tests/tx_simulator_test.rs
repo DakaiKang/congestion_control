@@ -1461,7 +1461,7 @@ fn test_v2_all_batches() {
     let rw_time_dir = std::env::var("RW_TIME_DIR")
         .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/rw_time".to_string());
     let output_path = std::env::var("OUTPUT").unwrap_or_else(|_| {
-        "/home/ubuntu/congestion_control/pevm/v2_batches.csv".to_string()
+        "/home/ubuntu/congestion_control/pevm/experiments/v2_batches.csv".to_string()
     });
     let batch_size: usize = std::env::var("BATCH_SIZE")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(100);

@@ -11,8 +11,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 TAU_VALUES = [0.1, 0.3, 0.5, 1.0, 2.0]
-SWEEP_DIR = Path("/home/ubuntu/congestion_control/pevm/tau_sweep")
-OUT = Path("/home/ubuntu/congestion_control/pevm/plot_tau_sweep.png")
+SWEEP_DIR = Path("/home/ubuntu/congestion_control/pevm/experiments/tau_sweep")
+OUT = Path("/home/ubuntu/congestion_control/pevm/experiments/plot_tau_sweep.png")
 
 cmap = plt.get_cmap("viridis")
 colors = [cmap(i / (len(TAU_VALUES) - 1)) for i in range(len(TAU_VALUES))]

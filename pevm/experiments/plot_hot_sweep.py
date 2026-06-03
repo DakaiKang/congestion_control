@@ -11,8 +11,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 HOT_VALUES = [0.5, 1.0, 1.5, 3.0, 5.0]
-SWEEP_DIR = Path("/home/ubuntu/congestion_control/pevm/hot_sweep")
-OUT = Path("/home/ubuntu/congestion_control/pevm/plot_hot_sweep.png")
+SWEEP_DIR = Path("/home/ubuntu/congestion_control/pevm/experiments/hot_sweep")
+OUT = Path("/home/ubuntu/congestion_control/pevm/experiments/plot_hot_sweep.png")
 
 # Pick a perceptually ordered colormap so the line ordering reads naturally.
 cmap = plt.get_cmap("viridis")

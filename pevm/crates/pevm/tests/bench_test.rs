@@ -1896,7 +1896,7 @@ fn test_eth_block_data_all_batches() {
     let blocks_dir = std::env::var("BLOCKS_DIR")
         .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/blocks_rw".to_string());
     let output_path = std::env::var("OUTPUT").unwrap_or_else(|_| {
-        "/home/ubuntu/congestion_control/pevm/eth_block_data_batches.csv".to_string()
+        "/home/ubuntu/congestion_control/pevm/experiments/eth_block_data_batches.csv".to_string()
     });
     let batch_size: usize = std::env::var("BATCH_SIZE")
         .ok()
