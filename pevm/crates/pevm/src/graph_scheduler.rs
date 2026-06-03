@@ -38,6 +38,8 @@ pub struct GraphScheduler {
     children_released: Vec<AtomicBool>,
     /// Total number of re-executions (incarnation > 0) for diagnostics.
     pub re_execution_count: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub blocking_reexecs: AtomicUsize,
 }
 
 impl std::fmt::Debug for GraphScheduler {
@@ -97,6 +99,8 @@ impl GraphScheduler {
             aborted: AtomicBool::new(false),
             children_released: (0..block_size).map(|_| AtomicBool::new(false)).collect(),
             re_execution_count: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            blocking_reexecs: AtomicUsize::new(0),
             dependency_graph,
             executable_txs: Mutex::new(executable_txs),
             task_available: Condvar::new(),
@@ -116,46 +120,52 @@ impl GraphScheduler {
     pub fn next_task(&self) -> Option<Task> {
         let start_time = Instant::now();
         let timeout = Duration::from_secs(1);
-        let mut iteration = 0;
-        
+
         while !self.aborted.load(Ordering::Relaxed) {
-            iteration += 1;
-            
-            // Check timeout
+            // Hard timeout guard against scheduling deadlocks.
             if start_time.elapsed() > timeout {
-                println!("\n⚠️  TIMEOUT after {} iterations", iteration);
+                println!("\n⚠️  TIMEOUT in next_task");
                 self.print_deadlock_info();
                 self.abort();
                 return None;
             }
-            
-            // Print status every 1000 iterations
-            if iteration % 100000 == 0 {
-                let heap_size = self.executable_txs.lock().unwrap().len();
-                let validation_idx = self.validation_idx.load(Ordering::Relaxed);
-                let num_validated = self.num_validated.load(Ordering::Relaxed);
-                
-                // println!("DEBUG [Iter {}] heap={}, val_idx={}, validated={}/{}", 
-                        //  iteration, heap_size, validation_idx, num_validated, self.block_size);
-            }
-            
+
             // Step 1: Check if all tasks are done
             if self.check_all_done() {
                 return None;
             }
-            
+
             // Step 2: Try to get a validation task
             if let Some(task) = self.try_validation_task() {
                 return Some(task);
             }
-            
+
             // Step 3: Try to get an execution task
             if let Some(task) = self.try_execution_task() {
                 return Some(task);
             }
-            
-            // Step 4: No tasks available, yield CPU and retry
-            thread::yield_now();
+
+            // Step 4: No task ready — park on the condvar instead of
+            // busy-spinning on `thread::yield_now()`. Idle threads otherwise
+            // hammer the `executable_txs` mutex once per iteration, starving
+            // worker threads trying to push new ready txs.
+            //
+            // The 1 ms timeout bounds stragglers: validation_idx is bumped
+            // via an AtomicUsize that doesn't fire the condvar, so we must
+            // re-poll periodically. 1 ms is short enough that worst-case
+            // validation-task latency stays low, long enough to eliminate
+            // the raw CPU burn from the old busy-spin.
+            {
+                let guard = self.executable_txs.lock().unwrap();
+                if guard.is_empty() {
+                    let _ = self
+                        .task_available
+                        .wait_timeout(guard, Duration::from_millis(1));
+                    // guard dropped after wait_timeout returns
+                }
+                // else: a task appeared between our pop attempt and lock
+                // acquisition; fall through and re-poll immediately.
+            }
         }
         None
     }
@@ -300,9 +310,11 @@ impl GraphScheduler {
         let mut blocking_dependents = index_mutex!(self.transactions_dependents, blocking_tx_idx);
         blocking_dependents.push(tx_idx);
 
+        #[cfg(feature = "diagnostics")]
+        self.blocking_reexecs.fetch_add(1, Ordering::Relaxed);
         true
     }
-    
+
     fn set_ready_status(&self, tx_idx: TxIdx) {
         let mut tx = index_mutex!(self.transactions_status, tx_idx);
         debug_assert_eq!(tx.status, IncarnationStatus::Aborting);

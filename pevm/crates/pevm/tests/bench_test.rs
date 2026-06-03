@@ -29,6 +29,16 @@ use pevm::utils::nonce_tracker::{NonceTracker};
 #[path = "../benches/gigagas.rs"]
 pub mod gigagas;
 
+/// Concurrency level for parallel executors / graph simulation.
+/// Reads NUM_THREADS env var; falls back to available_parallelism().
+fn parallel_concurrency() -> NonZeroUsize {
+    std::env::var("NUM_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(NonZeroUsize::new)
+        .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN))
+}
+
 #[test]
 pub fn test_bench_sequential() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running test_bench");
@@ -244,7 +254,7 @@ pub fn test_bench_combine() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let duration1 = start.elapsed();
 
-    g1.integrate_graph(g2);
+    g1.integrate_graph(&g2);
 
     g1.simulate_parallel_execution(8);
 
@@ -379,7 +389,7 @@ pub fn graph_pevm_test() {
     ro_txns.extend(reordered_txns.clone());
     ro_txns.extend(reordered_txns2.clone());
 
-    new_graph.integrate_graph(new_graph2);
+    new_graph.integrate_graph(&new_graph2);
 
     // new_graph.simulate_parallel_execution(8);
 
@@ -603,7 +613,7 @@ pub fn different_conflict_test(
     // 4. Greedy integration
     println!("Greedy integration...");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 0.5,
         num_threads: std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(8),
@@ -641,13 +651,11 @@ fn generate_dependency_graphs(
     blocks_txs: Vec<Vec<TxEnv>>
 ) -> (InMemoryStorage, Vec<Vec<TxEnv>>, Vec<pevm::dependency_graph::TransactionGraph>) {
     
-    let mut reordered_txns_list = Vec::new(); 
-    let mut new_graphs = Vec::new(); 
-    let mut current_storage = storage.clone(); 
-    
-    let concurrency_level = std::thread::available_parallelism()
-        .unwrap_or(std::num::NonZeroUsize::MIN)
-        .get();
+    let mut reordered_txns_list = Vec::new();
+    let mut new_graphs = Vec::new();
+    let mut current_storage = storage.clone();
+
+    let concurrency_level = parallel_concurrency().get();
     
     for i in 0..blocks_txs.len() {
         // println!("Constructing graph for batch {}", i);
@@ -719,7 +727,7 @@ fn execute_parallel_and_update(
     txs: Vec<TxEnv>,
 ) -> InMemoryStorage {
     let chain = PevmEthereum::mainnet();
-    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+    let concurrency_level = parallel_concurrency();
     let result = Pevm::default().execute_revm_parallel(
         &chain, &storage, spec_id, make_block_env(), txs, concurrency_level,
     ).unwrap();
@@ -746,8 +754,7 @@ fn execute_parallel_with_graph_and_update_with_gas(
     spec_id: SpecId,
 ) -> (InMemoryStorage, u64) {
     let chain = PevmEthereum::mainnet();
-    let concurrency_level = std::thread::available_parallelism()
-        .unwrap_or(std::num::NonZeroUsize::MIN);
+    let concurrency_level = parallel_concurrency();
     let mut pevm = GraphPevm::default();
     let result = match pevm.execute_revm_parallel(
         &chain, &storage, spec_id, make_block_env(), txs, concurrency_level, graph,
@@ -812,7 +819,7 @@ pub fn long_test() {
         let mut integrated_graph = new_graphs[i * batch_size].clone();
         for j in 1..batch_size {
             if i * batch_size + j < batch_num {
-                integrated_graph.integrate_graph(new_graphs[i * batch_size + j].clone());
+                integrated_graph.integrate_graph(&new_graphs[i * batch_size + j]);
             }
         }
         println!("nodes count in integrated graph: {}", integrated_graph.nodes.len());
@@ -1079,10 +1086,8 @@ pub fn different_conflict_test_real_blocks(
     // 4. Greedy integration
     println!("\n=== 5. Greedy Integration ===");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
-        num_threads: std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8),
+        tau_cv: 0.5,
+        num_threads: parallel_concurrency().get(),
     });
     
     let (mut integrated_txns, integrated_graphs) = integrator.integrate_pevm_graphs(
@@ -1187,7 +1192,7 @@ fn test_real_blocks_performance_100() {
     let (seq, par, graph_par, integrated) = different_conflict_test_real_blocks(
         start_block,
         num_blocks,
-        "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1",
+        "/home/ubuntu/eth-block-data/blocks_rw",
     );
 
     println!("Final results ({} blocks from {}):", num_blocks, start_block);
@@ -1197,6 +1202,83 @@ fn test_real_blocks_performance_100() {
     println!("  Integrated:  {:.2} tx/s", integrated);
 }
 
+
+/// Compare incarnation-0 access sets (first parallel execution) vs sequential access sets.
+/// Tests whether real EVM txs diverge from their sequential access patterns on first parallel run.
+#[test]
+fn test_incarnation0_divergence() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+    let blocks_dir = "/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1";
+    let start_block = 16774645u64;
+    let block_numbers: Vec<u64> = (0..num_blocks as u64).map(|i| start_block + i).collect();
+    let chain = PevmEthereum::mainnet();
+    let concurrency_level = std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN);
+
+    let storage = create_multi_block_storage(&block_numbers, blocks_dir).unwrap();
+
+    // Aggregate counters
+    let (mut total_txs, mut read_diverged, mut write_diverged, mut either_diverged) = (0usize, 0usize, 0usize, 0usize);
+
+    let mut seq_storage = storage.clone();
+    let mut par_storage = storage.clone();
+
+    for block_num in &block_numbers {
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+        let (_bd, _bs, txs) = load_block_for_execution(&filepath, true).unwrap();
+        let spec_id = get_spec_id(*block_num);
+        let n = txs.len();
+
+        // Sequential: capture access sets
+        let (seq_results, seq_access) = pevm::execute_revm_sequential_with_access_sets(
+            &chain, &seq_storage, spec_id, make_block_env(), txs.clone(),
+        ).unwrap();
+        update_storage_with_results(&mut seq_storage, seq_results);
+
+        // Parallel: capture incarnation-0 sets via Pevm
+        let mut pevm_instance = Pevm::default();
+        let par_results = pevm_instance.execute_revm_parallel(
+            &chain, &par_storage, spec_id, make_block_env(), txs, concurrency_level,
+        ).unwrap();
+        update_storage_with_results(&mut par_storage, par_results);
+
+        let inc0 = &pevm_instance.last_incarnation0_keys;
+
+        let mut blk_read_div = 0usize;
+        let mut blk_write_div = 0usize;
+        let mut blk_either = 0usize;
+
+        for (tx_idx, (seq_a, par_opt)) in seq_access.iter().zip(inc0.iter()).enumerate() {
+            let Some((par_read, par_write)) = par_opt else { continue };
+            let seq_read: std::collections::HashSet<u64> = seq_a.read_set.iter().copied().collect();
+            let seq_write: std::collections::HashSet<u64> = seq_a.write_set.iter().copied().collect();
+
+            let rd = seq_read != *par_read;
+            let wd = seq_write != *par_write;
+            if rd { blk_read_div += 1; }
+            if wd { blk_write_div += 1; }
+            if rd || wd { blk_either += 1; }
+        }
+
+        println!(
+            "Block {}: {} txs  read_diverged={}/{} ({:.0}%)  write_diverged={}/{} ({:.0}%)  either={}/{} ({:.0}%)",
+            block_num, n,
+            blk_read_div, n, blk_read_div as f64 / n as f64 * 100.0,
+            blk_write_div, n, blk_write_div as f64 / n as f64 * 100.0,
+            blk_either, n, blk_either as f64 / n as f64 * 100.0,
+        );
+
+        total_txs += n;
+        read_diverged += blk_read_div;
+        write_diverged += blk_write_div;
+        either_diverged += blk_either;
+    }
+
+    println!("\n=== Incarnation-0 Divergence Summary ({} blocks, {} txs) ===", num_blocks, total_txs);
+    println!("  Read set diverged:  {}/{} = {:.1}%", read_diverged, total_txs, read_diverged as f64 / total_txs as f64 * 100.0);
+    println!("  Write set diverged: {}/{} = {:.1}%", write_diverged, total_txs, write_diverged as f64 / total_txs as f64 * 100.0);
+    println!("  Either diverged:    {}/{} = {:.1}%", either_diverged, total_txs, either_diverged as f64 / total_txs as f64 * 100.0);
+}
 
 #[test]
 fn test_first_block_critical_path() {
@@ -1238,7 +1320,7 @@ fn test_first_block_critical_path() {
         let mut g = graph.clone();
         g.simulate_parallel_execution(threads);
         if let Some(ref sim) = g.simulation_result {
-            let total_exec_time: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+            let total_exec_time: u64 = g.nodes.iter().map(|n| n.gas_cost).sum();
             let critical_path_pct = 100.0 * sim.total_time as f64 / total_exec_time as f64;
             println!(
                 "  {:2} threads → makespan={} ns, critical_path/total={:.1}%, speedup={:.2}x",
@@ -1253,7 +1335,7 @@ fn test_first_block_critical_path() {
     // 找出关键路径上的 tx 链（longest_suffix 最大的根节点往下追踪）
     graph.simulate_parallel_execution(8);
     graph.update_longest_suffix_postorder();
-    let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+    let total_exec_time: u64 = graph.nodes.iter().map(|n| n.gas_cost).sum();
     let cp_root = graph.nodes.iter().enumerate()
         .filter(|(_, n)| n.parent_indices.is_empty())
         .max_by_key(|(_, n)| n.longest_suffix)
@@ -1273,7 +1355,7 @@ fn test_first_block_critical_path() {
                 println!("    WW conflict on {} location(s): {:?}", overlap.len(), &overlap[..overlap.len().min(3)]);
             }
             println!("  [{}] tx_idx={} write_set_size={} exec_time={}ns",
-                depth, idx, access_sets[idx].write_set.len(), node.execution_time);
+                depth, idx, access_sets[idx].write_set.len(), node.gas_cost);
             depth += 1;
             prev_idx = Some(idx);
             let next = node.children_indices.iter()
@@ -1356,7 +1438,7 @@ fn test_50_blocks_speedup_analysis() {
         let num_edges: usize = graph.nodes.iter().map(|n| n.children_indices.len()).sum();
         let num_roots = graph.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
         let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
-        let total_exec_time: u64 = graph.nodes.iter().map(|n| n.execution_time).sum();
+        let total_exec_time: u64 = graph.nodes.iter().map(|n| n.gas_cost).sum();
 
         // Simulate at 8 threads
         graph.simulate_parallel_execution(8);
@@ -1538,7 +1620,7 @@ fn test_50_blocks_speedup_real_time() {
                 if let Ok((mut g, _)) = GraphPevm::construct_graph_pevm_by_sequential(
                     &chain, &storage, spec_id, BlockEnv::default(), txs, block_num,
                 ) {
-                    let total: u64 = g.nodes.iter().map(|n| n.execution_time).sum();
+                    let total: u64 = g.nodes.iter().map(|n| n.gas_cost).sum();
                     g.simulate_parallel_execution(8);
                     if let Some(ref sim) = g.simulation_result {
                         if sim.total_time > 0 { total as f64 / sim.total_time as f64 } else { 1.0 }
@@ -1551,7 +1633,7 @@ fn test_50_blocks_speedup_real_time() {
         let num_edges: usize = graph_real.nodes.iter().map(|n| n.children_indices.len()).sum();
         let num_roots = graph_real.nodes.iter().filter(|n| n.parent_indices.is_empty()).count();
         let root_pct = 100.0 * num_roots as f64 / num_txs as f64;
-        let total_ns: u64 = graph_real.nodes.iter().map(|n| n.execution_time).sum();
+        let total_ns: u64 = graph_real.nodes.iter().map(|n| n.gas_cost).sum();
 
         graph_real.simulate_parallel_execution(8);
         let makespan_ns = graph_real.simulation_result.as_ref()
@@ -1666,6 +1748,395 @@ fn has_cycle(graph: &TransactionGraph) -> bool {
             return true;
         }
     }
-    
+
     false
+}
+
+// ============================================================================
+// Batch benchmark: run all blocks in eth-block-data, 100 at a time, log CSV.
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct BatchMetrics {
+    batch_idx: usize,
+    start_block: u64,
+    end_block: u64,
+    num_blocks: usize,
+    num_txs: usize,
+    seq_time_s: f64,
+    seq_tput: f64,
+    par_time_s: f64,
+    par_tput: f64,
+    graph_time_s: f64,
+    graph_tput: f64,
+    integrated_time_s: f64,
+    integrated_tput: f64,
+    num_integrated_groups: usize,
+}
+
+fn run_one_batch(
+    batch_idx: usize,
+    block_numbers: &[u64],
+    blocks_dir: &str,
+) -> Option<BatchMetrics> {
+    let spec_id = get_spec_id(block_numbers[0]);
+
+    let storage = create_multi_block_storage(block_numbers, blocks_dir).ok()?;
+
+    let mut blocks_txs = Vec::new();
+    let mut nonce_tracker = NonceTracker::new();
+    for &block_num in block_numbers {
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+        match load_block_for_execution(&filepath, true) {
+            Ok((_, block_storage, txenvs)) => {
+                nonce_tracker.record_from_prestate(block_num, &block_storage, &txenvs);
+                blocks_txs.push(txenvs);
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  load failed for block {}: {:?}", block_num, e);
+                return None;
+            }
+        }
+    }
+    if blocks_txs.is_empty() {
+        return None;
+    }
+    let total_txs: usize = blocks_txs.iter().map(|txs| txs.len()).sum();
+
+    // 1. Sequential
+    let seq_start = Instant::now();
+    let mut seq_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        seq_storage = execute_sequential_and_update(seq_storage, spec_id, txs);
+    }
+    let seq_time_s = seq_start.elapsed().as_secs_f64();
+    let seq_tput = total_txs as f64 / seq_time_s;
+
+    // 2. Parallel (Block-STM, no graph)
+    let par_start = Instant::now();
+    let mut par_storage = storage.clone();
+    for txs in blocks_txs.clone() {
+        par_storage = execute_parallel_and_update(par_storage, spec_id, txs);
+    }
+    let par_time_s = par_start.elapsed().as_secs_f64();
+    let par_tput = total_txs as f64 / par_time_s;
+
+    // 3. Graph parallel (per-block dependency graph)
+    let (_, reordered_blocks_txs, mut dependency_graphs) =
+        generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
+    let graph_start = Instant::now();
+    let mut graph_storage = storage.clone();
+    for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
+        let (new_s, _) = execute_parallel_with_graph_and_update_with_gas(
+            graph_storage, txs.clone(), graph.clone(), spec_id,
+        );
+        graph_storage = new_s;
+    }
+    let graph_time_s = graph_start.elapsed().as_secs_f64();
+    let graph_tput = total_txs as f64 / graph_time_s;
+
+    // 4. Integrated (greedy multi-block merge).
+    // Apply HOT_KEY_THRESHOLD before greedy simulates each graph (default 1.5);
+    // honor TAU_CV env override (default 1.0).
+    let hot_key_threshold: f64 = std::env::var("HOT_KEY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    for g in &mut dependency_graphs {
+        g.set_hot_key_threshold(hot_key_threshold);
+    }
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        tau_cv,
+        num_threads: parallel_concurrency().get(),
+    });
+    let (mut integrated_txns, integrated_graphs) =
+        integrator.integrate_pevm_graphs(dependency_graphs, reordered_blocks_txs);
+    for txs in integrated_txns.iter_mut() {
+        nonce_tracker.update_txenv_nonces(txs);
+    }
+    let num_integrated_groups = integrated_graphs.len();
+
+    let block_env = make_block_env();
+    let integrated_start = Instant::now();
+    let mut integrated_storage = storage.clone();
+    for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+        integrated_storage = execute_parallel_with_graph_and_update(
+            integrated_storage,
+            txs.clone(),
+            graph.clone(),
+            spec_id,
+            block_env.clone(),
+        );
+    }
+    let integrated_time_s = integrated_start.elapsed().as_secs_f64();
+    let integrated_tput = total_txs as f64 / integrated_time_s;
+
+    Some(BatchMetrics {
+        batch_idx,
+        start_block: *block_numbers.first().unwrap(),
+        end_block: *block_numbers.last().unwrap(),
+        num_blocks: block_numbers.len(),
+        num_txs: total_txs,
+        seq_time_s,
+        seq_tput,
+        par_time_s,
+        par_tput,
+        graph_time_s,
+        graph_tput,
+        integrated_time_s,
+        integrated_tput,
+        num_integrated_groups,
+    })
+}
+
+#[test]
+fn test_eth_block_data_all_batches() {
+    use std::io::Write;
+
+    let blocks_dir = std::env::var("BLOCKS_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/blocks_rw".to_string());
+    let output_path = std::env::var("OUTPUT").unwrap_or_else(|_| {
+        "/home/ubuntu/congestion_control/pevm/experiments/eth_block_data_batches.csv".to_string()
+    });
+    let batch_size: usize = std::env::var("BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let max_batches: Option<usize> =
+        std::env::var("MAX_BATCHES").ok().and_then(|v| v.parse().ok());
+
+    // Discover all block numbers in the data dir
+    let mut all_blocks: Vec<u64> = std::fs::read_dir(&blocks_dir)
+        .expect("blocks_dir not readable")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.strip_prefix("block_")
+                .and_then(|s| s.strip_suffix(".json"))
+                .and_then(|s| s.parse::<u64>().ok())
+        })
+        .collect();
+    all_blocks.sort();
+    assert!(!all_blocks.is_empty(), "no block_*.json files in {}", blocks_dir);
+
+    let total_batches = (all_blocks.len() + batch_size - 1) / batch_size;
+    println!(
+        "Found {} blocks (range {}..={}). batch_size={}, total_batches={}. NUM_THREADS={}",
+        all_blocks.len(),
+        all_blocks.first().unwrap(),
+        all_blocks.last().unwrap(),
+        batch_size,
+        total_batches,
+        parallel_concurrency().get(),
+    );
+    println!("Writing CSV to: {}", output_path);
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(&output_path).expect("cannot create output file"),
+    );
+    writeln!(
+        writer,
+        "batch_idx,start_block,end_block,num_blocks,num_txs,\
+         seq_time_s,seq_tput,par_time_s,par_tput,\
+         graph_time_s,graph_tput,integrated_time_s,integrated_tput,\
+         num_integrated_groups"
+    )
+    .unwrap();
+    writer.flush().unwrap();
+
+    let overall_start = Instant::now();
+    let mut completed = 0usize;
+    for (i, chunk) in all_blocks.chunks(batch_size).enumerate() {
+        if let Some(lim) = max_batches {
+            if i >= lim {
+                break;
+            }
+        }
+        let t = Instant::now();
+        println!(
+            "\n=== Batch {}/{}  blocks {}..={} ({} blocks) ===",
+            i + 1,
+            total_batches,
+            chunk[0],
+            chunk[chunk.len() - 1],
+            chunk.len()
+        );
+        match run_one_batch(i, chunk, &blocks_dir) {
+            Some(m) => {
+                println!(
+                    "  done in {:.2}s | txs={} | seq={:.0}t/s par={:.0} graph={:.0} integ={:.0} groups={}",
+                    t.elapsed().as_secs_f64(),
+                    m.num_txs,
+                    m.seq_tput,
+                    m.par_tput,
+                    m.graph_tput,
+                    m.integrated_tput,
+                    m.num_integrated_groups
+                );
+                writeln!(
+                    writer,
+                    "{},{},{},{},{},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{}",
+                    m.batch_idx,
+                    m.start_block,
+                    m.end_block,
+                    m.num_blocks,
+                    m.num_txs,
+                    m.seq_time_s,
+                    m.seq_tput,
+                    m.par_time_s,
+                    m.par_tput,
+                    m.graph_time_s,
+                    m.graph_tput,
+                    m.integrated_time_s,
+                    m.integrated_tput,
+                    m.num_integrated_groups
+                )
+                .unwrap();
+                writer.flush().unwrap();
+                completed += 1;
+            }
+            None => {
+                eprintln!("  batch {} failed", i);
+                writeln!(
+                    writer,
+                    "{},{},{},{},,,,,,,,,,",
+                    i,
+                    chunk[0],
+                    chunk[chunk.len() - 1],
+                    chunk.len()
+                )
+                .unwrap();
+                writer.flush().unwrap();
+            }
+        }
+    }
+    println!(
+        "\n✓ {} / {} batches done in {:.1}s. CSV → {}",
+        completed,
+        total_batches,
+        overall_start.elapsed().as_secs_f64(),
+        output_path
+    );
+}
+
+// ============================================================================
+// Smoke: integration time vs integrated-execution time on REAL blocks.
+//
+// The greedy integrator merges per-block dependency graphs into larger
+// "integrated" graphs. We want to confirm that the merging step itself is
+// fast relative to the parallel execution it enables.
+//
+// Excluded from "integration time":
+//   - Per-block dependency-graph construction
+//     (`GraphPevm::construct_graph_pevm_by_sequential` ->
+//      `execute_revm_sequential_with_access_sets`)
+//   - Per-block tx reordering (`reorder_txs_by_dependency_graph`)
+//   - Nonce re-assignment after integration
+//
+// Included:
+//   - Just `integrator.integrate_pevm_graphs(...)` — the greedy merge itself.
+// ============================================================================
+
+#[test]
+fn test_integration_vs_execution_smoke() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    let start_block: u64 = std::env::var("START_BLOCK")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(16774645);
+    let blocks_dir: String = std::env::var("BLOCKS_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/blocks_rw".to_string());
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = get_spec_id(start_block);
+
+    let block_numbers: Vec<u64> = (0..num_blocks as u64).map(|i| start_block + i).collect();
+
+    println!("\n=== Setup: load {} blocks from {} ===", num_blocks, blocks_dir);
+    let storage = create_multi_block_storage(&block_numbers, &blocks_dir)
+        .expect("create_multi_block_storage failed");
+
+    let mut blocks_txs = Vec::new();
+    let mut nonce_tracker = NonceTracker::new();
+    for &block_num in &block_numbers {
+        let filepath = format!("{}/block_{}.json", blocks_dir, block_num);
+        let (_, block_storage, txenvs) =
+            load_block_for_execution(&filepath, true).expect("load_block_for_execution failed");
+        nonce_tracker.record_from_prestate(block_num, &block_storage, &txenvs);
+        blocks_txs.push(txenvs);
+    }
+    let total_txs: usize = blocks_txs.iter().map(|b| b.len()).sum();
+    println!("loaded {} blocks, {} txs total", blocks_txs.len(), total_txs);
+
+    // Build per-block dependency graphs (NOT TIMED — this uses
+    // execute_revm_sequential_with_access_sets internally and is excluded
+    // from the integration cost on purpose).
+    println!("\n=== Untimed: per-block graph construction ===");
+    let prep_t = Instant::now();
+    let (_, reordered_blocks_txs, mut dependency_graphs) =
+        generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
+    let prep_s = prep_t.elapsed().as_secs_f64();
+    println!("graph construction (excluded from integration): {:.3}s for {} blocks",
+        prep_s, dependency_graphs.len());
+
+    // Apply hot_key_threshold to every per-block graph BEFORE the integrator
+    // simulates them (the simulate inside greedy picks up this field via
+    // analyze_key_access_spans → detect_hot_keys). Default is 1.5.
+    let hot_key_threshold: f64 = std::env::var("HOT_KEY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    for g in &mut dependency_graphs {
+        g.set_hot_key_threshold(hot_key_threshold);
+    }
+
+    // ── Timed: greedy integration ──────────────────────────────────────────
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    println!("\n=== Timed: greedy integration (tau_cv={}, hot_key_threshold={}) ===",
+        tau_cv, hot_key_threshold);
+    let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        tau_cv,
+        num_threads: parallel_concurrency().get(),
+    });
+    let integ_t = Instant::now();
+    let (mut integrated_txns, integrated_graphs) =
+        integrator.integrate_pevm_graphs(dependency_graphs, reordered_blocks_txs);
+    let integration_s = integ_t.elapsed().as_secs_f64();
+    let num_groups = integrated_graphs.len();
+    println!(
+        "integration: {:.4}s → {} groups from {} blocks",
+        integration_s, num_groups, num_blocks
+    );
+
+    // Nonce re-assignment (excluded from integration; this is a cheap
+    // post-processing step needed only because integration shuffles tx order).
+    for txs in integrated_txns.iter_mut() {
+        nonce_tracker.update_txenv_nonces(txs);
+    }
+
+    // ── Timed: integrated parallel execution ───────────────────────────────
+    println!("\n=== Timed: integrated parallel execution ===");
+    let exec_t = Instant::now();
+    let mut s = storage.clone();
+    let block_env = make_block_env();
+    for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+        s = execute_parallel_with_graph_and_update(
+            s, txs.clone(), graph.clone(), spec_id, block_env.clone(),
+        );
+    }
+    let execution_s = exec_t.elapsed().as_secs_f64();
+    println!("integrated execution: {:.4}s for {} groups ({} txs)",
+        execution_s, num_groups, total_txs);
+
+    // ── Comparison ────────────────────────────────────────────────────────
+    let ratio = execution_s / integration_s.max(1e-9);
+    println!("\n╔═══════════════════════════════════════════════════════════════╗");
+    println!("║  Integration vs Integrated-Execution (real blocks, smoke)     ║");
+    println!("╠═══════════════════════════════════════════════════════════════╣");
+    println!("║ Integration time          : {:>9.4} s                       ║", integration_s);
+    println!("║ Integrated execution time : {:>9.4} s                       ║", execution_s);
+    println!("║ Execution / Integration   : {:>9.2}x                        ║", ratio);
+    println!("║ Integration fraction      : {:>9.2}% of total              ║",
+        100.0 * integration_s / (integration_s + execution_s));
+    println!("╠═══════════════════════════════════════════════════════════════╣");
+    println!("║ (excluded from integration: {:.3}s graph construction)        ║", prep_s);
+    println!("╚═══════════════════════════════════════════════════════════════╝");
 }

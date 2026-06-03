@@ -339,7 +339,7 @@ fn test_throughput_comparison() {
 
     // Greedy integration in batches of GREEDY_BATCH blocks.
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
-        tau_cv: 0.1,
+        tau_cv: 0.5,
         num_threads: concurrency.get(),
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
@@ -627,23 +627,56 @@ fn test_per_tx_execution_time() {
 
 /// Execute every block's real Ethereum transactions sequentially (one tx at a
 /// time, with storage updates), record the wall-clock execution time of each
-/// transaction, and write the results to rw_time/.
+/// transaction over `ROUNDS` repetitions, drop top/bottom `TRIM` outliers per
+/// tx, average the rest, and write the results to RW_TIME_DIR.
 ///
-/// Uses real prestate + real TxEnvs from blocks/block_XXXXXXX.json so that
-/// execution times reflect actual EVM workloads, not TxSimulator loops.
-/// txHash is used to match real-tx timing back to the rw_gas entry.
+/// Loop ordering is **pure round-first**: round 0 visits every block, then
+/// round 1 visits every block, etc. So a single block's N timing samples are
+/// spread across the full duration of one round (~minutes), which makes
+/// transient system noise affect rounds much less than block-first ordering.
+/// We don't cache blocks — only the per-block per-tx timing samples (~60 MB
+/// total for 10k blocks × ~150 txs × 5 rounds). Each round re-reads the
+/// block JSON, which is the main cost.
 ///
-/// Output format mirrors rw_gas but with `executionTime` (ns) instead of `gasUsed`.
+/// Configurable via env vars:
+///   BLOCKS_DIR    (default /home/ubuntu/eth-block-data/blocks_rw)
+///   RW_GAS_DIR    (default /home/ubuntu/eth-block-data/rw_gas)
+///   RW_TIME_DIR   (default /home/ubuntu/eth-block-data/rw_time)
+///   ROUNDS        (default 5)   — number of timed sequential passes per block
+///   TRIM          (default 1)   — drop this many highest and lowest samples
+///                                 before averaging; ROUNDS - 2*TRIM >= 1
+///   MAX_FILES     (optional)    — limit number of rw_gas files (smoke tests)
+///   PROGRESS_EVERY (default 500) — print progress every N blocks within a round
+///
+/// Output format mirrors rw_gas but with `executionTime` (ns, trimmed mean
+/// across ROUNDS) and `from` (caller address) instead of `gasUsed`.
 #[test]
 fn test_generate_rw_time() {
+    use std::collections::{BTreeMap, HashSet};
     use std::fs;
     use std::path::Path;
+    use std::time::Instant;
     use pevm::execute_revm_sequential_timed;
     use pevm::storage::block_loader::{load_block_for_execution, get_spec_id};
 
-    let rw_gas_dir = Path::new(RW_GAS_DIR);
-    let blocks_dir = Path::new("/home/ubuntu/eth-block-downloader/test_data/blocks");
-    let rw_time_dir = Path::new("/home/ubuntu/eth-block-downloader/test_data/rw_time");
+    let rw_gas_dir_str = std::env::var("RW_GAS_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/rw_gas".to_string());
+    let blocks_dir_str = std::env::var("BLOCKS_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/blocks_rw".to_string());
+    let rw_time_dir_str = std::env::var("RW_TIME_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/rw_time".to_string());
+    let rounds: usize = std::env::var("ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let trim: usize = std::env::var("TRIM").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let progress_every: usize = std::env::var("PROGRESS_EVERY")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+    let skip_existing: bool = std::env::var("SKIP_EXISTING")
+        .ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    assert!(rounds >= 2 * trim + 1,
+        "ROUNDS ({rounds}) must be >= 2*TRIM ({}) + 1", 2 * trim);
+
+    let rw_gas_dir = Path::new(&rw_gas_dir_str);
+    let blocks_dir = Path::new(&blocks_dir_str);
+    let rw_time_dir = Path::new(&rw_time_dir_str);
     fs::create_dir_all(rw_time_dir).expect("failed to create rw_time dir");
 
     let mut rw_gas_files: Vec<_> = fs::read_dir(rw_gas_dir)
@@ -653,61 +686,214 @@ fn test_generate_rw_time() {
         .filter(|p| p.extension().map(|ext| ext == "json").unwrap_or(false))
         .collect();
     rw_gas_files.sort();
+    if let Some(n) = std::env::var("MAX_FILES").ok().and_then(|v| v.parse::<usize>().ok()) {
+        rw_gas_files.truncate(n);
+    }
+
+    println!(
+        "rw_gas={} blocks={} rw_time={} | rounds={} trim={} | {} files",
+        rw_gas_dir.display(), blocks_dir.display(), rw_time_dir.display(),
+        rounds, trim, rw_gas_files.len(),
+    );
 
     let chain = PevmEthereum::mainnet();
+    let overall = Instant::now();
+
+    // block_num -> [tx_idx][round_idx] timing samples
+    let mut samples: BTreeMap<u64, Vec<Vec<u64>>> = BTreeMap::new();
+    // Blocks that failed at any round: excluded from subsequent rounds and write phase.
+    let mut failed: HashSet<u64> = HashSet::new();
+    let mut skipped_no_block: HashSet<u64> = HashSet::new();
+
+    // ── Round-first loop ────────────────────────────────────────────────────
+    for round in 0..rounds {
+        let round_t = Instant::now();
+        let mut visited = 0usize;
+        for rw_gas_path in &rw_gas_files {
+            let stem = rw_gas_path.file_stem().unwrap().to_str().unwrap();
+            let block_num: u64 = match stem.trim_start_matches("rw_gas_").parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if failed.contains(&block_num) || skipped_no_block.contains(&block_num) {
+                continue;
+            }
+            if skip_existing
+                && rw_time_dir.join(format!("rw_time_{block_num}.json")).exists()
+            {
+                continue;
+            }
+            let block_path = blocks_dir.join(format!("block_{block_num}.json"));
+            if !block_path.exists() {
+                skipped_no_block.insert(block_num);
+                continue;
+            }
+            let (block_data, mut storage, txenvs) =
+                match load_block_for_execution(block_path.to_str().unwrap(), false) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("skip block {block_num}: load failed: {e}");
+                        failed.insert(block_num);
+                        continue;
+                    }
+                };
+            let spec_id = get_spec_id(block_num);
+            let block_env = pevm::storage::block_loader::create_block_env(&block_data);
+            let ntx = txenvs.len();
+
+            // Patch every sender's balance to u128::MAX so revm's worst-case
+            // pre-execution check (gas_limit * max_fee_per_gas) always passes.
+            // Single-block prestate is otherwise insufficient for ~0.5% of blocks.
+            for tx in &txenvs {
+                let acct = storage.accounts.entry(tx.caller).or_default();
+                acct.balance = revm::primitives::U256::from(u128::MAX);
+            }
+
+            // Initialize sample slot on first round; check consistency on later rounds.
+            let entry = samples.entry(block_num).or_insert_with(|| vec![Vec::with_capacity(rounds); ntx]);
+            if entry.len() != ntx {
+                eprintln!("skip block {block_num}: tx count changed across rounds ({} -> {ntx})", entry.len());
+                failed.insert(block_num);
+                continue;
+            }
+
+            match execute_revm_sequential_timed(
+                &chain, &storage, spec_id, block_env, txenvs,
+            ) {
+                Ok((_results, tx_times_ns)) => {
+                    if tx_times_ns.len() != ntx {
+                        eprintln!(
+                            "skip block {block_num}: round {round} returned {} timings, expected {ntx}",
+                            tx_times_ns.len()
+                        );
+                        failed.insert(block_num);
+                        continue;
+                    }
+                    for (i, &t) in tx_times_ns.iter().enumerate() {
+                        entry[i].push(t);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("skip block {block_num}: round {round} exec failed: {:?}", e);
+                    failed.insert(block_num);
+                }
+            }
+
+            visited += 1;
+            if visited % progress_every == 0 {
+                println!(
+                    "round {}/{}: {}/{} blocks, cumulative {:.1}s, failed={} no_block={}",
+                    round + 1, rounds, visited, rw_gas_files.len(),
+                    overall.elapsed().as_secs_f64(),
+                    failed.len(), skipped_no_block.len(),
+                );
+            }
+        }
+        println!(
+            "round {}/{} done in {:.1}s, cumulative {:.1}s, failed={} no_block={}",
+            round + 1, rounds, round_t.elapsed().as_secs_f64(),
+            overall.elapsed().as_secs_f64(),
+            failed.len(), skipped_no_block.len(),
+        );
+    }
+
+    // ── Aggregate + write phase ────────────────────────────────────────────
+    let write_t = Instant::now();
+    let mut processed = 0usize;
+    let mut write_failed = 0usize;
+    let mut count_mismatch = 0usize;
 
     for rw_gas_path in &rw_gas_files {
-        // rw_gas_16774645.json → block number 16774645
         let stem = rw_gas_path.file_stem().unwrap().to_str().unwrap();
-        let block_num: u64 = stem.trim_start_matches("rw_gas_").parse()
-            .unwrap_or_else(|_| panic!("cannot parse block number from {stem}"));
-
-        let block_path = blocks_dir.join(format!("block_{block_num}.json"));
-        if !block_path.exists() {
-            println!("skipping {block_num}: no block file at {}", block_path.display());
+        let block_num: u64 = match stem.trim_start_matches("rw_gas_").parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if failed.contains(&block_num) || skipped_no_block.contains(&block_num) {
+            continue;
+        }
+        if skip_existing
+            && rw_time_dir.join(format!("rw_time_{block_num}.json")).exists()
+        {
+            continue;
+        }
+        let Some(samples_per_tx) = samples.get(&block_num) else { continue; };
+        if samples_per_tx.iter().any(|s| s.len() != rounds) {
+            eprintln!("skip block {block_num}: incomplete sample count");
+            write_failed += 1;
             continue;
         }
 
-        // Load real block: prestate + TxEnvs
-        let (block_data, mut storage, txenvs) =
-            load_block_for_execution(block_path.to_str().unwrap(), false)
-                .unwrap_or_else(|e| panic!("failed to load block {block_num}: {e}"));
-        let spec_id = get_spec_id(block_num);
-        let block_env = pevm::storage::block_loader::create_block_env(&block_data);
+        // Re-load just to get caller addresses for the `from` field.
+        let block_path = blocks_dir.join(format!("block_{block_num}.json"));
+        let (_, _, txenvs) = match load_block_for_execution(block_path.to_str().unwrap(), false) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skip block {block_num}: write-phase load failed: {e}");
+                write_failed += 1;
+                continue;
+            }
+        };
 
-        // Execute all txns in one pass; tx_times_ns[i] covers only
-        // evm.transact() + evm.db_mut().commit(), excluding EVM init overhead.
-        let (results, tx_times_ns) = execute_revm_sequential_timed(
-            &chain, &storage, spec_id, block_env, txenvs.clone(),
-        ).unwrap_or_else(|e| panic!("block {block_num} failed: {e:?}"));
-        update_storage_with_results(&mut storage, results);
+        let content = match fs::read_to_string(rw_gas_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skip block {block_num}: rw_gas read failed: {e}");
+                write_failed += 1;
+                continue;
+            }
+        };
+        let rw_entries: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("skip block {block_num}: rw_gas parse failed: {e}");
+                write_failed += 1;
+                continue;
+            }
+        };
+        if rw_entries.len() != txenvs.len() {
+            eprintln!(
+                "skip block {block_num}: rw_gas count ({}) != txenv count ({})",
+                rw_entries.len(), txenvs.len()
+            );
+            count_mismatch += 1;
+            continue;
+        }
 
-        // Load rw_gas entries; they are in the same order as block transactions,
-        // so tx_times_ns[i] maps directly to rw_entries[i].
-        let content = fs::read_to_string(rw_gas_path).expect("read failed");
-        let rw_entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse failed");
+        // Trimmed mean per tx.
+        let mut trimmed_means: Vec<u64> = Vec::with_capacity(samples_per_tx.len());
+        for s_ref in samples_per_tx.iter() {
+            let mut s = s_ref.clone();
+            s.sort_unstable();
+            let kept = &s[trim..s.len() - trim];
+            trimmed_means.push(kept.iter().sum::<u64>() / kept.len() as u64);
+        }
 
-        assert_eq!(rw_entries.len(), tx_times_ns.len(),
-            "block {block_num}: rw_gas entry count ({}) != txenv count ({})",
-            rw_entries.len(), tx_times_ns.len());
-
-        let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(rw_entries.len());
-
-        for (entry, &execution_time_ns) in rw_entries.iter().zip(tx_times_ns.iter()) {
+        let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(txenvs.len());
+        for ((entry, &execution_time_ns), txenv) in
+            rw_entries.iter().zip(trimmed_means.iter()).zip(txenvs.iter())
+        {
             let mut out = entry.clone();
             let obj = out.as_object_mut().unwrap();
             obj.remove("gasUsed");
             obj.insert("executionTime".to_string(), serde_json::json!(execution_time_ns));
+            obj.insert("from".to_string(), serde_json::json!(format!("{:?}", txenv.caller)));
             out_entries.push(out);
         }
-
-        let out_stem = stem.replacen("rw_gas_", "rw_time_", 1);
-        let out_path = rw_time_dir.join(format!("{out_stem}.json"));
-        fs::write(&out_path, serde_json::to_string_pretty(&out_entries).unwrap())
-            .expect("write failed");
-
-        println!("wrote {} ({} txns)", out_path.display(), out_entries.len());
+        let out_path = rw_time_dir.join(format!("rw_time_{block_num}.json"));
+        if let Err(e) = fs::write(&out_path, serde_json::to_string_pretty(&out_entries).unwrap()) {
+            eprintln!("skip block {block_num}: write failed: {e}");
+            write_failed += 1;
+            continue;
+        }
+        processed += 1;
     }
+
+    println!(
+        "\n✓ generated {} rw_time files | write phase {:.1}s | total {:.1}s | skipped: {} failed_during_rounds, {} no_block, {} write_phase_failed, {} count_mismatch",
+        processed, write_t.elapsed().as_secs_f64(), overall.elapsed().as_secs_f64(),
+        failed.len(), skipped_no_block.len(), write_failed, count_mismatch,
+    );
 }
 
 #[test]
@@ -857,16 +1043,23 @@ fn test_throughput_comparison_v2() {
         .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
     let greedy_batch: usize = std::env::var("GREEDY_BATCH")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(50);
-    const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
+    let rw_time_dir = std::env::var("RW_TIME_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/rw_gas".to_string());
 
     let (state, bytecodes, _addr, blocks_txs) =
-        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, num_blocks)
-            .expect("failed to load rw_time blocks");
+        tx_simulator::load_n_rw_time_blocks_with_callers(&rw_time_dir, num_blocks)
+            .expect("failed to load rw_time blocks with callers");
 
     let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
     let chain = PevmEthereum::mainnet();
     let spec_id = SpecId::LATEST;
-    let concurrency = NonZeroUsize::new(8).unwrap();
+    let concurrency = NonZeroUsize::new(
+        std::env::var("NUM_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(8),
+    )
+    .expect("NUM_THREADS must be > 0");
     let total_txs: usize = blocks_txs.iter().map(|b| b.len()).sum();
 
     // ── Pre-computation (not timed) ──────────────────────────────────────────
@@ -889,8 +1082,13 @@ fn test_throughput_comparison_v2() {
         reordered_blocks.push(reordered);
     }
 
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| GreedyIntegratorConfig::default().tau_cv);
+    println!("V2 tau_cv = {}", tau_cv);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
         num_threads: concurrency.get(),
+        tau_cv,
         ..GreedyIntegratorConfig::default()
     });
     let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
@@ -904,9 +1102,18 @@ fn test_throughput_comparison_v2() {
         integrated_txns.extend(itxns);
         integrated_graphs.extend(igraphs);
     }
+    // Greedy integration reorders txs across block boundaries, so sequential
+    // per-block nonces are no longer valid.  Re-assign nonces in merged-block
+    // order so same-sender dependencies are preserved correctly.
+    {
+        let mut greedy_nonce_tracker = pevm::utils::nonce_tracker::NonceTracker::new();
+        for txs in &mut integrated_txns {
+            greedy_nonce_tracker.update_txenv_nonces(txs);
+        }
+    }
 
     println!(
-        "\n=== Throughput comparison V2 (rw_time): {num_blocks} blocks, {total_txs} txns, {} threads ===",
+        "\n=== Throughput comparison V2 (rw_time, caller-aware): {num_blocks} blocks, {total_txs} txns, {} threads ===",
         concurrency
     );
     println!("{:<38} {:>10} {:>12} {:>10}", "Mode", "Time (ms)", "Txns/s", "Speedup");
@@ -982,6 +1189,61 @@ fn test_throughput_comparison_v2() {
 
     println!("{}", "-".repeat(73));
     println!("(greedy: {} groups from {num_blocks} blocks)", integrated_txns.len());
+}
+
+/// Compare incarnation-0 access sets vs sequential for synthetic (rw_time) workload.
+#[test]
+fn test_synthetic_incarnation0_divergence() {
+    let num_blocks: usize = std::env::var("NUM_BLOCKS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    const RW_TIME_DIR: &str = "/home/ubuntu/eth-block-downloader/test_data/rw_time";
+
+    let (state, bytecodes, _addr, blocks_txs) =
+        tx_simulator::load_n_rw_time_blocks(RW_TIME_DIR, num_blocks).expect("load failed");
+
+    let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let concurrency = NonZeroUsize::new(8).unwrap();
+
+    let (mut total_txs, mut read_div, mut write_div, mut either_div) = (0usize, 0usize, 0usize, 0usize);
+    let mut storage = base_storage.clone();
+
+    for (blk_i, txs) in blocks_txs.iter().enumerate() {
+        let n = txs.len();
+
+        let (seq_results, seq_access) = pevm::execute_revm_sequential_with_access_sets(
+            &chain, &storage, spec_id, BlockEnv::default(), txs.clone(),
+        ).unwrap();
+
+        let mut pevm_inst = pevm::Pevm::default();
+        let par_results = pevm_inst.execute_revm_parallel(
+            &chain, &storage, spec_id, BlockEnv::default(), txs.clone(), concurrency,
+        ).unwrap();
+
+        // Use sequential results to advance storage
+        pevm::api::update_storage_with_results(&mut storage, seq_results);
+
+        let inc0 = &pevm_inst.last_incarnation0_keys;
+        let (mut rd, mut wd, mut ei) = (0, 0, 0);
+        for (seq_a, par_opt) in seq_access.iter().zip(inc0.iter()) {
+            let Some((par_read, par_write)) = par_opt else { continue };
+            let r = seq_a.read_set != *par_read;
+            let w = seq_a.write_set != *par_write;
+            if r { rd += 1; }
+            if w { wd += 1; }
+            if r || w { ei += 1; }
+        }
+        println!("Block {:3}: {} txs  read_div={}/{} ({:.0}%)  write_div={}/{} ({:.0}%)  either={}/{} ({:.0}%)",
+            blk_i, n, rd, n, rd as f64/n as f64*100.0, wd, n, wd as f64/n as f64*100.0, ei, n, ei as f64/n as f64*100.0);
+        total_txs += n; read_div += rd; write_div += wd; either_div += ei;
+        let _ = par_results;
+    }
+
+    println!("\n=== Synthetic Incarnation-0 Divergence ({} blocks, {} txs) ===", num_blocks, total_txs);
+    println!("  Read set diverged:  {}/{} = {:.1}%", read_div, total_txs, read_div as f64/total_txs as f64*100.0);
+    println!("  Write set diverged: {}/{} = {:.1}%", write_div, total_txs, write_div as f64/total_txs as f64*100.0);
+    println!("  Either diverged:    {}/{} = {:.1}%", either_div, total_txs, either_div as f64/total_txs as f64*100.0);
 }
 
 #[test]
@@ -1180,4 +1442,206 @@ fn test_access_sets_read_write_distinction() {
 
     println!("✓ write_set ⊆ read_set");
     println!("✓ WW conflict on k2 detected in write_sets");
+}
+
+// ============================================================================
+// V2 batched benchmark: parallel to bench_test::test_eth_block_data_all_batches
+// but using TxSimulatorV2 with caller-aware rw_time loading. Writes one CSV row
+// per 100-block batch with timings and throughputs for each of 4 strategies.
+// ============================================================================
+
+#[test]
+fn test_v2_all_batches() {
+    use std::io::Write;
+    use std::time::Instant;
+    use pevm::api::update_storage_with_results;
+    use pevm::graph_pevm::GraphPevm;
+    use pevm::greedy_integrator::{GreedyIntegrator, GreedyIntegratorConfig};
+
+    let rw_time_dir = std::env::var("RW_TIME_DIR")
+        .unwrap_or_else(|_| "/home/ubuntu/eth-block-data/rw_time".to_string());
+    let output_path = std::env::var("OUTPUT").unwrap_or_else(|_| {
+        "/home/ubuntu/congestion_control/pevm/experiments/v2_batches.csv".to_string()
+    });
+    let batch_size: usize = std::env::var("BATCH_SIZE")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+    let max_batches: Option<usize> =
+        std::env::var("MAX_BATCHES").ok().and_then(|v| v.parse().ok());
+    let greedy_batch: usize = std::env::var("GREEDY_BATCH")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(50);
+    let concurrency = NonZeroUsize::new(
+        std::env::var("NUM_THREADS")
+            .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16),
+    ).expect("NUM_THREADS must be > 0");
+
+    // Discover all rw_time files.
+    let mut all_files: Vec<_> = std::fs::read_dir(&rw_time_dir)
+        .expect("rw_time_dir not readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+        .collect();
+    all_files.sort();
+    assert!(!all_files.is_empty(), "no rw_time_*.json in {}", rw_time_dir);
+
+    let total_files = all_files.len();
+    let total_batches = (total_files + batch_size - 1) / batch_size;
+    println!(
+        "rw_time_dir={} | files={} batch_size={} batches={} concurrency={} greedy_batch={}",
+        rw_time_dir, total_files, batch_size, total_batches,
+        concurrency.get(), greedy_batch,
+    );
+    println!("Writing CSV → {}", output_path);
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(&output_path).expect("cannot create output"),
+    );
+    writeln!(writer,
+        "batch_idx,start_block,end_block,num_blocks,num_txs,\
+         seq_time_s,seq_tput,par_time_s,par_tput,\
+         graph_time_s,graph_tput,integrated_time_s,integrated_tput,\
+         num_integrated_groups").unwrap();
+    writer.flush().unwrap();
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let overall = Instant::now();
+
+    // Helper to extract block number from rw_time_<N>.json or rw_gas_<N>.json.
+    let block_num_of = |p: &std::path::Path| -> u64 {
+        let stem = p.file_stem().unwrap().to_str().unwrap();
+        stem.trim_start_matches("rw_time_")
+            .trim_start_matches("rw_gas_")
+            .parse::<u64>().unwrap()
+    };
+
+    for (batch_idx, chunk) in all_files.chunks(batch_size).enumerate() {
+        if let Some(lim) = max_batches { if batch_idx >= lim { break; } }
+        let start_block = block_num_of(&chunk[0]);
+        let end_block = block_num_of(&chunk[chunk.len() - 1]);
+        let bt = Instant::now();
+        println!("\n=== Batch {}/{}: blocks {}..={} ({} files) ===",
+            batch_idx + 1, total_batches, start_block, end_block, chunk.len());
+
+        // Use START_INDEX env var so the loader picks exactly this slice.
+        let start_idx_str = (batch_idx * batch_size).to_string();
+        std::env::set_var("START_INDEX", &start_idx_str);
+
+        let (state, bytecodes, _addr, blocks_txs) =
+            match tx_simulator::load_n_rw_time_blocks_with_callers(&rw_time_dir, chunk.len()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("  batch {} load failed: {e}", batch_idx);
+                    writeln!(writer, "{},{},{},{},,,,,,,,,,",
+                        batch_idx, start_block, end_block, chunk.len()).unwrap();
+                    writer.flush().unwrap();
+                    continue;
+                }
+            };
+        let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
+        let total_txs: usize = blocks_txs.iter().map(|b| b.len()).sum();
+
+        // ── Pre-compute dependency graphs (untimed; same as test_throughput_comparison_v2) ──
+        let mut prep_storage = base_storage.clone();
+        let mut dep_graphs = Vec::with_capacity(blocks_txs.len());
+        let mut reordered_blocks = Vec::with_capacity(blocks_txs.len());
+        for (i, txs) in blocks_txs.iter().enumerate() {
+            let (mut graph, results) = GraphPevm::construct_graph_pevm_by_sequential(
+                &chain, &prep_storage, spec_id, BlockEnv::default(), txs.clone(), i as u64,
+            ).unwrap_or_else(|e| panic!("batch {batch_idx} block {i} graph build failed: {e:?}"));
+            update_storage_with_results(&mut prep_storage, results);
+            let (reordered, new_graph) =
+                GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut graph, concurrency.get());
+            dep_graphs.push(new_graph);
+            reordered_blocks.push(reordered);
+        }
+        let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+            num_threads: concurrency.get(),
+            ..GreedyIntegratorConfig::default()
+        });
+        let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
+        let mut integrated_graphs = Vec::new();
+        for chunk_start in (0..blocks_txs.len()).step_by(greedy_batch) {
+            let chunk_end = (chunk_start + greedy_batch).min(blocks_txs.len());
+            let (itxns, igraphs) = integrator.integrate_pevm_graphs(
+                dep_graphs[chunk_start..chunk_end].to_vec(),
+                reordered_blocks[chunk_start..chunk_end].to_vec(),
+            );
+            integrated_txns.extend(itxns);
+            integrated_graphs.extend(igraphs);
+        }
+        let num_integrated_groups = integrated_txns.len();
+        // Greedy reorders across block boundaries → re-assign nonces.
+        let mut greedy_nonce_tracker = pevm::utils::nonce_tracker::NonceTracker::new();
+        for txs in &mut integrated_txns {
+            greedy_nonce_tracker.update_txenv_nonces(txs);
+        }
+
+        // ── 1. Sequential ───────────────────────────────────────────────────
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for txs in &blocks_txs {
+            let r = execute_revm_sequential(&chain, &s, spec_id, BlockEnv::default(), txs.clone()).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let seq_time_s = t.elapsed().as_secs_f64();
+        let seq_tput = total_txs as f64 / seq_time_s;
+
+        // ── 2. Pevm parallel (Block-STM) ────────────────────────────────────
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for txs in &blocks_txs {
+            let r = Pevm::default().execute_revm_parallel(
+                &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency,
+            ).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let par_time_s = t.elapsed().as_secs_f64();
+        let par_tput = total_txs as f64 / par_time_s;
+
+        // ── 3. GraphPevm parallel ───────────────────────────────────────────
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for (txs, graph) in reordered_blocks.iter().zip(dep_graphs.iter()) {
+            let r = GraphPevm::default().execute_revm_parallel(
+                &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone(),
+            ).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let graph_time_s = t.elapsed().as_secs_f64();
+        let graph_tput = total_txs as f64 / graph_time_s;
+
+        // ── 4. Greedy + GraphPevm ───────────────────────────────────────────
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+            let r = GraphPevm::default().execute_revm_parallel(
+                &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone(),
+            ).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let integrated_time_s = t.elapsed().as_secs_f64();
+        let integrated_tput = total_txs as f64 / integrated_time_s;
+
+        println!(
+            "  done in {:.2}s | txs={} | seq={:.0}t/s par={:.0} graph={:.0} integ={:.0} groups={} | cumulative {:.1}s",
+            bt.elapsed().as_secs_f64(), total_txs,
+            seq_tput, par_tput, graph_tput, integrated_tput,
+            num_integrated_groups,
+            overall.elapsed().as_secs_f64(),
+        );
+        writeln!(writer,
+            "{},{},{},{},{},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{}",
+            batch_idx, start_block, end_block, chunk.len(), total_txs,
+            seq_time_s, seq_tput, par_time_s, par_tput,
+            graph_time_s, graph_tput, integrated_time_s, integrated_tput,
+            num_integrated_groups,
+        ).unwrap();
+        writer.flush().unwrap();
+    }
+    // Unset for cleanliness.
+    std::env::remove_var("START_INDEX");
+
+    println!("\n✓ done in {:.1}s | CSV → {}",
+        overall.elapsed().as_secs_f64(), output_path);
 }

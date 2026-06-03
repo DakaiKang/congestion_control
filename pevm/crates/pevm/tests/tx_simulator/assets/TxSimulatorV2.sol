@@ -24,6 +24,12 @@ contract TxSimulatorV2 {
     /// @param reads   hashed storage keys this tx reads
     /// @param writes  hashed storage keys this tx writes
     /// @param target  number of storage accesses to perform
+    ///
+    /// Writes are increments (state[k] += 1), not constant stores.  This
+    /// makes the written value depend on the prior state observed during
+    /// optimistic execution, so re-executions under Block-STM can produce
+    /// different write values and trigger downstream validation aborts,
+    /// matching the cascading behaviour of real Ethereum transactions.
     function execute(
         bytes32[] calldata reads,
         bytes32[] calldata writes,
@@ -37,7 +43,7 @@ contract TxSimulatorV2 {
                 count++;
             }
             for (uint256 i = 0; i < writes.length && count < target; i++) {
-                state[writes[i]] = 1;
+                state[writes[i]] += 1;
                 count++;
             }
         }

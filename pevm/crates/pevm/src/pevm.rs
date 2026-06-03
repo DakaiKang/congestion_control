@@ -112,6 +112,8 @@ pub struct Pevm {
     execution_results: Vec<Mutex<Option<PevmTxExecutionResult>>>,
     abort_reason: OnceLock<AbortReason>,
     dropper: AsyncDropper<(MvMemory, Scheduler, Vec<TxEnv>)>,
+    /// Incarnation-0 access set keys from last parallel execution, for divergence analysis
+    pub last_incarnation0_keys: Vec<Option<(std::collections::HashSet<u64>, std::collections::HashSet<u64>)>>,
 }
 
 impl Pevm {
@@ -207,7 +209,7 @@ impl Pevm {
                     while task.is_some() {
                         task = match task.unwrap() {
                             Task::Execution(tx_version) => {
-                                self.try_execute(&vm, &scheduler, tx_version)
+                                self.try_execute(&vm, &scheduler, &mv_memory, tx_version)
                             }
                             Task::Validation(tx_version) => {
                                 try_validate(&mv_memory, &scheduler, &tx_version)
@@ -377,6 +379,33 @@ impl Pevm {
             }
         }
 
+        let re_execs = scheduler.total_reexecutions();
+        #[cfg(feature = "diagnostics")]
+        {
+            self.last_incarnation0_keys = mv_memory.get_incarnation0_keys();
+            let blocking = scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_est = mv_memory.blocking_estimate.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_nonce = mv_memory.blocking_nonce.load(std::sync::atomic::Ordering::Relaxed);
+            let blk_retry = mv_memory.blocking_retry.load(std::sync::atomic::Ordering::Relaxed);
+            let wnl = mv_memory.wrote_new_location.load(std::sync::atomic::Ordering::Relaxed);
+            let total_aborts = mv_memory.total_aborts.load(std::sync::atomic::Ordering::Relaxed);
+            let cascade = mv_memory.cascade_aborts.load(std::sync::atomic::Ordering::Relaxed);
+            let read_chg = mv_memory.reexec_read_changed.load(std::sync::atomic::Ordering::Relaxed);
+            let write_chg = mv_memory.reexec_write_changed.load(std::sync::atomic::Ordering::Relaxed);
+            let either_chg = mv_memory.reexec_total.load(std::sync::atomic::Ordering::Relaxed);
+            println!(
+                "[Pevm] block_size={} re_exec={} | A)blocking={} [est={} nonce={}] B)validation={} C)retry={} | wnl={} cascade={}/{} ({:.0}%) | access_set_changed: read={}/{} write={}/{}",
+                block_size, re_execs,
+                blocking, blk_est, blk_nonce,
+                total_aborts,
+                blk_retry,
+                wnl,
+                cascade, total_aborts, if total_aborts > 0 { cascade as f64 / total_aborts as f64 * 100.0 } else { 0.0 },
+                read_chg, either_chg,
+                write_chg, either_chg,
+            );
+        }
+
         self.dropper.drop((mv_memory, scheduler, txs));
 
         Ok(fully_evaluated_results)
@@ -386,6 +415,7 @@ impl Pevm {
         &self,
         vm: &Vm<'_, S, C>,
         scheduler: &Scheduler,
+        mv_memory: &MvMemory,
         tx_version: TxVersion,
     ) -> Option<Task> {
         loop {
@@ -402,15 +432,27 @@ impl Pevm {
                         .get_or_init(|| AbortReason::FallbackToSequential);
                     None
                 }
-                Err(VmExecutionError::Blocking(blocking_tx_idx)) => {
-                    if !scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx)
-                        && self.abort_reason.get().is_none()
-                    {
+                Err(VmExecutionError::Blocking(blocking_tx_idx, cause)) => {
+                    if scheduler.add_dependency(tx_version.tx_idx, blocking_tx_idx) {
+                        // Successfully blocked: increment cause-specific counter now that
+                        // we know this will result in an actual re-execution (incarnation++).
+                        #[cfg(feature = "diagnostics")]
+                        match cause {
+                            crate::vm::BlockingCause::Estimate =>
+                                mv_memory.blocking_estimate.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                            crate::vm::BlockingCause::Nonce =>
+                                mv_memory.blocking_nonce.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        };
+                        None
+                    } else if self.abort_reason.get().is_none() {
                         // Retry the execution immediately if the blocking transaction was
                         // re-executed by the time we can add it as a dependency.
+                        #[cfg(feature = "diagnostics")]
+                        mv_memory.blocking_retry.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         continue;
+                    } else {
+                        None
                     }
-                    None
                 }
                 Err(VmExecutionError::ExecutionError(err)) => {
                     scheduler.abort();
@@ -577,9 +619,7 @@ impl<DB: Database> Database for TrackingDB<DB> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if !self.should_skip(&address) {
-            self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
-        }
+        // MemoryLocation::Basic excluded: only storage slots are compared for divergence analysis
         self.inner.basic(address)
     }
 
@@ -657,7 +697,7 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
             .transact()
             .map_err(|err| ExecutionError::Custom(err.to_string()))?;
 
-        // Collect read set from TrackingDB (all basic/storage calls made by the EVM).
+        // Collect storage-only read set from TrackingDB (Basic excluded for divergence analysis).
         let db = evm.db_mut();
         let read_set = std::mem::take(&mut db.reads);
 

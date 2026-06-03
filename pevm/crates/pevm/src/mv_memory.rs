@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    sync::Mutex,
+    sync::{atomic::{AtomicUsize, Ordering}, Mutex},
 };
 
 use alloy_primitives::{Address, B256};
@@ -28,10 +28,6 @@ type LazyAddresses = HashSet<Address, BuildSuffixHasher>;
 #[derive(Debug)]
 pub struct MvMemory {
     /// The list of transaction incarnations and written values for each memory location
-    // No more hashing is required as we already identify memory locations by their hash
-    // in the read & write sets. [dashmap] having a dedicated interface for this use case
-    // (that skips hashing for [u64] keys) would make our code cleaner and "faster".
-    // Nevertheless, the compiler should be good enough to optimize these cases anyway.
     pub(crate) data: DashMap<MemoryLocationHash, BTreeMap<TxIdx, MemoryEntry>, BuildIdentityHasher>,
     /// Last read & written locations of each transaction
     last_locations: Vec<Mutex<LastLocations>>,
@@ -39,6 +35,28 @@ pub struct MvMemory {
     lazy_addresses: Mutex<LazyAddresses>,
     /// New bytecodes deployed in this block
     pub(crate) new_bytecodes: DashMap<B256, Bytecode, BuildSuffixHasher>,
+
+    // ── Diagnostics (only compiled with feature = "diagnostics") ────────────
+    #[cfg(feature = "diagnostics")]
+    pub(crate) reexec_total: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) reexec_read_changed: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) reexec_write_changed: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) cascade_aborts: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) total_aborts: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) blocking_estimate: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) blocking_nonce: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) blocking_retry: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) wrote_new_location: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) incarnation0_keys: Vec<Mutex<Option<(HashSet<MemoryLocationHash>, HashSet<MemoryLocationHash>)>>>,
 }
 
 impl MvMemory {
@@ -47,13 +65,7 @@ impl MvMemory {
         estimated_locations: impl IntoIterator<Item = (MemoryLocationHash, Vec<TxIdx>)>,
         lazy_addresses: impl IntoIterator<Item = Address>,
     ) -> Self {
-        // TODO: Fine-tune the number of shards, like to the next number of two from the
-        // number of worker threads.
         let data = DashMap::default();
-        // We preallocate estimated locations to avoid restructuring trees at runtime
-        // while holding a write lock. Ideally [dashmap] would have a lock-free
-        // construction API. This is acceptable for now as it's a non-congested one-time
-        // cost.
         for (location_hash, estimated_tx_idxs) in estimated_locations {
             data.insert(
                 location_hash,
@@ -67,9 +79,27 @@ impl MvMemory {
             data,
             last_locations: (0..block_size).map(|_| Mutex::default()).collect(),
             lazy_addresses: Mutex::new(LazyAddresses::from_iter(lazy_addresses)),
-            // TODO: Fine-tune the number of shards, like to the next number of two from the
-            // number of worker threads.
             new_bytecodes: DashMap::default(),
+            #[cfg(feature = "diagnostics")]
+            reexec_total: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            reexec_read_changed: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            reexec_write_changed: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            cascade_aborts: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            total_aborts: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            blocking_estimate: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            blocking_nonce: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            blocking_retry: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            wrote_new_location: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            incarnation0_keys: (0..block_size).map(|_| Mutex::new(None)).collect(),
         }
     }
 
@@ -80,21 +110,47 @@ impl MvMemory {
         }
     }
 
-    // Apply a new pair of read & write sets to the multi-version data structure.
-    // Return whether a write occurred to a memory location not written to by
-    // the previous incarnation of the same transaction. This determines whether
-    // the executed higher transactions need re-validation.
     pub(crate) fn record(
         &self,
         tx_version: &TxVersion,
         read_set: ReadSet,
+        storage_read_keys: HashSet<MemoryLocationHash>,
         write_set: WriteSet,
     ) -> bool {
         let mut last_locations = index_mutex!(self.last_locations, tx_version.tx_idx);
+
+        #[cfg(feature = "diagnostics")]
+        {
+            // Save incarnation-0 storage-only read keys + write keys for divergence analysis
+            if tx_version.tx_incarnation == 0 {
+                let w: HashSet<MemoryLocationHash> = write_set.iter().map(|(l, _)| *l).collect();
+                *index_mutex!(self.incarnation0_keys, tx_version.tx_idx) = Some((storage_read_keys, w));
+            }
+
+            // Track access-set changes across re-executions
+            if tx_version.tx_incarnation > 0 {
+                self.reexec_total.fetch_add(1, Ordering::Relaxed);
+                let prev_read: HashSet<MemoryLocationHash> =
+                    last_locations.read.keys().copied().collect();
+                let new_read: HashSet<MemoryLocationHash> = read_set.keys().copied().collect();
+                if prev_read != new_read {
+                    self.reexec_read_changed.fetch_add(1, Ordering::Relaxed);
+                }
+                let prev_write: HashSet<MemoryLocationHash> =
+                    last_locations.write.iter().copied().collect();
+                let new_write: HashSet<MemoryLocationHash> =
+                    write_set.iter().map(|(l, _)| *l).collect();
+                if prev_write != new_write {
+                    self.reexec_write_changed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        // suppress unused warning when diagnostics is off
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = storage_read_keys;
+
         last_locations.read = read_set;
 
-        // TODO: Group updates by shard to avoid locking operations.
-        // Remove old locations that aren't written to anymore.
         let mut last_location_idx = 0;
         while last_location_idx < last_locations.write.len() {
             let prev_location = unsafe { last_locations.write.get_unchecked(last_location_idx) };
@@ -108,9 +164,7 @@ impl MvMemory {
             }
         }
 
-        // Register new writes.
         let mut wrote_new_location = false;
-
         for (location, value) in write_set {
             self.data.entry(location).or_default().insert(
                 tx_version.tx_idx,
@@ -122,65 +176,54 @@ impl MvMemory {
             }
         }
 
+        #[cfg(feature = "diagnostics")]
+        if wrote_new_location && tx_version.tx_incarnation > 0 {
+            self.wrote_new_location.fetch_add(1, Ordering::Relaxed);
+        }
+
         wrote_new_location
     }
 
-    // Obtain the last read set recorded by an execution of [tx_idx] and check
-    // that re-reading each memory location in the read set still yields the
-    // same read origins.
-    // This is invoked during validation, when the incarnation being validated is
-    // already executed and has recorded the read set. However, if the thread
-    // performing a validation for incarnation i of a transaction is slow, it is
-    // possible that this function invocation observes a read set recorded by a
-    // latter (> i) incarnation. In this case, incarnation i is guaranteed to be
-    // already aborted (else higher incarnations would never start), and the
-    // validation task will have no effect regardless of the outcome (only
-    // validations that successfully abort affect the state and each incarnation
-    // can be aborted at most once).
     pub(crate) fn validate_read_locations(&self, tx_idx: TxIdx) -> bool {
         for (location, prior_origins) in &index_mutex!(self.last_locations, tx_idx).read {
             if let Some(written_transactions) = self.data.get(location) {
                 let mut iter = written_transactions.range(..tx_idx);
                 for prior_origin in prior_origins {
                     if let ReadOrigin::MvMemory(prior_version) = prior_origin {
-                        // Found something: Must match version.
                         if let Some((closest_idx, MemoryEntry::Data(tx_incarnation, ..))) =
                             iter.next_back()
                         {
                             if closest_idx != &prior_version.tx_idx
                                 || &prior_version.tx_incarnation != tx_incarnation
                             {
-                                // println!("Mismatched MV read at location {:?} for tx_idx {}: expected version {:?}, found version idx {} incarnation {}", location, tx_idx, prior_version, closest_idx, tx_incarnation);
+                                #[cfg(feature = "diagnostics")]
+                                self.total_aborts.fetch_add(1, Ordering::Relaxed);
                                 return false;
                             }
-                        }
-                        // The previously read value is now cleared
-                        // or marked with ESTIMATE.
-                        else {
-                            // println!("Cleared MV read at location {:?} for tx_idx {}: expected version {:?}", location, tx_idx, prior_version);
+                        } else {
+                            #[cfg(feature = "diagnostics")]
+                            self.total_aborts.fetch_add(1, Ordering::Relaxed);
                             return false;
                         }
-                    }
-                    // Read from storage but there is now something
-                    // in between!
-                    else if iter.next_back().is_some() {
-                        // println!("Unexpected MV write at location {:?} for tx_idx {}: expected storage read, found MV write", location, tx_idx);
+                    } else if iter.next_back().is_some() {
+                        #[cfg(feature = "diagnostics")]
+                        {
+                            self.cascade_aborts.fetch_add(1, Ordering::Relaxed);
+                            self.total_aborts.fetch_add(1, Ordering::Relaxed);
+                        }
                         return false;
                     }
                 }
-            }
-            // Read from multi-version data but now it's cleared.
-            else if prior_origins.len() != 1 || prior_origins.last() != Some(&ReadOrigin::Storage)
+            } else if prior_origins.len() != 1 || prior_origins.last() != Some(&ReadOrigin::Storage)
             {
+                #[cfg(feature = "diagnostics")]
+                self.total_aborts.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
         }
         true
     }
 
-    // Replace the write set of the aborted version in the shared memory data
-    // structure with special ESTIMATE markers to quickly abort higher transactions
-    // that read them.
     pub(crate) fn convert_writes_to_estimates(&self, tx_idx: TxIdx) {
         for location in &index_mutex!(self.last_locations, tx_idx).write {
             if let Some(mut written_transactions) = self.data.get_mut(location) {
@@ -191,5 +234,16 @@ impl MvMemory {
 
     pub(crate) fn consume_lazy_addresses(&self) -> impl IntoIterator<Item = Address> {
         std::mem::take(&mut *self.lazy_addresses.lock().unwrap()).into_iter()
+    }
+
+    /// Return incarnation-0 (first parallel execution) access set keys per tx.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn get_incarnation0_keys(
+        &self,
+    ) -> Vec<Option<(HashSet<MemoryLocationHash>, HashSet<MemoryLocationHash>)>> {
+        self.incarnation0_keys
+            .iter()
+            .map(|m| m.lock().unwrap().clone())
+            .collect()
     }
 }
