@@ -1473,6 +1473,11 @@ fn test_v2_all_batches() {
         std::env::var("NUM_THREADS")
             .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(16),
     ).expect("NUM_THREADS must be > 0");
+    // Honor TAU_CV / HOT_KEY_THRESHOLD so the v2 sweep matches the real sweep.
+    let tau_cv: f64 = std::env::var("TAU_CV")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
+    let hot_key_threshold: f64 = std::env::var("HOT_KEY_THRESHOLD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
 
     // Discover all rw_time files.
     let mut all_files: Vec<_> = std::fs::read_dir(&rw_time_dir)
@@ -1555,9 +1560,14 @@ fn test_v2_all_batches() {
             dep_graphs.push(new_graph);
             reordered_blocks.push(reordered);
         }
+        // Apply hot_key_threshold before greedy simulates each graph (mirrors
+        // the real all-batches test); default 1.5 = TransactionGraph::new default.
+        for g in &mut dep_graphs {
+            g.set_hot_key_threshold(hot_key_threshold);
+        }
         let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
             num_threads: concurrency.get(),
-            ..GreedyIntegratorConfig::default()
+            tau_cv,
         });
         let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
         let mut integrated_graphs = Vec::new();
