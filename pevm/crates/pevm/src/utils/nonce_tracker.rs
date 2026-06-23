@@ -82,9 +82,21 @@ impl NonceTracker {
         for tx in txenvs.iter_mut() {
             let current_nonce = self.get_nonce(&tx.caller);
             tx.nonce = Some(current_nonce);
-            
+
             // Increase nonce for next transaction from this sender
             self.increase_nonce(&tx.caller);
+
+            // EIP-7702: each authorization in a set-code tx bumps its recovered
+            // authority's nonce by 1 during execution. After reordering, a later
+            // tx from that authority must observe the bump, otherwise its
+            // reassigned nonce is too low ("nonce too high" at validation).
+            if let Some(auth_list) = &tx.authorization_list {
+                for auth in auth_list.recovered_iter() {
+                    if let Some(authority) = auth.authority() {
+                        self.increase_nonce(&authority);
+                    }
+                }
+            }
         }
     }
     

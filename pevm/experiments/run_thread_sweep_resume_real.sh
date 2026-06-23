@@ -18,6 +18,9 @@ export BLOCKS_DIR=$DATA/blocks_rw
 export TAU_CV=0.5
 export HOT_KEY_THRESHOLD=1.5
 export START_BATCH=150
+# Batch 159 (blocks 22607358..22607457) hangs: a tx loops to its ~36M gas
+# limit and is re-run across all 4 strategies. Skip it.
+export SKIP_BATCHES=159
 
 overall=$(date +%s)
 for t in "${THREADS[@]}"; do

@@ -692,7 +692,11 @@ fn generate_dependency_graphs(
 
 fn make_block_env() -> BlockEnv {
     let mut block_env = BlockEnv::default();
-    block_env.gas_limit = U256::from(30_000_000u64);
+    // Real mainnet block gas limit: 30M pre-Pectra, raised to 36M after. Any
+    // real tx's gas limit is <= its block's, so 36M accepts every tx in this
+    // dataset while bounding a runaway/diverging tx at 36M (1G let such a tx
+    // spin far too long).
+    block_env.gas_limit = U256::from(36_000_000u64);
     block_env.basefee = U256::ZERO;
     block_env
 }
@@ -1929,6 +1933,13 @@ fn test_eth_block_data_all_batches() {
     // append to an existing CSV (no header rewrite) instead of truncating it.
     let start_batch: usize =
         std::env::var("START_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    // Batch indices to skip outright (comma-separated). Use for batches that
+    // hang/spin (a tx loops to its gas limit) rather than erroring, which the
+    // run_one_batch error-skip cannot catch.
+    let skip_batches: std::collections::HashSet<usize> = std::env::var("SKIP_BATCHES")
+        .ok()
+        .map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+        .unwrap_or_default();
 
     // Discover all block numbers in the data dir
     let mut all_blocks: Vec<u64> = std::fs::read_dir(&blocks_dir)
@@ -1990,6 +2001,12 @@ fn test_eth_block_data_all_batches() {
             if i >= lim {
                 break;
             }
+        }
+        if skip_batches.contains(&i) {
+            println!("\n=== Batch {}/{}  SKIPPED (SKIP_BATCHES) ===", i + 1, total_batches);
+            writeln!(writer, "{},{},{},{},,,,,,,,,,", i, chunk[0], chunk[chunk.len() - 1], chunk.len()).unwrap();
+            writer.flush().unwrap();
+            continue;
         }
         let t = Instant::now();
         println!(
