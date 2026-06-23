@@ -16,6 +16,7 @@ use anyhow::Result;
 
 // Adjust these imports based on your actual project
 use revm::primitives::{Address, TxEnv, U256, B256, Bytes, AccountInfo, Bytecode, BlockEnv, SpecId, BlobExcessGasAndPrice};
+use revm::primitives::{Authorization, AuthorizationList, SignedAuthorization};
 use alloy_consensus::TxEnvelope;
 use alloy_consensus::Eip658Value::Eip658;
 use crate::{Bytecodes, ChainState, EvmAccount, InMemoryStorage, chain::PevmEthereum, EvmCode, BlockHashes, BuildSuffixHasher, Pevm};
@@ -398,6 +399,39 @@ fn parse_transaction(tx: &Value) -> Result<TxEnv> {
             .map(|s| parse_hex_u256(s));
     }
 
+    // EIP-7702 set-code transaction (type 0x04) - PRAGUE. Each authorization
+    // bumps its (recovered) authority's nonce by 1 during execution, so the
+    // list must be carried or later txs from those authorities see a stale
+    // nonce ("nonce too high").
+    if tx_type == 0x04 {
+        if let Some(auths) = tx.get("authorizationList").and_then(|v| v.as_array()) {
+            let signed: Vec<SignedAuthorization> = auths
+                .iter()
+                .map(|a| {
+                    let inner = Authorization {
+                        chain_id: a.get("chainId").and_then(|v| v.as_str())
+                            .map(parse_hex_u256).unwrap_or(U256::ZERO),
+                        address: parse_hex_address(
+                            a.get("address").and_then(|v| v.as_str()).unwrap_or("0x0"),
+                        ),
+                        nonce: a.get("nonce").and_then(|v| v.as_str())
+                            .map(|s| parse_hex_u256(s).to::<u64>()).unwrap_or(0),
+                    };
+                    let y_parity = a.get("yParity").or_else(|| a.get("v"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| parse_hex_u256(s).to::<u64>() as u8)
+                        .unwrap_or(0);
+                    let r = a.get("r").and_then(|v| v.as_str())
+                        .map(parse_hex_u256).unwrap_or(U256::ZERO);
+                    let s = a.get("s").and_then(|v| v.as_str())
+                        .map(parse_hex_u256).unwrap_or(U256::ZERO);
+                    SignedAuthorization::new_unchecked(inner, y_parity, r, s)
+                })
+                .collect();
+            tx_env.authorization_list = Some(AuthorizationList::Signed(signed));
+        }
+    }
+
     Ok(tx_env)
 }
 
@@ -677,8 +711,12 @@ pub fn get_spec_id(block_num: u64) -> SpecId {
         12_244_000..=12_964_999 => SpecId::BERLIN,
         12_965_000..=15_537_393 => SpecId::LONDON,
         15_537_394..=17_034_869 => SpecId::MERGE,
-        17_034_870..=19_426_589 => SpecId::SHANGHAI,     
-        19_426_590.. => SpecId::CANCUN,              
+        17_034_870..=19_426_589 => SpecId::SHANGHAI,
+        19_426_590..=22_431_083 => SpecId::CANCUN,
+        // Prague (Pectra) activated on mainnet at block 22_431_084
+        // (timestamp 1746612311, 2025-05-07). EIP-7702 changes nonce
+        // semantics, so pre-Prague specs reject these blocks' txs.
+        22_431_084.. => SpecId::PRAGUE,
     }
 }
 

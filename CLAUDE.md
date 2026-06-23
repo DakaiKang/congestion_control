@@ -7,13 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **RISE Parallel EVM (pevm)** — a high-performance parallel block executor for the EVM, implemented in Rust. It targets 30+ Gigagas/s throughput using Block-STM optimistic concurrency with an explicit transaction dependency graph.
 
 Working directory structure:
-- `pevm/` — main workspace (Rust library + CLI + benchmarks)
-- `mysticeti/` — consensus layer (separate project)
+- `pevm/` — the Cargo workspace; **run all `cargo` commands from here.** Members are `crates/pevm` (the library + tests + benches) and `bins/fetch` (the `pevm-fetch` block downloader).
+- `pevm/crates/pevm/src/` — library source. All `*.rs` files named in this doc (e.g. `pevm.rs`, `graph_scheduler.rs`) live here unless stated otherwise; tests live in `pevm/crates/pevm/tests/`.
+- `EXPERIMENTS.md` (repo root) — the active research log for the `stream` branch: datasets, exact test invocations, tunable parameters, and parameter-sweep results. Read it before touching the dependency-graph / greedy-integrator path.
+- `mysticeti/` — consensus layer (separate project).
 
 ## Commands
 
 ### Build
 ```bash
+# Install cmake first — required to build the snmalloc allocator.
+cd pevm                              # workspace root; all cargo commands run from here
 cargo build --release
 cargo build --features full          # includes Optimism + RPC storage
 cargo build --features global-alloc  # includes custom allocators (for benchmarks)
@@ -30,13 +34,15 @@ git submodule update --init
 # Run a single test (substring match on test name)
 cargo test --release --test tx_simulator_test test_throughput_comparison_v2 -- --nocapture
 
-# Many simulator/bench tests are parameterized by env vars:
-#   NUM_BLOCKS, START_BLOCK, GREEDY_BATCH
+# Many simulator/bench tests are parameterized by env vars. Common ones:
+#   NUM_THREADS, NUM_BLOCKS, START_BLOCK, GREEDY_BATCH, TAU_CV, HOT_KEY_THRESHOLD,
+#   BLOCKS_DIR, RW_TIME_DIR, MAX_BATCHES, OUTPUT
+# (see std::env::var calls in tests/bench_test.rs for the full set)
 # Example:
-NUM_BLOCKS=20 START_BLOCK=16774645 cargo test --release --test bench_test test_real_blocks_performance_100 -- --nocapture
+NUM_THREADS=16 NUM_BLOCKS=20 START_BLOCK=16774645 cargo test --release --test bench_test test_real_blocks_performance_100 -- --nocapture
 ```
 
-Real-block tests in `tests/bench_test.rs` read blocks from `/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1` — those tests will be skipped/fail if the path is absent.
+Real-block tests in `tests/bench_test.rs` read from external data dirs (overridable via the `*_DIR` env vars), defaulting to `/home/ubuntu/eth-block-downloader/test_data/blocks/batch_1` and `/home/ubuntu/eth-block-data/blocks_rw/` — those tests are skipped/fail if the paths are absent.
 
 ### Lint & Format
 ```bash

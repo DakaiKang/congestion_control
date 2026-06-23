@@ -18,6 +18,45 @@ The rw_time dataset feeds the V2 synthetic workload — every tx is replayed
 against `TxSimulatorV2.execute(reads, writes, target)` where
 `target = executionTime_ns / T_SLOAD_NS`.
 
+### Generating the rw_time dataset
+
+`test_generate_rw_time` (in `crates/pevm/tests/tx_simulator_test.rs`) produces
+the `rw_time_<N>.json` files by **actually executing** each block's real
+transactions sequentially with `execute_revm_sequential_timed` and recording
+per-tx wall-clock time. It repeats `ROUNDS` passes in round-first order (round 0
+visits every block, then round 1, …, so a block's samples are spread across the
+full round to dampen transient noise), drops the top/bottom `TRIM` samples per
+tx, and writes the trimmed mean as `executionTime` (ns). Each block's senders
+are balance-patched to `u128::MAX` so revm's pre-execution gas check passes on
+the ~0.5% of blocks whose single-block prestate is insufficient.
+
+Inputs are two parallel directories keyed by block number:
+- `RW_GAS_DIR` — `rw_gas_<N>.json` files; pick which blocks to process **and**
+  serve as the output template (`gasUsed` is dropped, `executionTime` + `from`
+  added).
+- `BLOCKS_DIR` — `block_<N>.json` files; the real txs that get executed/timed.
+
+A block is skipped if its `block_<N>.json` is missing, any round fails, or the
+rw_gas/block tx counts disagree.
+
+```bash
+RW_GAS_DIR=/home/ubuntu/eth-block-downloader/test_data/rw_gas \
+BLOCKS_DIR=/home/ubuntu/eth-block-downloader/test_data/blocks_rw \
+RW_TIME_DIR=/home/ubuntu/eth-block-downloader/test_data/rw_time \
+SKIP_EXISTING=1 \
+cargo test --release --test tx_simulator_test test_generate_rw_time -- --nocapture --exact
+```
+
+Other env vars: `ROUNDS` (default 5), `TRIM` (default 1, requires
+`ROUNDS >= 2*TRIM+1`), `MAX_FILES` (cap files, for smoke tests),
+`PROGRESS_EVERY` (default 500), `SKIP_EXISTING` (skip blocks whose output
+already exists — makes the run resumable).
+
+**Runtime:** sequential execution dominated by re-reading block JSON each round.
+Measured ~28 s per 500 blocks per round (≈56 ms/block/round) on the 36-core
+x86-64 box. For the full 20 000-block set: ~19 min/round → **~1.5–2 h** for
+`ROUNDS=5` plus the write phase.
+
 ---
 
 ## Experiments

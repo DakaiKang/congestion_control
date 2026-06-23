@@ -1,24 +1,23 @@
 """Thread-count scaling under the condvar-based GraphScheduler.
 
-For t ∈ {8, 16, 24} we use the condvar-fix data (`thread_sweep_condvar/`).
-For t ∈ {2, 4} the busy-spin baseline is used since the patch is a no-op
-under low thread contention (verified at t=8: both versions are identical
-to 3 decimal places).
+Full sweep over all 20000 blocks (200 batches × 100 blocks) for
+t ∈ {2,4,8,12,16,20,24}. NUM_THREADS unifies BOTH the actual parallel
+execution and the dependency-graph / greedy CV simulation. All data is the
+current (condvar-fix) code, regenerated fresh into `thread_sweep/`.
 """
 from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
-THREADS = [2, 4, 8, 16, 24]
+THREADS = [2, 4, 8, 12, 16, 20, 24]
 WORKLOADS = ["real", "v2"]
 BASE  = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep")
-COND  = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep_condvar")
 SUMMARY = Path("/home/ubuntu/congestion_control/pevm/experiments/thread_sweep_summary.csv")
 PLOT  = Path("/home/ubuntu/congestion_control/pevm/experiments/plot_thread_sweep.png")
 
 def source(wl: str, t: int) -> Path:
-    return COND / f"{wl}_t{t}.csv" if t >= 8 else BASE / f"{wl}_t{t}.csv"
+    return BASE / f"{wl}_t{t}.csv"
 
 def aggregate(p: Path) -> dict:
     df = pd.read_csv(p)
@@ -64,7 +63,7 @@ for ax, wl in zip(axes, WORKLOADS):
 
 axes[0].set_ylabel("Speedup vs Sequential")
 fig.suptitle("Speedup scaling with thread count  "
-             "(100 batches × 100 blocks, tau_cv=0.5, hot_kt=1.5, GraphScheduler condvar fix)",
+             "(200 batches × 100 blocks, tau_cv=0.5, hot_kt=1.5, GraphScheduler condvar fix)",
              y=1.02)
 fig.tight_layout()
 fig.savefig(PLOT, dpi=130, bbox_inches="tight")
