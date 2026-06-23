@@ -1803,20 +1803,41 @@ fn run_one_batch(
     }
     let total_txs: usize = blocks_txs.iter().map(|txs| txs.len()).sum();
 
+    // Some real-block batches contain accounts active across the batch
+    // boundary, so the merged single-batch prestate carries a nonce that
+    // disagrees with a tx in the batch. Rather than unwrap-panic (which
+    // aborts the whole sweep under panic=abort), skip such a batch.
+    let chain = PevmEthereum::mainnet();
+
     // 1. Sequential
     let seq_start = Instant::now();
     let mut seq_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        seq_storage = execute_sequential_and_update(seq_storage, spec_id, txs);
+        match pevm::execute_revm_sequential(&chain, &seq_storage, spec_id, make_block_env(), txs) {
+            Ok(result) => update_storage_with_results(&mut seq_storage, result),
+            Err(e) => {
+                eprintln!("  ⚠️  batch {} sequential failed, skipping: {:?}", batch_idx, e);
+                return None;
+            }
+        }
     }
     let seq_time_s = seq_start.elapsed().as_secs_f64();
     let seq_tput = total_txs as f64 / seq_time_s;
 
     // 2. Parallel (Block-STM, no graph)
+    let par_concurrency = parallel_concurrency();
     let par_start = Instant::now();
     let mut par_storage = storage.clone();
     for txs in blocks_txs.clone() {
-        par_storage = execute_parallel_and_update(par_storage, spec_id, txs);
+        match Pevm::default().execute_revm_parallel(
+            &chain, &par_storage, spec_id, make_block_env(), txs, par_concurrency,
+        ) {
+            Ok(result) => update_storage_with_results(&mut par_storage, result),
+            Err(e) => {
+                eprintln!("  ⚠️  batch {} parallel failed, skipping: {:?}", batch_idx, e);
+                return None;
+            }
+        }
     }
     let par_time_s = par_start.elapsed().as_secs_f64();
     let par_tput = total_txs as f64 / par_time_s;
@@ -1904,6 +1925,10 @@ fn test_eth_block_data_all_batches() {
         .unwrap_or(100);
     let max_batches: Option<usize> =
         std::env::var("MAX_BATCHES").ok().and_then(|v| v.parse().ok());
+    // Resume support: when START_BATCH > 0, skip batches [0, START_BATCH) and
+    // append to an existing CSV (no header rewrite) instead of truncating it.
+    let start_batch: usize =
+        std::env::var("START_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
 
     // Discover all block numbers in the data dir
     let mut all_blocks: Vec<u64> = std::fs::read_dir(&blocks_dir)
@@ -1931,22 +1956,36 @@ fn test_eth_block_data_all_batches() {
     );
     println!("Writing CSV to: {}", output_path);
 
-    let mut writer = std::io::BufWriter::new(
-        std::fs::File::create(&output_path).expect("cannot create output file"),
-    );
-    writeln!(
-        writer,
-        "batch_idx,start_block,end_block,num_blocks,num_txs,\
-         seq_time_s,seq_tput,par_time_s,par_tput,\
-         graph_time_s,graph_tput,integrated_time_s,integrated_tput,\
-         num_integrated_groups"
-    )
-    .unwrap();
-    writer.flush().unwrap();
+    let mut writer = if start_batch > 0 {
+        println!("Resuming from batch {} (append mode)", start_batch);
+        std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&output_path)
+                .expect("cannot open output file for append"),
+        )
+    } else {
+        let mut w = std::io::BufWriter::new(
+            std::fs::File::create(&output_path).expect("cannot create output file"),
+        );
+        writeln!(
+            w,
+            "batch_idx,start_block,end_block,num_blocks,num_txs,\
+             seq_time_s,seq_tput,par_time_s,par_tput,\
+             graph_time_s,graph_tput,integrated_time_s,integrated_tput,\
+             num_integrated_groups"
+        )
+        .unwrap();
+        w.flush().unwrap();
+        w
+    };
 
     let overall_start = Instant::now();
     let mut completed = 0usize;
     for (i, chunk) in all_blocks.chunks(batch_size).enumerate() {
+        if i < start_batch {
+            continue;
+        }
         if let Some(lim) = max_batches {
             if i >= lim {
                 break;
