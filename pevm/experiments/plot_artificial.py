@@ -17,7 +17,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 EXP = Path(__file__).parent
-KS = [1, 2, 3, 4]
+KS = [1, 2, 3, 4]          # hot_set=10 sweep (per-K panel plot)
+KS_H5 = [2, 4, 6, 8]       # hot_set=5 sweep (integrated-per-K plot)
 MS = [10, 20, 30, 40]
 
 def speedups(d):
@@ -59,9 +60,9 @@ fig, ax = plt.subplots(figsize=(8.5, 5.5))
 ax.plot(MS, par_m, 'o--', color='C1', lw=2, label='Parallel (Block-STM)')
 ax.plot(MS, graph_m, 's--', color='C2', lw=2, label='Graph Parallel')
 cmap = plt.get_cmap('viridis')
-for i, k in enumerate(KS):
+for i, k in enumerate(KS_H5):
     integ = [speedups(load("artificial_sweep_h5", k, m))[2] for m in MS]
-    ax.plot(MS, integ, '^-', color=cmap(i / 3), label=f'Integrated K={k}')
+    ax.plot(MS, integ, '^-', color=cmap(i / (len(KS_H5) - 1)), label=f'Integrated K={k}')
 ax.set_xlabel('M (% txs touching hot key)'); ax.set_ylabel('Speedup vs Sequential')
 ax.set_xticks(MS); ax.grid(alpha=.3); ax.legend(fontsize=9)
 ax.set_title('Artificial workload, HOT_SET_SIZE=5  (100×50×100, t=8, $\\tau_{cv}$=0.5, $h_{kt}$=1.5)\n'
