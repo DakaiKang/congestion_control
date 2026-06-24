@@ -17,7 +17,7 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use pevm::{BuildSuffixHasher, Bytecodes, ChainState, EvmAccount};
-use revm::primitives::{Address, TransactTo, TxEnv, U256};
+use revm::primitives::{Address, TransactTo, TxEnv, B256, U256};
 use serde::Deserialize;
 
 /// contract module
@@ -642,4 +642,137 @@ pub fn load_n_rw_time_blocks_with_callers_inner(
     }
 
     Ok((state, bytecodes, simulator_address, all_blocks_txs))
+}
+
+// ── Fully-artificial workload with controllable conflict ─────────────────────
+//
+// A purely synthetic workload (no real blocks) that lets us dial inter-block and
+// intra-block conflict independently. Each tx still calls TxSimulatorV2.execute.
+//
+// Conflict keys live in two disjoint namespaces:
+//   - cold keys:  values in [0, COLD_RANGE)         -> B256(value)
+//   - hot keys:   the size-HOT_SET_SIZE hot resource set {h_1..h_10}
+//                 -> B256(HOT_KEY_BASE + i), well outside the cold range.
+
+/// Size of the hot resource set {h_1, ..., h_10}.
+pub const HOT_SET_SIZE: usize = 10;
+/// Cold write-set values are drawn uniformly from [0, COLD_RANGE).
+pub const COLD_RANGE: u64 = 10_000;
+/// Base offset that separates hot keys from the cold range.
+const HOT_KEY_BASE: u64 = 1_000_000_000;
+/// Base offset for deterministically-derived unique caller addresses.
+const CALLER_BASE: u64 = 1u64 << 40;
+
+fn u64_key(v: u64) -> B256 {
+    B256::from(U256::from(v).to_be_bytes::<32>())
+}
+
+/// Build one batch of the artificial workload.
+///
+/// Inter-block conflict (`k`): hot resources are assigned in groups of `9 + k`
+/// blocks — the first `k` blocks of every group use `h_1`, the remaining 9 use
+/// `h_2..h_10` respectively. Larger `k` => `h_1` is shared by more blocks =>
+/// more inter-block conflict.
+///
+/// Intra-block conflict (`m_pct`): every tx writes `writes_per_tx` cold keys
+/// drawn uniformly from `[0, COLD_RANGE)`; the first `m_pct`% of a block's txs
+/// additionally write the block's hot resource. The block's txs are then
+/// shuffled with seed `(batch_idx, block_idx)`. Larger `m_pct` => more txs in a
+/// block touch its hot key => more intra-block conflict.
+///
+/// `target` is the TxSimulatorV2 loop count (per-tx work), held constant so the
+/// only varying factor across the sweep is the conflict structure.
+///
+/// Returns the same shape as `load_n_rw_time_blocks_with_callers` so it plugs
+/// directly into the per-batch execution harness.
+pub fn build_artificial_blocks(
+    batch_idx: u64,
+    num_blocks: usize,
+    txns_per_block: usize,
+    k: usize,
+    m_pct: u64,
+    target: u64,
+    writes_per_tx: usize,
+    hot_set_size: usize,
+) -> (ChainState, Bytecodes, Address, Vec<Vec<TxEnv>>) {
+    use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+
+    assert!(k >= 1, "k must be >= 1");
+    assert!(hot_set_size >= 2, "hot_set_size must be >= 2");
+    let hot_keys: Vec<B256> =
+        (0..hot_set_size).map(|i| u64_key(HOT_KEY_BASE + i as u64)).collect();
+    // Group size = (hot_set_size - 1) + k: first k blocks share h_1, the
+    // remaining (hot_set_size - 1) blocks take h_2..h_{hot_set_size}.
+    let group = (hot_set_size - 1) + k;
+    let n_hot = (txns_per_block * m_pct as usize) / 100; // first m% of txs
+
+    // Build storage: simulator contract + one unique caller per tx.
+    let simulator_address = Address::new(rand::random());
+    let simulator_account = TxSimulatorV2::build();
+    let mut state: ChainState =
+        [(simulator_address, simulator_account)].into_iter().collect();
+
+    let mut all_blocks_txs: Vec<Vec<TxEnv>> = Vec::with_capacity(num_blocks);
+    let mut caller_counter: u64 = 0;
+
+    for b in 0..num_blocks {
+        // Inter-block: which hot resource this block uses.
+        let pos = b % group;
+        let hot_idx = if pos < k { 0 } else { 1 + (pos - k) };
+        let hot_key = hot_keys[hot_idx];
+
+        let mut block_txs: Vec<TxEnv> = Vec::with_capacity(txns_per_block);
+        for t in 0..txns_per_block {
+            // Deterministic per-tx RNG for the cold write set.
+            let seed = (batch_idx << 40) ^ ((b as u64) << 20) ^ (t as u64);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut writes: Vec<B256> = (0..writes_per_tx)
+                .map(|_| u64_key(rng.gen_range(0..COLD_RANGE)))
+                .collect();
+            // Intra-block: first m% also touch the block's hot resource.
+            if t < n_hot {
+                writes.push(hot_key);
+            }
+
+            // Unique deterministic caller (nonce 0) so nonce chains never add
+            // conflict; the integrator reassigns nonces after reordering.
+            let caller = Address::from_word(u64_key(CALLER_BASE + caller_counter));
+            caller_counter += 1;
+            state.insert(
+                caller,
+                EvmAccount { balance: U256::from(u128::MAX), ..EvmAccount::default() },
+            );
+
+            let calldata = TxSimulatorV2::encode_execute(&[], &writes, target);
+            let cold_gas = writes.len() as u64 * 22_100;
+            let hot_gas = target.saturating_mul(100).saturating_mul(GAS_MULTIPLIER);
+            let gas_limit = 21_000u64.saturating_add(cold_gas).saturating_add(hot_gas);
+
+            block_txs.push(TxEnv {
+                caller,
+                gas_limit,
+                gas_price: U256::from(1),
+                transact_to: TransactTo::Call(simulator_address),
+                data: calldata,
+                nonce: Some(0),
+                ..TxEnv::default()
+            });
+        }
+
+        // Shuffle with seed (batch_idx, block_idx) so hot-resource txs are not
+        // clustered at the front of the block.
+        let mut srng = StdRng::seed_from_u64((batch_idx << 20) ^ (b as u64));
+        block_txs.shuffle(&mut srng);
+        all_blocks_txs.push(block_txs);
+    }
+
+    // Extract bytecodes (only the simulator has code).
+    let mut bytecodes = Bytecodes::default();
+    for account in state.values_mut() {
+        if let Some(code) = account.code.take() {
+            bytecodes.insert(account.code_hash.unwrap(), code);
+        }
+    }
+
+    (state, bytecodes, simulator_address, all_blocks_txs)
 }

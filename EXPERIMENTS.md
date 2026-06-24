@@ -280,3 +280,65 @@ candidates land in which group — so its impact is bounded.
 than "over-permitting" (high `tau_cv`). Both produce ~50-90 small groups,
 but low `hot_kt` also slashes the tail max because the resulting groups
 have no Block-STM-friendly batching of complementary work.
+
+---
+
+## Fully-artificial workload — controllable inter/intra-block conflict
+
+The real and V2 workloads inherit whatever conflict structure mainnet
+happens to have. To study how the integrator behaves as a *function* of
+conflict, we add a third, fully-synthetic workload whose inter-block and
+intra-block conflict are dialed independently by two knobs, `K` and `M`.
+Transactions still call `TxSimulatorV2.execute(reads, writes, target)`; only
+the read/write sets are generated, not loaded.
+
+**Conflict keys** live in two disjoint namespaces so they never collide:
+*cold* keys are the integers `[0, 10000)` and *hot* keys are a fixed set of
+ten resources `{h_1, …, h_10}`.
+
+**Inter-block conflict — `K`.** Each block is assigned exactly one hot
+resource. Hot resources are assigned in repeating groups of `9 + K`
+consecutive blocks: the first `K` blocks of every group are assigned `h_1`,
+and the remaining 9 blocks are assigned `h_2 … h_10` respectively. Thus `h_1`
+is shared by `K` of every `9 + K` blocks while each other hot resource is
+used once per group — larger `K` concentrates more blocks on `h_1` and raises
+cross-block conflict.
+
+**Intra-block conflict — `M`.** Every transaction's write set is three
+values drawn uniformly at random from `[0, 10000)` (seeded by
+`(batch_idx, block_idx, txn_idx)` for reproducibility). The first `M`% of a
+block's transactions additionally write that block's hot resource, so larger
+`M` makes more transactions inside a block contend on the same hot key. The
+block's transactions are then shuffled with seed `(batch_idx, block_idx)` so
+the hot-touching transactions are not clustered at the front. Read sets are
+empty; each `state[w] += 1` is itself a read-modify-write, so the writes
+alone drive Block-STM conflicts and cascading aborts.
+
+**Fixed structure.** 100 batches × 50 blocks × 100 transactions. Per-tx work
+is constant (`target = 100` loop iterations) so the only variable across the
+sweep is the conflict structure. Each transaction uses a unique caller with
+nonce 0 (the integrator reassigns nonces after reordering), so nonce chains
+add no spurious conflict. Integration uses the same defaults as the other
+workloads: `tau_cv = 0.5`, `hot_key_threshold = 1.5`, `NUM_THREADS = 8`.
+
+**Sweep.** `K ∈ {1, 2, 3, 4}` × `M ∈ {10, 20, 30, 40}` (16 configurations).
+
+**Test:** `test_artificial_all_batches` (in `tx_simulator_test.rs`);
+generator `tx_simulator::build_artificial_blocks` (in `tests/tx_simulator/mod.rs`).
+
+```bash
+# one (K, M) point
+K=4 M=40 NUM_THREADS=8 TAU_CV=0.5 HOT_KEY_THRESHOLD=1.5 \
+OUTPUT=experiments/artificial_sweep/k4_m40.csv \
+cargo test --release --test tx_simulator_test test_artificial_all_batches -- --nocapture --exact
+
+# full 16-config sweep
+bash experiments/run_artificial_sweep.sh
+```
+
+Env vars: `NUM_BATCHES` (100), `BLOCKS_PER_BATCH` (50), `TXNS_PER_BLOCK` (100),
+`K`, `M`, `TARGET` (100), `WRITES_PER_TX` (3), `GREEDY_BATCH` (50),
+`NUM_THREADS`, `TAU_CV`, `HOT_KEY_THRESHOLD`, `SWEEP_INTEG_ONLY`, `OUTPUT`.
+Output CSV columns: `batch_idx,k,m,num_blocks,num_txs,seq_time_s,seq_tput,
+par_time_s,par_tput,graph_time_s,graph_tput,integrated_time_s,integrated_tput,
+num_integrated_groups`.
