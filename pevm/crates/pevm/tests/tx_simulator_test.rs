@@ -1655,3 +1655,173 @@ fn test_v2_all_batches() {
     println!("\n✓ done in {:.1}s | CSV → {}",
         overall.elapsed().as_secs_f64(), output_path);
 }
+
+// ============================================================================
+// Fully-artificial workload sweep: controllable inter-block (K) and
+// intra-block (M) conflict. 100 batches x 50 blocks x 100 txs by default;
+// integration uses the same defaults as the real/v2 sweeps (tau_cv=0.5,
+// hot_kt=1.5). Each tx calls TxSimulatorV2.execute. See EXPERIMENTS.md.
+//
+//   K  (inter-block): hot-resource group size = 9 + K; first K blocks of each
+//                     group share h_1. Larger K => more inter-block conflict.
+//   M% (intra-block): first M% of a block's txs also write the block's hot key.
+//
+// Env: NUM_BATCHES(100) BLOCKS_PER_BATCH(50) TXNS_PER_BLOCK(100) K(req) M(req)
+//      TARGET(100) WRITES_PER_TX(3) GREEDY_BATCH(50) NUM_THREADS TAU_CV
+//      HOT_KEY_THRESHOLD SWEEP_INTEG_ONLY OUTPUT
+// ============================================================================
+#[test]
+fn test_artificial_all_batches() {
+    use std::io::Write;
+    use std::time::Instant;
+    use pevm::api::update_storage_with_results;
+    use pevm::graph_pevm::GraphPevm;
+    use pevm::greedy_integrator::{GreedyIntegrator, GreedyIntegratorConfig};
+
+    let env_usize = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let env_u64 = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let env_f64 = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+
+    let num_batches = env_usize("NUM_BATCHES", 100);
+    let blocks_per_batch = env_usize("BLOCKS_PER_BATCH", 50);
+    let txns_per_block = env_usize("TXNS_PER_BLOCK", 100);
+    let k = env_usize("K", 1);
+    let m_pct = env_u64("M", 10);
+    let target = env_u64("TARGET", 100);
+    let writes_per_tx = env_usize("WRITES_PER_TX", 3);
+    let hot_set_size = env_usize("HOT_SET_SIZE", 10);
+    let greedy_batch = env_usize("GREEDY_BATCH", 50);
+    let concurrency = NonZeroUsize::new(env_usize("NUM_THREADS", 8)).expect("NUM_THREADS>0");
+    let tau_cv = env_f64("TAU_CV", 0.5);
+    let hot_key_threshold = env_f64("HOT_KEY_THRESHOLD", 1.5);
+    let integ_only = std::env::var("SWEEP_INTEG_ONLY").ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let output_path = std::env::var("OUTPUT").unwrap_or_else(|_|
+        "/home/ubuntu/congestion_control/pevm/experiments/artificial_batches.csv".to_string());
+
+    println!(
+        "artificial: batches={} blocks={} txs/block={} K={} M={}% hot_set={} target={} \
+         writes/tx={} | concurrency={} tau_cv={} hot_kt={} greedy_batch={} integ_only={}",
+        num_batches, blocks_per_batch, txns_per_block, k, m_pct, hot_set_size, target,
+        writes_per_tx, concurrency.get(), tau_cv, hot_key_threshold, greedy_batch, integ_only,
+    );
+    println!("Writing CSV -> {}", output_path);
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(&output_path).expect("cannot create output"));
+    writeln!(writer,
+        "batch_idx,k,m,num_blocks,num_txs,\
+         seq_time_s,seq_tput,par_time_s,par_tput,\
+         graph_time_s,graph_tput,integrated_time_s,integrated_tput,\
+         num_integrated_groups").unwrap();
+    writer.flush().unwrap();
+
+    let chain = PevmEthereum::mainnet();
+    let spec_id = SpecId::LATEST;
+    let overall = Instant::now();
+
+    for batch_idx in 0..num_batches {
+        let (state, bytecodes, _sim, blocks_txs) = tx_simulator::build_artificial_blocks(
+            batch_idx as u64, blocks_per_batch, txns_per_block, k, m_pct, target, writes_per_tx, hot_set_size);
+        let base_storage = InMemoryStorage::new(state, Arc::new(bytecodes), Default::default());
+        let total_txs: usize = blocks_txs.iter().map(|b| b.len()).sum();
+        let bt = Instant::now();
+
+        // Per-block dependency graphs (untimed) + greedy integration.
+        let mut prep_storage = base_storage.clone();
+        let mut dep_graphs = Vec::with_capacity(blocks_txs.len());
+        let mut reordered_blocks = Vec::with_capacity(blocks_txs.len());
+        for (i, txs) in blocks_txs.iter().enumerate() {
+            let (mut graph, results) = GraphPevm::construct_graph_pevm_by_sequential(
+                &chain, &prep_storage, spec_id, BlockEnv::default(), txs.clone(), i as u64,
+            ).unwrap_or_else(|e| panic!("batch {batch_idx} block {i} graph build failed: {e:?}"));
+            update_storage_with_results(&mut prep_storage, results);
+            let (reordered, new_graph) =
+                GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut graph, concurrency.get());
+            dep_graphs.push(new_graph);
+            reordered_blocks.push(reordered);
+        }
+        for g in &mut dep_graphs {
+            g.set_hot_key_threshold(hot_key_threshold);
+        }
+        let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+            num_threads: concurrency.get(),
+            tau_cv,
+        });
+        let mut integrated_txns: Vec<Vec<revm::primitives::TxEnv>> = Vec::new();
+        let mut integrated_graphs = Vec::new();
+        for chunk_start in (0..blocks_txs.len()).step_by(greedy_batch) {
+            let chunk_end = (chunk_start + greedy_batch).min(blocks_txs.len());
+            let (itxns, igraphs) = integrator.integrate_pevm_graphs(
+                dep_graphs[chunk_start..chunk_end].to_vec(),
+                reordered_blocks[chunk_start..chunk_end].to_vec(),
+            );
+            integrated_txns.extend(itxns);
+            integrated_graphs.extend(igraphs);
+        }
+        let num_integrated_groups = integrated_txns.len();
+        let mut greedy_nonce_tracker = pevm::utils::nonce_tracker::NonceTracker::new();
+        for txs in &mut integrated_txns {
+            greedy_nonce_tracker.update_txenv_nonces(txs);
+        }
+
+        // 1. Sequential
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for txs in &blocks_txs {
+            let r = execute_revm_sequential(&chain, &s, spec_id, BlockEnv::default(), txs.clone()).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let seq_time_s = t.elapsed().as_secs_f64();
+        let seq_tput = total_txs as f64 / seq_time_s;
+
+        // 2. Parallel (Block-STM) and 3. Graph parallel — skipped under integ_only.
+        let (par_time_s, par_tput, graph_time_s, graph_tput) = if integ_only {
+            (0.0, 0.0, 0.0, 0.0)
+        } else {
+            let mut s = base_storage.clone();
+            let t = Instant::now();
+            for txs in &blocks_txs {
+                let r = Pevm::default().execute_revm_parallel(
+                    &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency).unwrap();
+                update_storage_with_results(&mut s, r);
+            }
+            let par_t = t.elapsed().as_secs_f64();
+
+            let mut s = base_storage.clone();
+            let t = Instant::now();
+            for (txs, graph) in reordered_blocks.iter().zip(dep_graphs.iter()) {
+                let r = GraphPevm::default().execute_revm_parallel(
+                    &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone()).unwrap();
+                update_storage_with_results(&mut s, r);
+            }
+            let graph_t = t.elapsed().as_secs_f64();
+            (par_t, total_txs as f64 / par_t, graph_t, total_txs as f64 / graph_t)
+        };
+
+        // 4. Integrated (greedy + GraphPevm)
+        let mut s = base_storage.clone();
+        let t = Instant::now();
+        for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
+            let r = GraphPevm::default().execute_revm_parallel(
+                &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone()).unwrap();
+            update_storage_with_results(&mut s, r);
+        }
+        let integrated_time_s = t.elapsed().as_secs_f64();
+        let integrated_tput = total_txs as f64 / integrated_time_s;
+
+        println!(
+            "  batch {}/{} done in {:.2}s | txs={} | seq={:.0} par={:.0} graph={:.0} integ={:.0} groups={} | cum {:.1}s",
+            batch_idx + 1, num_batches, bt.elapsed().as_secs_f64(), total_txs,
+            seq_tput, par_tput, graph_tput, integrated_tput, num_integrated_groups,
+            overall.elapsed().as_secs_f64());
+        writeln!(writer,
+            "{},{},{},{},{},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{:.6},{:.2},{}",
+            batch_idx, k, m_pct, blocks_per_batch, total_txs,
+            seq_time_s, seq_tput, par_time_s, par_tput,
+            graph_time_s, graph_tput, integrated_time_s, integrated_tput,
+            num_integrated_groups).unwrap();
+        writer.flush().unwrap();
+    }
+    println!("\n✓ done in {:.1}s | CSV -> {}", overall.elapsed().as_secs_f64(), output_path);
+}

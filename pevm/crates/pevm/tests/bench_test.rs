@@ -1828,37 +1828,53 @@ fn run_one_batch(
     let seq_time_s = seq_start.elapsed().as_secs_f64();
     let seq_tput = total_txs as f64 / seq_time_s;
 
+    // tau_cv / hot_key_threshold only affect the integrated path, so for those
+    // sweeps SWEEP_INTEG_ONLY=1 skips the Parallel and Graph-Parallel timed runs
+    // (their tput is reported as 0). Dependency-graph construction is still done
+    // since the integrated path consumes it.
+    let integ_only: bool = std::env::var("SWEEP_INTEG_ONLY")
+        .ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+
     // 2. Parallel (Block-STM, no graph)
-    let par_concurrency = parallel_concurrency();
-    let par_start = Instant::now();
-    let mut par_storage = storage.clone();
-    for txs in blocks_txs.clone() {
-        match Pevm::default().execute_revm_parallel(
-            &chain, &par_storage, spec_id, make_block_env(), txs, par_concurrency,
-        ) {
-            Ok(result) => update_storage_with_results(&mut par_storage, result),
-            Err(e) => {
-                eprintln!("  ⚠️  batch {} parallel failed, skipping: {:?}", batch_idx, e);
-                return None;
+    let (par_time_s, par_tput) = if integ_only {
+        (0.0, 0.0)
+    } else {
+        let par_concurrency = parallel_concurrency();
+        let par_start = Instant::now();
+        let mut par_storage = storage.clone();
+        for txs in blocks_txs.clone() {
+            match Pevm::default().execute_revm_parallel(
+                &chain, &par_storage, spec_id, make_block_env(), txs, par_concurrency,
+            ) {
+                Ok(result) => update_storage_with_results(&mut par_storage, result),
+                Err(e) => {
+                    eprintln!("  ⚠️  batch {} parallel failed, skipping: {:?}", batch_idx, e);
+                    return None;
+                }
             }
         }
-    }
-    let par_time_s = par_start.elapsed().as_secs_f64();
-    let par_tput = total_txs as f64 / par_time_s;
+        let t = par_start.elapsed().as_secs_f64();
+        (t, total_txs as f64 / t)
+    };
 
-    // 3. Graph parallel (per-block dependency graph)
+    // 3. Graph parallel (per-block dependency graph). Always build the graphs
+    // (needed by the integrated path); only the timed execution is optional.
     let (_, reordered_blocks_txs, mut dependency_graphs) =
         generate_dependency_graphs(storage.clone(), spec_id, blocks_txs);
-    let graph_start = Instant::now();
-    let mut graph_storage = storage.clone();
-    for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
-        let (new_s, _) = execute_parallel_with_graph_and_update_with_gas(
-            graph_storage, txs.clone(), graph.clone(), spec_id,
-        );
-        graph_storage = new_s;
-    }
-    let graph_time_s = graph_start.elapsed().as_secs_f64();
-    let graph_tput = total_txs as f64 / graph_time_s;
+    let (graph_time_s, graph_tput) = if integ_only {
+        (0.0, 0.0)
+    } else {
+        let graph_start = Instant::now();
+        let mut graph_storage = storage.clone();
+        for (txs, graph) in reordered_blocks_txs.iter().zip(dependency_graphs.iter()) {
+            let (new_s, _) = execute_parallel_with_graph_and_update_with_gas(
+                graph_storage, txs.clone(), graph.clone(), spec_id,
+            );
+            graph_storage = new_s;
+        }
+        let t = graph_start.elapsed().as_secs_f64();
+        (t, total_txs as f64 / t)
+    };
 
     // 4. Integrated (greedy multi-block merge).
     // Apply HOT_KEY_THRESHOLD before greedy simulates each graph (default 1.5);

@@ -5,3 +5,6 @@ pevm/target/*
 pevm/crates/pevm/target/*
 mysticeti/logs/*
 pevm/crates/pevm/result.txt
+# paper LaTeX (kept local, not in code repo)
+/results.tex
+/results_org.tex
