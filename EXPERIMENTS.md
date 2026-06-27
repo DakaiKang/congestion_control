@@ -1,22 +1,43 @@
 # Experiments Log
 
-Working notes for the `stream` branch. All runs use `NUM_THREADS=16` on a
-36-core x86-64 EC2 instance unless noted.
+Working notes for the `stream` branch, on a 36-core x86-64 EC2 instance. Early
+runs used `NUM_THREADS=16`; the thread-count sweep later showed the optimum is
+**`t = 8`**, which is the default for all subsequent sweeps. The dataset was
+also expanded from 10 000 to 20 000 blocks (see Data).
 
 ---
 
 ## Data
 
+The dataset was later expanded from 10 000 to **20 000 blocks**, four
+contiguous 5 000-block chunks spanning four forks:
+
+| Chunk | Blocks | ~Date | Fork |
+|---|---|---|---|
+| 1 | `16774645..=16779644` | Mar 2023 | Merge |
+| 2 | `18581726..=18586725` | Nov 2023 | Shanghai |
+| 3 | `19557289..=19562288` | Feb 2024 | Cancun |
+| 4 | `22606458..=22611457` | May 2025 | Prague (Pectra) |
+
 | Dataset | Path | Coverage |
 |---|---|---|
-| Real ETH blocks | `/home/ubuntu/eth-block-data/blocks_rw/` | 10 000 blocks, two contiguous chunks (`16774645..=16779644` and `18581726..=18586725`) |
-| Read/write + measured execution time | `/home/ubuntu/eth-block-data/rw_time/` | Generated from real blocks; adds `executionTime` (trimmed mean over 5 rounds) and `from` (real caller) |
-
-Total transactions: **1 515 015**.
+| Real ETH blocks | `/home/ubuntu/eth-block-downloader/test_data/blocks_rw/` | 20 000 blocks (4 chunks above) |
+| Read/write + measured execution time | `/home/ubuntu/eth-block-downloader/test_data/rw_time/` | Generated from real blocks; adds `executionTime` (trimmed mean over 5 rounds) and `from` (real caller). 19 990 files (8 blocks fail single-block replay). |
 
 The rw_time dataset feeds the V2 synthetic workload — every tx is replayed
 against `TxSimulatorV2.execute(reads, writes, target)` where
 `target = executionTime_ns / T_SLOAD_NS`.
+
+> **Note on the data path.** The active data now lives under
+> `/home/ubuntu/eth-block-downloader/test_data/{blocks_rw,rw_gas,rw_time}/`;
+> the older `/home/ubuntu/eth-block-data/...` paths are stale defaults in some
+> tests — override with `BLOCKS_DIR` / `RW_TIME_DIR` / `RW_GAS_DIR`.
+
+> **Chunk-4 (Prague) caveat.** The fully-reliable analyses below restrict to
+> the **first 150 batches** (chunks 1–3, 15 000 blocks, ~2.4 M txs). Chunk 4
+> (Prague) produces a handful of batches whose sequential baseline diverges to
+> the gas limit, giving implausibly high speedups; those batches are excluded
+> (see EIP-7702 / Prague section).
 
 ### Generating the rw_time dataset
 
@@ -212,6 +233,10 @@ workload preparation to the final parallel execution.
 
 ## Parameter sweeps — finding the defaults
 
+> **Superseded by the t=8 re-sweep over 20 000 blocks** (see "Parameter
+> re-sweep at t = 8" below). Kept for history; the chosen defaults
+> (`hot_kt = 1.5`, `tau_cv = 0.5`) are unchanged.
+
 Two full 100-batch × 100-block sweeps on real ETH mainnet blocks
 (`test_eth_block_data_all_batches`, NUM_THREADS=16), each varying one
 parameter while holding the other at the prior chosen value.
@@ -280,6 +305,87 @@ candidates land in which group — so its impact is bounded.
 than "over-permitting" (high `tau_cv`). Both produce ~50-90 small groups,
 but low `hot_kt` also slashes the tail max because the resulting groups
 have no Block-STM-friendly batching of complementary work.
+
+---
+
+## EIP-7702 / Prague support (chunk-4 enablement)
+
+Extending the dataset to chunk 4 (block ≥ 22 431 084, the Prague/Pectra
+activation) broke the real all-batches run. Root causes and fixes:
+
+- **`get_spec_id` capped at Cancun.** Added the Prague boundary
+  (`22_431_084.. => SpecId::PRAGUE`) in `storage/block_loader.rs`; otherwise
+  revm rejects type-4 (set-code) transactions outright.
+- **EIP-7702 `authorizationList` dropped on load.** `parse_transaction` now
+  parses the authorization list for type-0x04 txs into
+  `tx_env.authorization_list` (as `Signed`), so revm recovers each authority
+  and bumps its nonce during execution.
+- **Nonce reassignment ignored authorities.** `NonceTracker::update_txenv_nonces`
+  now, after reordering, also increments each recovered authority's nonce —
+  otherwise a later tx from that authority sees a stale nonce ("nonce too high").
+- **Block gas-limit cap.** `make_block_env` raised 30M → **36M** (real
+  post-Pectra block gas limit). 1G was tried first but let runaway/diverging
+  txs spin to 1G; 36M accepts every real tx while bounding spin.
+- **Resilience + resume.** `run_one_batch` now skips a batch (empty CSV row)
+  when its seq/par baseline errors; `test_eth_block_data_all_batches` gained
+  `START_BATCH` (resume + append) and `SKIP_BATCHES` (skip batches that *hang*
+  or *panic* rather than error). Driver `run_real_resume_autoskip.sh` auto-detects
+  stalls (tx loops to gas limit) and crashes, adds the offending batch to the
+  skip set, and resumes.
+
+Net: the real sweep covers **195 / 200 batches**; excluded chunk-4 batches
+159/164/168/171/182 (gas-loop hangs, a storage bytecode-missing panic, one exec
+error). Analyses that need clean data restrict to the first 150 batches.
+
+---
+
+## Thread-count sweep (20 000 blocks)
+
+**Test:** `test_eth_block_data_all_batches` (real) and `test_v2_all_batches`
+(V2). **Driver:** `experiments/run_thread_sweep.sh`. `NUM_THREADS` is the single
+knob — it unifies both the actual parallel execution and the dependency-graph /
+greedy CV simulation. Swept `t ∈ {2,4,8,12,16,20,24}`, `tau_cv=0.5`,
+`hot_kt=1.5`, over all 200 batches (real: 195 usable; V2: 200).
+
+Per-batch mean speedup vs sequential (chunks 1–3, t shown for the peak region):
+
+| t | real par | real graph | real integ | v2 integ |
+|---:|---:|---:|---:|---:|
+| 2 | 1.38 | 1.40 | 1.95 | 1.64 |
+| 4 | 1.74 | 1.74 | 2.64 | 2.16 |
+| **8** | **1.85** | **1.77** | **2.64** | **2.35** |
+| 12 | 1.52 | 1.68 | 2.45 | 2.15 |
+| 16 | 1.28 | 1.64 | 2.35 | 2.05 |
+| 24 | 1.19 | 1.56 | 2.18 | 1.89 |
+
+**All three strategies and both workloads peak at `t = 8` and regress beyond
+it** (plain Block-STM degrades hardest — abort/validation contention past the
+physical core count). Integrated is consistently best. We adopt **`t = 8`** as
+the default for the parameter sweeps below.
+
+---
+
+## Parameter re-sweep at t = 8 (20 000 blocks)
+
+Re-ran the `hot_key_threshold` and `tau_cv` sweeps at the new throughput
+optimum (`t = 8`) over the full dataset. **Driver:**
+`experiments/run_param_sweeps_t8.sh` (uses `SWEEP_INTEG_ONLY=1` — both params
+only affect the integrated path, so Parallel/Graph are skipped). Reported as the
+mean integrated speedup over the first 150 batches.
+
+| `hot_kt` (tau_cv=0.5) | 0.5 | 1.0 | **1.5** | 3.0 | 5.0 |
+|---|---:|---:|---:|---:|---:|
+| mean integ speedup | 2.44 | 2.62 | **2.63** | 2.63 | 2.65 |
+
+| `tau_cv` (hot_kt=1.5) | 0.1 | 0.3 | **0.5** | 1.0 | 2.0 |
+|---|---:|---:|---:|---:|---:|
+| mean integ speedup | 2.66 | 2.63 | **2.64** | 2.57 | 2.33 |
+
+`hot_kt = 0.5` is clearly worst (over-rejects merges); `1.5–5.0` are a flat
+plateau. `tau_cv` is flat over `[0.1, 1.0]` and drops at `2.0`. The current
+defaults **`hot_kt = 1.5`, `tau_cv = 0.5`** sit at/near the optimum and are
+retained. Plots: `experiments/plot_{hot,tau}_sweep_t8.png`,
+`plot_param_sweep_means_t8.png`.
 
 ---
 
