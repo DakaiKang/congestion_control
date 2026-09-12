@@ -8,3 +8,4 @@ pevm/crates/pevm/result.txt
 # paper LaTeX (kept local, not in code repo)
 /results.tex
 /results_org.tex
+pevm/experiments/rebuttal/artificial/old_schema/

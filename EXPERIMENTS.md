@@ -448,3 +448,149 @@ Env vars: `NUM_BATCHES` (100), `BLOCKS_PER_BATCH` (50), `TXNS_PER_BLOCK` (100),
 Output CSV columns: `batch_idx,k,m,num_blocks,num_txs,seq_time_s,seq_tput,
 par_time_s,par_tput,graph_time_s,graph_tput,integrated_time_s,integrated_tput,
 num_integrated_groups`.
+
+---
+
+## SIGMOD rebuttal experiments (Sep 2026)
+
+Added in response to the review round. Harness: `crates/pevm/tests/rebuttal_test.rs`
+(three tests, one CSV schema); drivers and analysis in `pevm/experiments/rebuttal/`;
+generated tables in `pevm/experiments/rebuttal/REPORT.md` (`python3 experiments/rebuttal/analyze.py`).
+
+| Reviewer ask | What was added | Where |
+|---|---|---|
+| R2-O3, R4-O1: absolute times / throughput / latency percentiles, not just speedups | every engine reports seconds and tx/s per batch; per-block latency p50/p90/p99 derived | all CSVs, `analyze.py::throughput_table` |
+| R2-O1, R4-O1: cost of pre-execution and the preparatory stages | timed phases: pre-execute, graph build + intra-block reorder, greedy integration, execution | `phase_*` columns |
+| R4-O1: bandwidth of the shipped graph | bytes of access-set hashes + WAW edges per proposal, vs calldata bytes | `omakase_graph_bytes`, `vegeta_sched_bytes`, `calldata_bytes` |
+| R4-O2: concatenate a round's blocks into one block and run Block-STM | "Concat" engine: unmodified `Pevm` on the fused block (gas limit scaled by block count) | `concat_*` columns |
+| R2-O2, R4-O3: comparison with a prior system | Vegeta (NSDI '25) — see below | `src/vegeta.rs`, `vegeta_*` columns |
+| R2-O3, R4-O4: aborts / cascading aborts measured | `ExecDiagnostics` snapshot exposed by `Pevm` and `GraphPevm` (`last_diagnostics`); re-executions always counted, validation/cascade/new-location breakdown under `--features diagnostics` | `*_re_exec`, `*_validation_aborts`, `*_cascade_aborts`, `*_wrote_new_loc` |
+
+### Tests
+
+```bash
+# artificial (no dataset): same K x M grid as Figure 7
+K=4 M=40 NUM_THREADS=8 OUTPUT=experiments/rebuttal/artificial/k4_m40.csv \
+  cargo test --release --test rebuttal_test test_rebuttal_artificial -- --nocapture --exact
+# real mainnet blocks, one 5000-block chunk = 50 batches
+START_BLOCK=16774645 MAX_BATCHES=50 NUM_THREADS=8 OUTPUT=experiments/rebuttal/real_16774645.csv \
+  cargo test --release --test rebuttal_test test_rebuttal_real -- --nocapture --exact
+# synthetic V2 from rw_time
+MAX_BATCHES=150 NUM_THREADS=8 OUTPUT=experiments/rebuttal/v2.csv \
+  cargo test --release --test rebuttal_test test_rebuttal_v2 -- --nocapture --exact
+# add --features diagnostics for the abort breakdown (separate run: the counters cost time)
+```
+
+Full campaign: `experiments/rebuttal/run_artificial.sh` (runs immediately) and
+`experiments/rebuttal/run_real_v2.sh` (waits for the dataset, then real x3 chunks + V2, timing and
+diagnostics builds). Defaults everywhere: t=8, tau_cv=0.5, hot_kt=1.5, 100-block batches.
+
+### Correctness guard
+
+On both synthetic workloads every write is `state[k] += 1`, which commutes, so the harness
+asserts (`CHECK_STATE=1`, default): Block-STM and Concat reproduce the sequential state
+byte-for-byte; Omakase and Vegeta reproduce every storage slot and nonce and conserve total
+balance. Per-caller balances legitimately differ under reordering (which tx pays SSTORE_SET
+vs SSTORE_RESET moves), so they are excluded from the reordering engines' digest. On real
+blocks digests are recorded, not asserted (reordered real EVM execution diverges by design —
+the reason the synthetic workload exists — and even the order-preserving parallel engines
+differ from sequential only in lazy beneficiary settlement).
+
+### Vegeta baseline — design decision
+
+Vegeta's contribution is a schedule: longest per-key dependency chain first (Rule 1) and a
+DAG in which only WAW edges block (Rule 2), intra-block only (§4.2 of their paper defers
+inter-block parallelism to future work). We run that schedule on **our graph-aware OCC
+engine**: `vegeta::speculate_graph` re-sequences the per-block `TransactionGraph` our own
+pre-pass built (same access sets, same gas costs) and rebuilds it in Vegeta's order;
+`GraphPevm` executes it. `TransactionGraph::add_transaction` already emits WAW-only edges,
+which is exactly Rule 2's blocking clause. Consequences: every engine shares one pre-pass, one
+MV store and one validation path — "Vegeta" vs "Graph-aware OCC" differ *only* in intra-block
+order, and Vegeta vs Omakase differ *only* in Omakase's inter-block integration — and abort
+counts are directly comparable.
+
+A literal port of Algorithms 1–3 including Vegeta's own execution model (Aria-style batches
+on a frozen snapshot, no MV store, serial re-execution tail) is kept in `vegeta.rs`
+(`speculate` + `replay`) as a documented reference. It is correct (passes the exact-state check)
+but ~100x slower on this stack, i.e. it measures the port, not the algorithm, so it is not used
+for reported numbers.
+
+### Dataset notes from this round
+
+- The paper's dataset is chunks 1–3 (15 000 blocks). `download.sh` also fetched chunk 4 and a
+  `test_data/blocks/` tree that no experiment reads (~170 GB); both skipped this time.
+- `download_rw` had no retry and reported Alchemy 429s as "need Alchemy Growth", silently
+  dropping the block. Fixed: exponential backoff with jitter (`RPC_MAX_ATTEMPTS`,
+  `RPC_BASE_DELAY_MS`) and `SKIP_EXISTING=1` for resumable runs. Running several ranges in
+  parallel still exceeds the compute-unit cap; `finish_download.sh` waits, then fills gaps
+  with serial passes until all 15 000 blocks are present.
+- `pevm/generate_synthetic.sh` produces `rw_time` incrementally (`SKIP_EXISTING=1`, repeated
+  passes) so it overlaps with the download; the box is 36-core and the download is
+  network-bound, so the single-threaded timing replay is unaffected.
+
+### Where does the concatenated baseline stop winning? (added after first results)
+
+First rebuttal numbers showed the concatenated-block Block-STM baseline (R4-O2) *ahead* of
+Omakase at 100-block rounds on all three workloads (e.g. artificial K=2 M=40: concat 2.70 ms/block,
+Omakase 3.02, per-block Block-STM 4.98 — Omakase's groups averaged only 2.3 blocks). Three
+reasons, each now testable:
+
+1. **Fixed-cost amortisation** — per-execution thread spawn / MvMemory / beneficiary settlement
+   is large relative to a 100-tx synthetic block; one 5 000-tx window pays it once.
+2. **The synthetic workloads cannot exhibit Block-STM's cascade collapse** — access sets are
+   fixed by calldata, so a re-execution never writes a new location (`wrote_new_location`
+   stays 0). Only real Ethereum shows cascades; there Block-STM is already at 0.64 re-exec/tx
+   vs Omakase 0.37.
+3. **The integrator is conservative** — hot-key veto + τ_CV keep groups small, and the merge cap
+   was hard-coded at 10 blocks. Concat is Omakase with one group, no graph, no filtering.
+
+Additions in `rebuttal_test.rs` (all CSVs now also carry `threads`, `merge_cap`):
+
+- **Concat + graph** (`cgraph_*`): graph-aware OCC over the whole round as a single group,
+  built by `round_graph()` from the per-block graphs (no reorder, no hot-key veto). Isolates
+  what the graph is worth at full window size. Early smoke: helps on artificial (+10 % over
+  concat), *hurts* on real blocks (mispredicted edges over-serialise — consistent with §7.4).
+- **Concat diagnostics** (`concat_*` abort columns): cascades of the reviewer's baseline are
+  now measured, not inferred.
+- **`MERGE_CAP`** env → `GreedyIntegratorConfig.max_group_blocks` (default 10, the historical
+  hard-coded value; other harnesses pass 10 explicitly so their results are unchanged).
+
+Sweeps (`experiments/rebuttal/run_sweeps.sh`, outputs in `experiments/rebuttal/sweeps/`):
+threads ∈ {4,8,16,24,32}; round size ∈ {5,10,20,50,100} blocks (total txs held roughly
+constant); merge cap ∈ {10,25,50,∞}. Artificial points at the high-contention corner
+(K=4, M=40 %), real points on 20 batches of the Cancun chunk.
+
+`run_campaign.sh` serialises everything (artificial grid → real + V2 → sweeps) so no two
+timing runs share the machine. Test binaries run with cwd `crates/pevm/`, so
+`crates/pevm/experiments` is a symlink to `../../experiments` and relative `OUTPUT` paths
+land in `pevm/experiments/`.
+
+### Rebuttal campaign — headline results (all runs complete, 0 panics; full tables in `pevm/experiments/rebuttal/REPORT.md`)
+
+Real Ethereum, 150 batches × 100 blocks, t=8: Sequential 17.3k tx/s; Block-STM 32.5k (1.87×);
+**Concat Block-STM 37.0k (2.14×)**; Concat + graph 34.0k (1.96×); Graph-aware OCC 30.5k (1.76×);
+Vegeta 28.6k (1.65×); **Omakase 46.3k (2.67×)**, p99 5.9 ms/block vs 13.8 for Concat.
+Re-executions/tx: Block-STM 0.55, Concat 0.83, Concat+graph 0.65, Omakase 0.42.
+Preparatory phases: pre-execute 1.01× sequential, graph build 0.10×, integrate 0.19×; single-node
+end-to-end 1.68× vs 2.67× execution-only. Proposal metadata 12 % of calldata.
+
+Synthetic V2 (exact hints): Concat + graph 2.99× > Concat 2.73× > Omakase 2.34× > Graph OCC 2.10×
+≈ Vegeta 2.08× > Block-STM 1.96×; every graph-driven engine has 0 re-executions.
+
+Sweeps (real = 20 Cancun batches; artificial = K=4, M=40 %):
+- **threads**: Omakase leads on real at every t (2.44→2.68→2.07 for t=4→8→32) while Concat collapses
+  2.37→1.59; on artificial Omakase overtakes Concat from t=16 (3.11 vs 2.52).
+- **round size** (real): Concat ahead at ≤20 blocks/round (2.36–2.54 vs 2.18–2.38), Omakase ahead at
+  ≥50 (2.59, 2.68).
+- **merge cap** {10,25,50,∞}: no effect — the cap is never binding; τ_CV and the hot-key veto set group size.
+- **aggressive integration** (τ_CV=0.01): artificial — groups 25→4.8, Omakase 3.24→3.49, now above
+  Concat (3.40); real — cap 10 gives 2.73 (best observed), cap 50 drops to 2.36, cap ∞ collapses to 1.68
+  (below Block-STM): with imperfect hints, large groups over-serialise on mispredicted edges even
+  though re-executions fall to 0.25/tx. Bounding the window is what makes Omakase beat Concat on real data.
+- **per-tx cost** (artificial, TARGET 100→2000): Concat 3.41→4.25, Omakase 3.26→3.92 — the
+  "expensive transactions favour Omakase" hypothesis is *not* supported on this workload.
+
+Reading: Concat is the upper bound when access-set hints are exact (V2, artificial); Omakase is the
+better point when hints are state-dependent and imperfect (real Ethereum), because it limits the
+optimistic window and isolates hot keys. Vegeta's longest-chain-first order is neutral with exact hints
+and harmful with imperfect ones.
