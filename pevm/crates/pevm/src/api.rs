@@ -75,6 +75,17 @@ fn load(path: &str) -> anyhow::Result<InMemoryStorage> {
     Ok(storage)
 }
 
+/// Generate the ERC20 state snapshot and account list that
+/// `load_in_memory_storage` / `load_account_addresses` expect for
+/// `WorkloadType::ERC20(clusters, families, people)`, at the paths they read.
+pub fn write_erc20_snapshot(num_clusters: usize, num_families: usize, num_people: usize) -> anyhow::Result<()> {
+    let (storage, addresses) = PevmAPI::get_erc20_state_and_bytecode(num_clusters, num_families, num_people);
+    let dir = "/home/ubuntu/congestion_control/pevm/crates/pevm";
+    save(&storage, &format!("{dir}/storage_{num_clusters}_{num_families}_{num_people}.json"))?;
+    save_addresses(&format!("{dir}/account_addresses_{num_clusters}_{num_families}_{num_people}.bin"), &addresses)?;
+    Ok(())
+}
+
 pub fn load_in_memory_storage(workload_type: &WorkloadType) -> InMemoryStorage {
     match workload_type {
         WorkloadType::ERC20(num_clusters, num_families_per_cluster, num_people_per_family) => {
@@ -205,10 +216,44 @@ impl PevmAPI {
 }
 
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ExecutionMode {
     #[default] Sequential,
+    /// Block-STM, one committed block at a time.
     Parallel,
+    /// Block-STM over all blocks of a committed round fused into one block
+    /// (the "concatenate the round" baseline).
+    Concatenated,
+    /// Omakase: per-block conflict graphs, greedy inter-block integration,
+    /// graph-aware OCC per integrated group.
+    Integrated,
+}
+
+impl ExecutionMode {
+    /// `PEVM_EXECUTION_MODE` = sequential | parallel | concatenated | integrated
+    /// (default: parallel), so a deployment can be switched without a rebuild.
+    pub fn from_env() -> Self {
+        match std::env::var("PEVM_EXECUTION_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "sequential" => ExecutionMode::Sequential,
+            "concatenated" | "concat" => ExecutionMode::Concatenated,
+            "integrated" | "omakase" => ExecutionMode::Integrated,
+            _ => ExecutionMode::Parallel,
+        }
+    }
+}
+
+/// Worker threads for the live executor: `PEVM_THREADS` (default 8, the
+/// optimum found in the thread sweep), applied identically to every mode.
+fn live_concurrency() -> NonZeroUsize {
+    std::env::var("PEVM_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(NonZeroUsize::new)
+        .unwrap_or(NonZeroUsize::new(8).unwrap())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,8 +303,119 @@ impl PevmExecutor {
         self.storage.update_accounts(state);
     }
 
+    /// Execute every block of a committed round. Sequential and Parallel run
+    /// block by block as before; Concatenated fuses the round into one
+    /// Block-STM window; Integrated runs the full Omakase pipeline
+    /// (pre-execute -> per-block graph + reorder -> greedy integration ->
+    /// graph-aware OCC per group). Returns (blocks, transactions) executed.
+    pub fn execute_round(&mut self, blocks: Vec<Vec<(String, Address)>>) -> (usize, usize) {
+        let blocks: Vec<Vec<TxEnv>> = blocks
+            .into_iter()
+            .map(deserializer::decode_batch_hex)
+            .filter(|b| !b.is_empty())
+            .collect();
+        let num_blocks = blocks.len();
+        let num_txs: usize = blocks.iter().map(|b| b.len()).sum();
+        if num_blocks == 0 {
+            return (0, 0);
+        }
+        let concurrency = live_concurrency();
+        let spec_id = SpecId::LATEST;
+
+        match self.execution_mode {
+            ExecutionMode::Sequential | ExecutionMode::Parallel => {
+                for txs in blocks {
+                    self.execute_decoded(txs);
+                }
+            }
+            ExecutionMode::Concatenated => {
+                let concat: Vec<TxEnv> = blocks.into_iter().flatten().collect();
+                let result = Pevm::default().execute_revm_parallel(
+                    &self.chain, &self.storage, spec_id, BlockEnv::default(), concat, concurrency,
+                );
+                match result {
+                    Ok(res) => self.update_storage(res),
+                    Err(e) => tracing::error!("Concatenated execution failed: {:?}", e),
+                }
+            }
+            ExecutionMode::Integrated => {
+                use crate::graph_pevm::GraphPevm;
+                use crate::greedy_integrator::{GreedyIntegrator, GreedyIntegratorConfig};
+                use crate::utils::nonce_tracker::NonceTracker;
+
+                // Nonces every caller starts the round with, for the
+                // reassignment that cross-block reordering requires.
+                let mut nonces = NonceTracker::new();
+                for txs in &blocks {
+                    for tx in txs {
+                        if !nonces.nonces.contains_key(&tx.caller) {
+                            let n = self.storage.accounts.get(&tx.caller).map(|a| a.nonce).unwrap_or(0);
+                            nonces.nonces.insert(tx.caller, n);
+                        }
+                    }
+                }
+
+                // Proposer side: pre-execute each block, build its conflict
+                // graph, reorder within the block.
+                let mut prep = self.storage.clone();
+                let mut dep_graphs = Vec::with_capacity(num_blocks);
+                let mut reordered = Vec::with_capacity(num_blocks);
+                for (i, txs) in blocks.iter().enumerate() {
+                    match GraphPevm::construct_graph_pevm_by_sequential(
+                        &self.chain, &prep, spec_id, BlockEnv::default(), txs.clone(), i as u64,
+                    ) {
+                        Ok((mut g, res)) => {
+                            update_storage_with_results(&mut prep, res);
+                            let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(
+                                txs.clone(), &mut g, concurrency.get(),
+                            );
+                            dep_graphs.push(ng);
+                            reordered.push(rtxs);
+                        }
+                        Err(e) => {
+                            tracing::error!("graph construction failed, executing block with Block-STM: {:?}", e);
+                            let r = Pevm::default().execute_revm_parallel(
+                                &self.chain, &self.storage, spec_id, BlockEnv::default(), txs.clone(), concurrency,
+                            );
+                            if let Ok(res) = r { self.update_storage(res); }
+                        }
+                    }
+                }
+                for g in &mut dep_graphs {
+                    g.set_hot_key_threshold(1.5);
+                }
+
+                // Validator side: integrate, reassign nonces, execute groups.
+                let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+                    num_threads: concurrency.get(),
+                    tau_cv: 0.5,
+                    max_group_blocks: 10,
+                });
+                let (mut groups, graphs) = integrator.integrate_pevm_graphs(dep_graphs, reordered);
+                for txs in groups.iter_mut() {
+                    nonces.update_txenv_nonces(txs);
+                }
+                for (txs, graph) in groups.into_iter().zip(graphs.into_iter()) {
+                    let mut engine = GraphPevm::default();
+                    match engine.execute_revm_parallel(
+                        &self.chain, &self.storage, spec_id, BlockEnv::default(), txs, concurrency, graph,
+                    ) {
+                        Ok(res) => self.update_storage(res),
+                        Err(e) => tracing::error!("Integrated execution failed: {:?}", e),
+                    }
+                }
+            }
+        }
+        (num_blocks, num_txs)
+    }
+
     pub fn execute(&mut self, txs: Vec<(String, Address)>) {
-        let mut txs = deserializer::decode_batch_hex(txs);
+        let txs = deserializer::decode_batch_hex(txs);
+        self.execute_decoded(txs);
+    }
+
+    fn execute_decoded(&mut self, txs: Vec<TxEnv>) {
+        let mut txs = txs;
 
         match self.execution_mode {
             ExecutionMode::Sequential => {
@@ -273,8 +429,8 @@ impl PevmExecutor {
                 );
                 self.update_storage(result.unwrap());
             }
-            ExecutionMode::Parallel => {
-                let concurrency_level = thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+            ExecutionMode::Parallel | ExecutionMode::Concatenated | ExecutionMode::Integrated => {
+                let concurrency_level = live_concurrency();
                 tracing::info!("Starting Executing {} transactions in parallel with {} threads", &txs.len(), concurrency_level);
 
                 let result = Pevm::default().execute_revm_parallel(

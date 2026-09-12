@@ -99,6 +99,14 @@ pub mod node_defaults {
     }
 
     pub fn default_pevm_workload_type() -> pevm::api::WorkloadType {
+        // PEVM_WORKLOAD="clusters,families,people" overrides the built-in
+        // ERC20 shape without a config file (benchmark runs).
+        if let Ok(v) = std::env::var("PEVM_WORKLOAD") {
+            let p: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if p.len() == 3 {
+                return pevm::api::WorkloadType::ERC20(p[0], p[1], p[2]);
+            }
+        }
         pevm::api::WorkloadType::ERC20(1, 1, 4)
     }
 }
@@ -287,7 +295,9 @@ mod client_defaults {
     use super::Duration;
 
     pub fn default_load() -> usize {
-        200
+        // PEVM_LOAD (tx/s offered per validator) overrides the built-in rate
+        // for benchmark runs; the generator turns it into one block every 10 ms.
+        std::env::var("PEVM_LOAD").ok().and_then(|v| v.parse().ok()).unwrap_or(200)
     }
 
     pub fn default_transaction_size() -> usize {

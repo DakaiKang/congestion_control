@@ -178,7 +178,7 @@ impl<H: BlockHandler> Core<H> {
             committer,
             pevm_executor: if public_config.parameters.enable_pevm_executor {
                 Some(PevmExecutor::new(
-                    ExecutionMode::Parallel,
+                    ExecutionMode::from_env(),
                     public_config.parameters.pevm_workload_type.clone()
                 ))
             } else {
@@ -432,18 +432,46 @@ impl<H: BlockHandler> Core<H> {
         }
     }
 
+    /// Execute everything this commit delivered as one *round*: all blocks of
+    /// all committed sub-DAGs, in commit order. Sequential and Block-STM modes
+    /// still execute block by block inside the executor; the Concatenated and
+    /// Integrated modes act on the whole round, which is what they exist for.
     pub fn handle_committed_subdag_with_pevm(
         &mut self,
         committed: Vec<CommittedSubDag>,
     ) {
+        let mut round: Vec<Vec<(String, Address)>> = Vec::new();
         for commit in &committed {
             for block in &commit.blocks {
                 self.epoch_manager
                     .observe_committed_block(block, &self.committee);
-                tracing::info!("executing block of round {} from replica {}", block.reference().round, block.reference().authority);
-                self.execute_block_in_pevm(block.statements());
+                let mut txs = Vec::<(String, Address)>::new();
+                for statement in block.statements() {
+                    if let BaseStatement::Share(share) = statement {
+                        let (raw_hex, caller) = decode_share_base_statement(share.data());
+                        txs.push((raw_hex, caller));
+                    }
+                }
+                if !txs.is_empty() {
+                    round.push(txs);
+                }
             }
         }
+        if round.is_empty() {
+            return;
+        }
+        let num_txs: usize = round.iter().map(|b| b.len()).sum();
+        let num_blocks = round.len();
+        let t = Instant::now();
+        self.pevm_executor.as_mut().expect("executor missing").execute_round(round);
+        let exec_ms = t.elapsed().as_secs_f64() * 1000.0;
+        self.executed_txns += num_txs;
+        let secs_f64 = self.start_time_point.elapsed().as_secs_f64();
+        // error level so the line survives RUST_LOG=error in benchmark runs.
+        tracing::error!(
+            "ROUND blocks={} txs={} exec_ms={:.2} total_txs={} elapsed_s={:.2} Throughput = {}",
+            num_blocks, num_txs, exec_ms, self.executed_txns, secs_f64, self.executed_txns as f64 / secs_f64
+        );
     }
 
     pub fn execute_block_in_pevm(&mut self, statements: &[BaseStatement]) {
