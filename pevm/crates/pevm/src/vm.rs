@@ -27,7 +27,7 @@ pub type ExecutionError = EVMError<ReadError>;
 /// Represents the state transitions of the EVM accounts after execution.
 /// If the value is [None], it indicates that the account is marked for removal.
 /// If the value is [`Some(new_state)`], it indicates that the account has become [`new_state`].
-type EvmStateTransitions = HashMap<Address, Option<EvmAccount>, BuildSuffixHasher>;
+pub(crate) type EvmStateTransitions = HashMap<Address, Option<EvmAccount>, BuildSuffixHasher>;
 
 /// Execution result of a transaction
 #[derive(Debug, Clone, PartialEq, Eq)]
