@@ -255,6 +255,7 @@ fn test_greedy_integration_execute() {
 
     // Step 2: greedy integration — merge graphs that can run together.
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         num_threads: concurrency.get(),
         ..GreedyIntegratorConfig::default()
     });
@@ -339,6 +340,7 @@ fn test_throughput_comparison() {
 
     // Greedy integration in batches of GREEDY_BATCH blocks.
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         tau_cv: 0.5,
         num_threads: concurrency.get(),
     });
@@ -496,6 +498,7 @@ fn test_greedy_param_sweep() {
         for &batch_size in batch_size_values {
             eprintln!("[sweep] tau_cv={tau_cv}  batch_size={batch_size} ...");
             let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+                max_group_blocks: 10,
                 tau_cv,
                 num_threads: concurrency.get(),
             });
@@ -1087,6 +1090,7 @@ fn test_throughput_comparison_v2() {
         .unwrap_or_else(|| GreedyIntegratorConfig::default().tau_cv);
     println!("V2 tau_cv = {}", tau_cv);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         num_threads: concurrency.get(),
         tau_cv,
         ..GreedyIntegratorConfig::default()
@@ -1566,6 +1570,7 @@ fn test_v2_all_batches() {
             g.set_hot_key_threshold(hot_key_threshold);
         }
         let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+            max_group_blocks: 10,
             num_threads: concurrency.get(),
             tau_cv,
         });
@@ -1745,6 +1750,7 @@ fn test_artificial_all_batches() {
             g.set_hot_key_threshold(hot_key_threshold);
         }
         let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+            max_group_blocks: 10,
             num_threads: concurrency.get(),
             tau_cv,
         });
