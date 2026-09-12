@@ -670,3 +670,31 @@ disappears (2972 vs 2647; 2668 vs 2625; 3000 vs 2953), confirming that the exces
 (cross-block RAW/WAR are not graph edges; the block barrier used to resolve them for free; per-batch
 correlation with blocks merged r = 0.54). Its lower cascade-abort count persists (134-172 vs 209-233) and is
 therefore not a merging effect — likely the integrator's hot-key-aware re-simulation; unverified.
+
+### Vegeta, faithful execution model (re-measured 2026-09-12)
+
+Reported Vegeta numbers now come from `speculate` + `replay` (Algorithms 1-3: Rule-1 re-sequencing,
+Aria-style parallel batches against a frozen pre-batch state, mispredicted transactions deferred to a
+serial tail; no multi-version store, no concurrent re-execution). The earlier "schedule on our OCC engine"
+variant (`speculate_graph`) stays in the code but is not reported. `replay` had a bug that made it look
+~100x slow on real blocks: deferred transactions were never removed from batch selection and were
+re-executed and re-deferred forever. Fixed (deferred transactions leave batch selection and no longer
+constrain dependents, as in the paper's Fig. 6; nonce failures caused by a deferred predecessor defer the
+successor; tail transactions take the sender's current nonce).
+
+| workload | Vegeta speedup | tx/s | serial tail (% txs) |
+|---|---:|---:|---:|
+| real (150 batches) | 1.31x | 22.8k | 1.0 % |
+| V2 (150) | 1.36x | 16.6k | 0.0 % |
+| artificial M=10 / 20 / 30 / 40 % | 3.29 / 2.23 / 1.70 / 1.38x | | 0 % |
+
+The tail is small; the cost is the batch model itself: each dependency-chain step becomes a batch barrier
+(a 318-tx Cancun block ran as 23 batches), so intra-block chains leave workers idle. Vegeta's schedule
+adds 15 % of calldata (its DAG carries WAR/RAW edges too) vs 12 % for Omakase's WAW-only graph.
+
+### Aggressive integration on all 150 real batches (tau_cv=0.01, cap 10)
+
+Shanghai 2.53x vs default 2.55x; Cancun 2.98x vs 2.93x (Merge chunk re-running after an accidental kill).
+Within +-2 %: merging more (22 -> 14 groups) buys nothing on real Ethereum; the default already sits on a
+flat optimum, and the gap to the concatenated round at low contention is structural, not a tuning choice.
+The "adopt as default" sentence is withdrawn.

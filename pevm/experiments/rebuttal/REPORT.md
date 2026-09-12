@@ -14,7 +14,7 @@ Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5,
 | Block-STM, concatenated | 64.5 | 37,027 | 3.73 | 6.29 | 13.82 | 2.14× |
 | Graph-aware OCC, concatenated | 70.2 | 33,983 | 4.10 | 6.73 | 14.63 | 1.96× |
 | Graph-aware OCC | 78.2 | 30,536 | 4.96 | 7.28 | 10.77 | 1.76× |
-| Vegeta (schedule on graph OCC) | 83.4 | 28,611 | 5.29 | 7.70 | 11.43 | 1.65× |
+| Vegeta (speculate + batch replay + serial tail) | 104.9 | 22,766 | 6.84 | 9.49 | 12.32 | 1.31× |
 | Omakase | 51.6 | 46,253 | 3.36 | 4.15 | 5.94 | 2.67× |
 
 **Where the time goes — full pipeline including the preparatory phases**
@@ -29,7 +29,7 @@ Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5,
 | Validator-side: integrate + execute | 77.5 |  | 5.17 | 0.56× (speedup 1.78×) |
 | Sequential execution (reference) | 137.7 |  | 9.18 | 1.00× |
 
-Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 9.53 s total, 0.635 ms/block.
+Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 24.02 s total, 1.601 ms/block.
 
 **Metadata shipped in a proposal**
 
@@ -37,7 +37,7 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 |---|---:|---:|---:|
 | Transaction calldata (what a block already carries) | 1729.2 | 115.3 | 100% |
 | Omakase per-block conflict graph (access-set hashes + WAW edges) | 211.3 | 14.1 | 12.2% |
-| Vegeta schedule (same encoding) | 211.3 | 14.1 | 12.2% |
+| Vegeta schedule (same encoding) | 237.0 | 15.8 | 13.7% |
 
 **Worst case across rounds (execution phase, in-memory)**
 
@@ -81,7 +81,7 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Block-STM, concatenated | 70.3 | 33,962 | 4.43 | 5.45 | 13.24 | 2.73× |
 | Graph-aware OCC, concatenated | 64.1 | 37,217 | 4.04 | 4.94 | 12.62 | 2.99× |
 | Graph-aware OCC | 91.3 | 26,143 | 5.63 | 7.67 | 16.30 | 2.10× |
-| Vegeta (schedule on graph OCC) | 92.2 | 25,883 | 5.62 | 7.77 | 16.29 | 2.08× |
+| Vegeta (speculate + batch replay + serial tail) | 144.2 | 16,558 | 9.13 | 11.63 | 20.04 | 1.33× |
 | Omakase | 81.9 | 29,163 | 5.09 | 6.42 | 14.99 | 2.34× |
 
 **Where the time goes — full pipeline including the preparatory phases**
@@ -96,7 +96,7 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Validator-side: integrate + execute | 94.3 |  | 6.28 | 0.49× (speedup 2.03×) |
 | Sequential execution (reference) | 191.6 |  | 12.77 | 1.00× |
 
-Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 6.44 s total, 0.429 ms/block.
+Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 31.88 s total, 2.125 ms/block.
 
 **Metadata shipped in a proposal**
 
@@ -104,7 +104,7 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 |---|---:|---:|---:|
 | Transaction calldata (what a block already carries) | 1587.0 | 105.8 | 100% |
 | Omakase per-block conflict graph (access-set hashes + WAW edges) | 192.2 | 12.8 | 12.1% |
-| Vegeta schedule (same encoding) | 192.1 | 12.8 | 12.1% |
+| Vegeta schedule (same encoding) | 231.6 | 15.4 | 14.6% |
 
 **Worst case across rounds (execution phase, in-memory)**
 
