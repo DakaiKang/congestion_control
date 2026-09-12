@@ -299,6 +299,22 @@ def main():
             ["blocks/round", "rounds", "txs", "seq s", "Block-STM s", "Omakase serial s", "integration s",
              "Omakase pipelined s", "integration hidden"]) + "\n")
 
+    lives = sorted(glob.glob(os.path.join(D, "live", "summary*.csv")))
+    for live in lives:
+        d = pd.read_csv(live, header=None, names=["mode", "log", "rounds", "blocks", "tps", "busy", "bpr"])
+        d["step"] = (d.groupby("mode").cumcount() // 4)  # each driver invocation appends 4 validators per mode
+        rows = []
+        for (mode, step), g in d.groupby(["mode", "step"], sort=False):
+            cap = g.tps.mean() / max(g.busy.mean(), 1e-9)
+            rows.append([mode, int(step), f"{g.tps.mean():,.0f}", f"{g.busy.mean() * 100:.0f}%", f"{cap:,.0f}",
+                         f"{g.bpr.mean():.1f}", f"{g.blocks.mean() * 1.0 / max(g.rounds.mean(), 1):.1f}" if False else f"{g.rounds.mean():,.0f}"])
+        tag = os.path.basename(live).replace("summary", "").replace(".csv", "").strip("_") or "default"
+        sections.append(f"\n## Live 4-validator Mysticeti deployment — {tag} (ERC20 8x4x8, steady state, per validator)\n\n" + md_table(rows,
+            ["execution mode", "load step", "committed tx/s", "executor busy", "implied executor capacity tx/s", "blocks/round", "rounds"]) +
+            "\n\nThe generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; "
+            "*executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), "
+            "and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.\n")
+
     if missing:
         sections.append("\n---\n_Still missing: " + ", ".join(missing) + "_\n")
     with open(out, "w") as f:

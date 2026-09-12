@@ -251,3 +251,31 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 10 | 170746 | 9.87 | 4.96 (1.99×) | 6.24 (1.58×) | 2.04 | 4.45 (2.22×) | 88% |
 | 20 | 20 | 70070 | 3.94 | 2.05 (1.93×) | 2.88 (1.37×) | 0.82 | 2.14 (1.84×) | 90% |
+
+
+## Live 4-validator Mysticeti deployment — minround1 (ERC20 8x4x8, steady state, per validator)
+
+| execution mode | load step | committed tx/s | executor busy | implied executor capacity tx/s | blocks/round | rounds |
+|---|---:|---:|---:|---:|---:|---:|
+| sequential | 0 | 39,949 | 42% | 94,610 | 1.3 | 20,390 |
+| parallel | 0 | 39,986 | 46% | 86,878 | 1.3 | 21,160 |
+| concatenated | 0 | 39,961 | 43% | 92,289 | 1.2 | 22,710 |
+| integrated | 0 | 39,943 | 84% | 47,551 | 3.9 | 3,957 |
+| sequential | 1 | 39,907 | 42% | 94,399 | 1.2 | 21,898 |
+| parallel | 1 | 39,962 | 47% | 84,980 | 1.2 | 22,847 |
+| concatenated | 1 | 39,931 | 44% | 90,907 | 1.2 | 22,678 |
+| integrated | 1 | 39,913 | 84% | 47,291 | 4.0 | 3,554 |
+
+The generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; *executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.
+
+
+## Live 4-validator Mysticeti deployment — minround1000 (ERC20 8x4x8, steady state, per validator)
+
+| execution mode | load step | committed tx/s | executor busy | implied executor capacity tx/s | blocks/round | rounds |
+|---|---:|---:|---:|---:|---:|---:|
+| sequential | 0 | 39,405 | 39% | 100,780 | 9.8 | 2,638 |
+| parallel | 0 | 39,968 | 44% | 90,069 | 9.8 | 2,681 |
+| concatenated | 0 | 40,012 | 32% | 123,685 | 9.8 | 2,738 |
+| integrated | 0 | 39,970 | 80% | 50,245 | 5.3 | 1,930 |
+
+The generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; *executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.

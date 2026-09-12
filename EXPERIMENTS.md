@@ -603,3 +603,33 @@ Reading: Concat is the upper bound when access-set hints are exact (V2, artifici
 better point when hints are state-dependent and imperfect (real Ethereum), because it limits the
 optimistic window and isolates hot keys. Vegeta's longest-chain-first order is neutral with exact hints
 and harmful with imperfect ones.
+
+### Live multi-proposer deployment (Mysticeti prototype)
+
+Addresses R2-O1's "full end-to-end measurement under a live multi-proposer deployment" (paper TODO P1).
+`mysticeti/` runs a 4-validator committee on one machine (`dry-run` mode, fixed ports, so one committee
+at a time); each validator executes every committed round with `PevmExecutor`, now in one of four modes
+selected by `PEVM_EXECUTION_MODE`: `sequential`, `parallel` (Block-STM per block), `concatenated`
+(Block-STM over the fused round), `integrated` (Omakase: pre-execute -> per-block graph + reorder ->
+greedy integration -> graph-aware OCC per group). `Core::handle_committed_subdag_with_pevm` hands all
+blocks of a commit to the executor as one round and logs `ROUND blocks= txs= exec_ms= ... Throughput =`
+at error level.
+
+Workload: the prototype's built-in ERC20 generator (`PEVM_WORKLOAD=8,4,8` = 8 token contracts x 4
+families x 8 accounts = 256 EOAs; snapshot via `tests/erc20_snapshot.rs`). Offered load per validator
+`PEVM_LOAD` tx/s (one block every 10 ms); the default 200 tx/s yields 1-2 blocks of 20 txs per round and a
+consensus-bound ~7.8k tx/s in every mode, so runs use 150k and 300k, where rounds are 3-5 blocks x
+100-150 txs and the executor is busy most of the time. Driver: `experiments/rebuttal/run_live_mysticeti.sh`
+(90 s per mode, first 20 s discarded); results in `experiments/rebuttal/live/summary.csv` and REPORT.md.
+
+Caveats to state: synthetic ERC20 transfers with exact hints (no state-dependent access sets), 4 proposers
+so at most ~4 blocks per round, all validators on one 36-thread machine (8 executor workers each).
+
+**Live results** (`experiments/rebuttal/live/summary_minround{1,1000}.csv`; PEVM_LOAD 150k/300k, 90 s, first 20 s
+discarded). Every mode: ~40.0k committed tx/s per validator (generator-bound; sequential executor 39-42 % busy).
+Executor time per committed tx with ~1000-tx rounds (9.8 blocks): sequential 9.9 us, Block-STM 11.1 us,
+concatenated 8.1 us, Omakase all stages 19.9 us (busy 80 %). With 1-2-block rounds Omakase is 84 % busy at the
+same throughput. Conclusion: functional end-to-end under multi-proposer consensus; on this cheap, exact-hint
+workload no parallel executor beats sequential and the preparatory stages double CPU per tx — the cost side of
+the ledger, consistent with the offline all-stages accounting. `PEVM_MIN_ROUND_TXS` accumulates commits into
+larger execution rounds.

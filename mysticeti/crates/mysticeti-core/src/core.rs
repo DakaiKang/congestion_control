@@ -67,6 +67,9 @@ pub struct Core<H: BlockHandler> {
     pub pevm_executor: Option<PevmExecutor>,
     executed_txns: usize,
     start_time_point: Instant,
+    /// Committed blocks not yet executed (see PEVM_MIN_ROUND_TXS).
+    pending_round: Vec<Vec<(String, Address)>>,
+    min_round_txs: usize,
 }
 
 pub struct CoreOptions {
@@ -186,6 +189,8 @@ impl<H: BlockHandler> Core<H> {
             },
             executed_txns: 0,
             start_time_point: Instant::now(),
+            pending_round: Vec::new(),
+            min_round_txs: std::env::var("PEVM_MIN_ROUND_TXS").ok().and_then(|v| v.parse().ok()).unwrap_or(1),
         };
 
         if !unprocessed_blocks.is_empty() {
@@ -460,7 +465,19 @@ impl<H: BlockHandler> Core<H> {
         if round.is_empty() {
             return;
         }
-        let num_txs: usize = round.iter().map(|b| b.len()).sum();
+        // PEVM_MIN_ROUND_TXS: accumulate committed blocks across commits until
+        // at least this many transactions are pending, then execute them as one
+        // round. The prototype commits every few milliseconds, so without this
+        // a "round" is 1-2 blocks; the knob lets the executor work on rounds
+        // comparable to the offline experiments (batch-mode execution is a
+        // legitimate deployment choice; latency cost is bounded by the threshold).
+        self.pending_round.extend(round);
+        let pending_txs: usize = self.pending_round.iter().map(|b| b.len()).sum();
+        if pending_txs < self.min_round_txs {
+            return;
+        }
+        let round = std::mem::take(&mut self.pending_round);
+        let num_txs: usize = pending_txs;
         let num_blocks = round.len();
         let t = Instant::now();
         self.pevm_executor.as_mut().expect("executor missing").execute_round(round);
