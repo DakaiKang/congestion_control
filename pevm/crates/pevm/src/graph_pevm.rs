@@ -33,6 +33,8 @@ pub struct GraphPevm {
     execution_results: Vec<Mutex<Option<PevmTxExecutionResult>>>,
     abort_reason: OnceLock<AbortReason>,
     dropper: AsyncDropper<(MvMemory, GraphScheduler, Vec<TxEnv>)>,
+    /// Abort / re-execution counters from the last parallel execution.
+    pub last_diagnostics: crate::ExecDiagnostics,
 }
 
 impl GraphPevm {
@@ -211,6 +213,14 @@ impl GraphPevm {
             return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
         }
 
+        self.last_diagnostics = mv_memory.diagnostics(block_size);
+        self.last_diagnostics.re_executions =
+            scheduler.re_execution_count.load(std::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "diagnostics")]
+        {
+            self.last_diagnostics.blocking_aborts =
+                scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
+        }
         #[cfg(feature = "diagnostics")]
         {
             let re_execs = scheduler.re_execution_count.load(std::sync::atomic::Ordering::Relaxed);

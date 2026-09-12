@@ -114,6 +114,8 @@ pub struct Pevm {
     dropper: AsyncDropper<(MvMemory, Scheduler, Vec<TxEnv>)>,
     /// Incarnation-0 access set keys from last parallel execution, for divergence analysis
     pub last_incarnation0_keys: Vec<Option<(std::collections::HashSet<u64>, std::collections::HashSet<u64>)>>,
+    /// Abort / re-execution counters from the last parallel execution.
+    pub last_diagnostics: crate::ExecDiagnostics,
 }
 
 impl Pevm {
@@ -380,8 +382,12 @@ impl Pevm {
         }
 
         let re_execs = scheduler.total_reexecutions();
+        self.last_diagnostics = mv_memory.diagnostics(block_size);
+        self.last_diagnostics.re_executions = re_execs;
         #[cfg(feature = "diagnostics")]
         {
+            self.last_diagnostics.blocking_aborts =
+                scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
             self.last_incarnation0_keys = mv_memory.get_incarnation0_keys();
             let blocking = scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
             let blk_est = mv_memory.blocking_estimate.load(std::sync::atomic::Ordering::Relaxed);
@@ -597,14 +603,14 @@ pub struct TxAccessSets {
 /// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
 ///   `recipient` are excluded from the read set (pevm returns a mock account and
 ///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
-struct TrackingDB<DB> {
+pub(crate) struct TrackingDB<DB> {
     pub inner: DB,
     pub reads: HashSet<u64>,
     /// Block-level: coinbase address, excluded from all sets.
-    coinbase: Address,
+    pub(crate) coinbase: Address,
     /// Tx-level: caller + recipient for lazy (pure-ETH-transfer) txs.
     /// Cleared and repopulated before each transaction.
-    lazy_addresses: HashSet<Address>,
+    pub(crate) lazy_addresses: HashSet<Address>,
 }
 
 impl<DB: Database> TrackingDB<DB> {
@@ -736,7 +742,7 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
 /// - Storage(addr, slot): slot value changed
 ///
 /// Excludes `coinbase` (pevm applies gas rewards via LazyRecipient, never as a full write).
-fn extract_write_set_from_result(
+pub(crate) fn extract_write_set_from_result(
     result_and_state: &ResultAndState,
     coinbase: Address,
 ) -> HashSet<u64> {

@@ -184,6 +184,27 @@ impl MvMemory {
         wrote_new_location
     }
 
+    /// Snapshot the diagnostic counters into a plain struct. Every field but
+    /// `re_executions` (filled in by the caller, which owns the scheduler)
+    /// stays 0 unless `feature = "diagnostics"` is enabled.
+    pub(crate) fn diagnostics(&self, block_size: usize) -> crate::ExecDiagnostics {
+        #[allow(unused_mut)]
+        let mut d = crate::ExecDiagnostics {
+            block_size,
+            ..Default::default()
+        };
+        #[cfg(feature = "diagnostics")]
+        {
+            d.validation_aborts = self.total_aborts.load(Ordering::Relaxed);
+            d.cascade_aborts = self.cascade_aborts.load(Ordering::Relaxed);
+            d.wrote_new_location = self.wrote_new_location.load(Ordering::Relaxed);
+            d.blocking_estimate = self.blocking_estimate.load(Ordering::Relaxed);
+            d.blocking_nonce = self.blocking_nonce.load(Ordering::Relaxed);
+            d.blocking_retry = self.blocking_retry.load(Ordering::Relaxed);
+        }
+        d
+    }
+
     pub(crate) fn validate_read_locations(&self, tx_idx: TxIdx) -> bool {
         for (location, prior_origins) in &index_mutex!(self.last_locations, tx_idx).read {
             if let Some(written_transactions) = self.data.get(location) {
