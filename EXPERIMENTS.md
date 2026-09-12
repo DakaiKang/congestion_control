@@ -694,7 +694,7 @@ adds 15 % of calldata (its DAG carries WAR/RAW edges too) vs 12 % for Omakase's 
 
 ### Aggressive integration on all 150 real batches (tau_cv=0.01, cap 10)
 
-Shanghai 2.53x vs default 2.55x; Cancun 2.98x vs 2.93x (Merge chunk re-running after an accidental kill).
+Merge 2.48x vs default 2.46x; Shanghai 2.53x vs 2.55x; Cancun 2.98x vs 2.93x (all 150 batches).
 Within +-2 %: merging more (22 -> 14 groups) buys nothing on real Ethereum; the default already sits on a
 flat optimum, and the gap to the concatenated round at low contention is structural, not a tuning choice.
 The "adopt as default" sentence is withdrawn.
