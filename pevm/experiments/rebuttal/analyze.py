@@ -299,6 +299,25 @@ def main():
             ["blocks/round", "rounds", "txs", "seq s", "Block-STM s", "Omakase serial s", "integration s",
              "Omakase pipelined s", "integration hidden"]) + "\n")
 
+    lat = sorted(glob.glob(os.path.join(D, "sweeps", "statelat_real_d*.csv")),
+                 key=lambda f: int(os.path.basename(f)[len("statelat_real_d"):-4]))
+    if lat:
+        rows = []
+        for f in lat:
+            d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+            if not len(d):
+                continue
+            nb = d.num_blocks.sum(); seq = d.seq_time_s.sum(); ms = lambda c: d[c].sum() / nb * 1000
+            integ, ex, par, con = d.phase_integrate_s.sum(), d.integrated_time_s.sum(), d.par_time_s.sum(), d.concat_time_s.sum()
+            rows.append([f"{int(d.delay_ns.iloc[0]) / 1000:g}", f"{ms('seq_time_s'):.1f}", f"{seq / par:.2f}", f"{seq / con:.2f}",
+                         f"{seq / ex:.2f}", f"{seq / (ex + integ):.2f}", f"{ms('phase_integrate_s'):.2f}",
+                         f"{integ / (ex + integ) * 100:.0f}%", f"{ms('par_time_s') - ms('integrated_time_s'):.2f}",
+                         f"{d.par_re_exec.sum() / d.num_txs.sum():.2f}", f"{d.integ_re_exec.sum() / d.num_txs.sum():.2f}"])
+        sections.append("\n## Emulated state-access latency — real Ethereum (20 Cancun batches, t=8)\n\n" + md_table(rows,
+            ["read latency µs", "seq ms/block", "Block-STM ×", "Concat ×", "Omakase exec ×", "Omakase exec+integrate ×",
+             "integrate ms/block", "integrate share of validator time", "exec saved vs Block-STM ms/block", "re-exec/tx Block-STM", "Omakase"]) +
+            "\n\nEvery account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.\n")
+
     lives = sorted(glob.glob(os.path.join(D, "live", "summary*.csv")))
     for live in lives:
         d = pd.read_csv(live, header=None, names=["mode", "log", "rounds", "blocks", "tps", "busy", "bpr"])

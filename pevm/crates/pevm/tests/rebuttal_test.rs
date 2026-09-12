@@ -1248,3 +1248,196 @@ fn test_rebuttal_pipeline_real() {
         rounds.len(), nb, total_txs, seq_s, par_s, sp(par_s), serial_s, sp(serial_s), integ_only, pipelined_s, sp(pipelined_s), output
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State-access latency: what happens to the accounting when execution is not
+// against an in-memory map?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `InMemoryStorage` with a fixed spin-wait added to every account and storage
+/// slot read, emulating the state-trie / SSD lookup a production client pays.
+/// Every engine executes against the same wrapper, so the comparison stays
+/// fair; graph construction and integration never touch it and stay constant.
+struct LatencyStorage {
+    inner: InMemoryStorage,
+    delay_ns: u64,
+}
+
+impl LatencyStorage {
+    #[inline]
+    fn pay(&self) {
+        if self.delay_ns == 0 {
+            return;
+        }
+        let t = Instant::now();
+        while (t.elapsed().as_nanos() as u64) < self.delay_ns {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+impl pevm::storage::Storage for LatencyStorage {
+    type Error = u8;
+    fn basic(&self, a: &revm::primitives::Address) -> Result<Option<pevm::storage::AccountBasic>, u8> {
+        self.pay();
+        self.inner.basic(a)
+    }
+    fn code_hash(&self, a: &revm::primitives::Address) -> Result<Option<revm::primitives::B256>, u8> {
+        self.inner.code_hash(a)
+    }
+    fn code_by_hash(&self, h: &revm::primitives::B256) -> Result<Option<pevm::EvmCode>, u8> {
+        self.inner.code_by_hash(h)
+    }
+    fn has_storage(&self, a: &revm::primitives::Address) -> Result<bool, u8> {
+        self.inner.has_storage(a)
+    }
+    fn storage(&self, a: &revm::primitives::Address, i: &revm::primitives::U256) -> Result<revm::primitives::U256, u8> {
+        self.pay();
+        self.inner.storage(a, i)
+    }
+    fn block_hash(&self, n: &u64) -> Result<revm::primitives::B256, u8> {
+        self.inner.block_hash(n)
+    }
+}
+
+/// Sequential, Block-STM, concatenated Block-STM and Omakase (with its phase
+/// timing) on real blocks, every state read costing `STATE_DELAY_NS` extra.
+#[test]
+fn test_rebuttal_state_latency_real() {
+    use std::io::Write;
+
+    let blocks_dir = std::env::var("BLOCKS_DIR").unwrap_or_else(|_| {
+        "/home/ubuntu/Omakase/eth-block-downloader/test_data/blocks_rw".to_string()
+    });
+    let start_block = env_u64("START_BLOCK", 19_557_289);
+    let batch_size = env_usize("BATCH_SIZE", 100);
+    let max_batches = env_usize("MAX_BATCHES", 20);
+    let delay_ns = env_u64("STATE_DELAY_NS", 0);
+    let concurrency = NonZeroUsize::new(env_usize("NUM_THREADS", 8)).expect("NUM_THREADS>0");
+    let tau_cv = env_f64("TAU_CV", 0.5);
+    let hot_key_threshold = env_f64("HOT_KEY_THRESHOLD", 1.5);
+    let output = std::env::var("OUTPUT").unwrap_or_else(|_| {
+        format!("experiments/rebuttal/sweeps/statelat_real_d{delay_ns}.csv")
+    });
+    if let Some(dir) = std::path::Path::new(&output).parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&output).expect("create output"));
+    writeln!(w, "batch_idx,num_blocks,num_txs,delay_ns,seq_time_s,par_time_s,concat_time_s,integrated_time_s,\
+phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_exec,num_integrated_groups").unwrap();
+    let chain = PevmEthereum::mainnet();
+    let overall = Instant::now();
+    let wrap = |s: InMemoryStorage| LatencyStorage { inner: s, delay_ns };
+
+    for batch_idx in 0..max_batches {
+        let first = start_block + (batch_idx * batch_size) as u64;
+        let block_numbers: Vec<u64> = (first..first + batch_size as u64).collect();
+        if block_numbers.iter().any(|n| !std::path::Path::new(&format!("{blocks_dir}/block_{n}.json")).exists()) {
+            continue;
+        }
+        let spec_id = get_spec_id(block_numbers[0]);
+        let Ok(storage) = create_multi_block_storage(&block_numbers, &blocks_dir) else { continue };
+        let mut blocks_txs: Vec<Vec<TxEnv>> = Vec::new();
+        let mut nonce_tracker = NonceTracker::new();
+        let mut ok = true;
+        for &bn in &block_numbers {
+            match load_block_for_execution(&format!("{blocks_dir}/block_{bn}.json"), true) {
+                Ok((_, bs, txs)) => { nonce_tracker.record_from_prestate(bn, &bs, &txs); blocks_txs.push(txs); }
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if !ok { continue; }
+        let total_txs: usize = blocks_txs.iter().map(|b| b.len()).sum();
+
+        // Sequential (latency applied).
+        let mut s = wrap(storage.clone());
+        let t = Instant::now();
+        for txs in blocks_txs.clone() {
+            match execute_revm_sequential(&chain, &s, spec_id, real_block_env(), txs) {
+                Ok(r) => update_storage_with_results(&mut s.inner, r),
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if !ok { continue; }
+        let seq_s = t.elapsed().as_secs_f64();
+
+        // Proposer side: pre-execute (latency applied — it is a replay) and graph build.
+        let mut prep = wrap(storage.clone());
+        let t = Instant::now();
+        for txs in blocks_txs.iter() {
+            if let Ok((r, _)) = execute_revm_sequential_with_access_sets(&chain, &prep, spec_id, real_block_env(), txs.clone()) {
+                update_storage_with_results(&mut prep.inner, r);
+            }
+        }
+        let pre_s = t.elapsed().as_secs_f64();
+        let mut prep = wrap(storage.clone());
+        let mut dep_graphs = Vec::new();
+        let mut reordered = Vec::new();
+        let t = Instant::now();
+        for (i, txs) in blocks_txs.iter().enumerate() {
+            match GraphPevm::construct_graph_pevm_by_sequential(&chain, &prep, spec_id, real_block_env(), txs.clone(), i as u64) {
+                Ok((mut g, r)) => {
+                    update_storage_with_results(&mut prep.inner, r);
+                    let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut g, concurrency.get());
+                    dep_graphs.push(ng); reordered.push(rtxs);
+                }
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if !ok { continue; }
+        let build_s = (t.elapsed().as_secs_f64() - pre_s).max(0.0);
+        for g in &mut dep_graphs { g.set_hot_key_threshold(hot_key_threshold); }
+
+        // Validator side: integrate.
+        let integrator = GreedyIntegrator::new(GreedyIntegratorConfig { num_threads: concurrency.get(), tau_cv, max_group_blocks: 10 });
+        let t = Instant::now();
+        let (mut groups, graphs) = integrator.integrate_pevm_graphs(dep_graphs, reordered);
+        let integ_s = t.elapsed().as_secs_f64();
+        for txs in groups.iter_mut() { nonce_tracker.update_txenv_nonces(txs); }
+        let num_groups = groups.len();
+
+        // Block-STM per block.
+        let mut s = wrap(storage.clone());
+        let mut engine = Pevm::default();
+        let mut par_re = 0usize;
+        let t = Instant::now();
+        for txs in blocks_txs.clone() {
+            if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, real_block_env(), txs, concurrency) {
+                par_re += engine.last_diagnostics.re_executions;
+                update_storage_with_results(&mut s.inner, r);
+            }
+        }
+        let par_s = t.elapsed().as_secs_f64();
+
+        // Concatenated Block-STM.
+        let concat: Vec<TxEnv> = blocks_txs.iter().flat_map(|b| b.iter().cloned()).collect();
+        let mut s = wrap(storage.clone());
+        let mut engine = Pevm::default();
+        let t = Instant::now();
+        if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, concat_block_env(blocks_txs.len()), concat, concurrency) {
+            update_storage_with_results(&mut s.inner, r);
+        }
+        let concat_s = t.elapsed().as_secs_f64();
+
+        // Omakase execution.
+        let mut s = wrap(storage.clone());
+        let mut integ_re = 0usize;
+        let t = Instant::now();
+        for (txs, graph) in groups.into_iter().zip(graphs.into_iter()) {
+            let mut engine = GraphPevm::default();
+            if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, concat_block_env(blocks_txs.len()), txs, concurrency, graph) {
+                integ_re += engine.last_diagnostics.re_executions;
+                update_storage_with_results(&mut s.inner, r);
+            }
+        }
+        let integ_exec_s = t.elapsed().as_secs_f64();
+
+        writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}",
+            batch_idx, blocks_txs.len(), total_txs, delay_ns, seq_s, par_s, concat_s, integ_exec_s,
+            pre_s, build_s, integ_s, par_re, integ_re, num_groups).unwrap();
+        w.flush().unwrap();
+        println!("  d={}ns batch {} txs={} | seq {:.2}s par {:.2}s concat {:.2}s omakase {:.2}s (+integ {:.2}s) | cum {:.0}s",
+            delay_ns, batch_idx, total_txs, seq_s, par_s, concat_s, integ_exec_s, integ_s, overall.elapsed().as_secs_f64());
+    }
+    println!("✓ CSV -> {output}");
+}

@@ -633,3 +633,22 @@ same throughput. Conclusion: functional end-to-end under multi-proposer consensu
 workload no parallel executor beats sequential and the preparatory stages double CPU per tx — the cost side of
 the ledger, consistent with the offline all-stages accounting. `PEVM_MIN_ROUND_TXS` accumulates commits into
 larger execution rounds.
+
+### Emulated state-access latency (`test_rebuttal_state_latency_real`, `run_state_latency.sh`)
+
+`LatencyStorage` adds a spin-wait of δ to every account/slot read for every engine; graph build and
+integration never touch state. 20 Cancun batches, t=8 (speedup over sequential at the same δ):
+
+| δ µs | seq ms/blk | Block-STM | Concat | Omakase exec | Omakase exec+integ | integ share |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 10.6 | 1.95 | 2.37 | 2.74 | 1.86 | 32 % |
+| 2 | 13.8 | 2.10 | 2.58 | 2.78 | 2.03 | 27 % |
+| 5 | 18.5 | 2.25 | 2.76 | 2.83 | 2.20 | 22 % |
+| 10 | 26.0 | 2.35 | 2.86 | 2.82 | 2.35 | 17 % |
+| 20 | 41.1 | 2.43 | 2.93 | 2.81 | 2.49 | 11 % |
+| 50 | 85.5 | 2.43 | 2.96 | 2.74 | 2.59 | 6 % |
+
+Reading: integration's share of validator time falls 32 % → 6 %; Omakase including integration
+overtakes per-block Block-STM at δ ≈ 10 µs and leads by 0.16× at 50 µs. **Concat stays ahead at every δ**
+(its larger window hides read latency better; Omakase's groups average ~5 blocks and the graph serialises
+part of them). The in-memory argument therefore closes the gap to Block-STM, not to concatenation.

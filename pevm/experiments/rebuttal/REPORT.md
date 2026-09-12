@@ -253,6 +253,21 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | 20 | 20 | 70070 | 3.94 | 2.05 (1.93×) | 2.88 (1.37×) | 0.82 | 2.14 (1.84×) | 90% |
 
 
+## Emulated state-access latency — real Ethereum (20 Cancun batches, t=8)
+
+| read latency µs | seq ms/block | Block-STM × | Concat × | Omakase exec × | Omakase exec+integrate × | integrate ms/block | integrate share of validator time | exec saved vs Block-STM ms/block | re-exec/tx Block-STM | Omakase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 10.6 | 1.95 | 2.37 | 2.74 | 1.86 | 1.85 | 32% | 1.57 | 0.62 | 0.42 |
+| 1 | 12.4 | 2.05 | 2.50 | 2.78 | 1.95 | 1.90 | 30% | 1.58 | 0.61 | 0.42 |
+| 2 | 13.8 | 2.10 | 2.58 | 2.78 | 2.03 | 1.84 | 27% | 1.61 | 0.61 | 0.41 |
+| 5 | 18.5 | 2.25 | 2.76 | 2.83 | 2.20 | 1.89 | 22% | 1.69 | 0.60 | 0.40 |
+| 10 | 26.0 | 2.35 | 2.86 | 2.82 | 2.35 | 1.85 | 17% | 1.86 | 0.59 | 0.40 |
+| 20 | 41.1 | 2.43 | 2.93 | 2.81 | 2.49 | 1.88 | 11% | 2.33 | 0.58 | 0.41 |
+| 50 | 85.5 | 2.43 | 2.96 | 2.74 | 2.59 | 1.83 | 6% | 3.90 | 0.57 | 0.43 |
+
+Every account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.
+
+
 ## Live 4-validator Mysticeti deployment — minround1 (ERC20 8x4x8, steady state, per validator)
 
 | execution mode | load step | committed tx/s | executor busy | implied executor capacity tx/s | blocks/round | rounds |
