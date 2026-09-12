@@ -275,6 +275,65 @@ fn round_graph(
     g
 }
 
+
+/// Which engines to time. `ENGINES=vegeta` runs only sequential + Vegeta (fast
+/// re-measurement of one engine); anything else runs the full set.
+fn engines_vegeta_only() -> bool {
+    std::env::var("ENGINES").map(|v| v == "vegeta").unwrap_or(false)
+}
+
+/// Faithful Vegeta (Algorithms 1-3: speculation, Aria-style parallel batches
+/// against a frozen pre-batch state, mispredicted transactions deferred to a
+/// serial tail; no multi-version store and no concurrent re-execution) over a
+/// batch of blocks. Access sets come from the same sequential pre-pass as
+/// Omakase's graphs. Returns (schedules built, exec seconds, serial-tail txs,
+/// batches) and leaves `s` at the post-batch state.
+fn run_vegeta_faithful(
+    chain: &PevmEthereum,
+    s: &mut InMemoryStorage,
+    spec_id: SpecId,
+    block_env: &BlockEnv,
+    blocks_txs: &[Vec<TxEnv>],
+    access_sets: &[Vec<(HashSet<u64>, HashSet<u64>)>],
+    nonces: Option<&hashbrown::HashMap<revm::primitives::Address, u64>>,
+    concurrency: NonZeroUsize,
+) -> (Vec<vegeta::VegetaSchedule>, f64, f64, usize, usize) {
+    let t = Instant::now();
+    let mut schedules: Vec<vegeta::VegetaSchedule> = blocks_txs
+        .iter()
+        .zip(access_sets.iter())
+        .map(|(txs, sets)| {
+            let (reads, writes): (Vec<HashSet<u64>>, Vec<HashSet<u64>>) = if sets.len() == txs.len() {
+                (sets.iter().map(|(r, _)| r.clone()).collect(), sets.iter().map(|(_, w)| w.clone()).collect())
+            } else {
+                (vec![HashSet::new(); txs.len()], vec![HashSet::new(); txs.len()])
+            };
+            vegeta::speculate(txs.clone(), reads, writes)
+        })
+        .collect();
+    // Vegeta reorders within a block; give it the same nonce reassignment
+    // Omakase gets, from an independent tracker.
+    let mut nt = match nonces {
+        Some(n) => NonceTracker { nonces: n.clone() },
+        None => NonceTracker::new(),
+    };
+    for sched in schedules.iter_mut() {
+        nt.update_txenv_nonces(&mut sched.txs);
+    }
+    let spec_s = t.elapsed().as_secs_f64();
+
+    let t = Instant::now();
+    let (mut tail, mut batches) = (0usize, 0usize);
+    for sched in schedules.iter() {
+        match vegeta::replay(chain, s, spec_id, block_env.clone(), sched, concurrency,
+            |st, results| update_storage_with_results(st, results)) {
+            Ok((_r, stats)) => { tail += stats.re_executed; batches += stats.num_batches; }
+            Err(e) => println!("    vegeta replay failed ({e:?})"),
+        }
+    }
+    (schedules, spec_s, t.elapsed().as_secs_f64(), tail, batches)
+}
+
 /// Shared knobs for the two synthetic workloads.
 #[derive(Debug, Clone)]
 struct SynthCfg {
@@ -332,15 +391,18 @@ fn run_synthetic_batch(
     //    neither gets better hints, and this is the "pre-execution
     //    overhead" R2-O1 asks us to quantify.
     let mut prep = base.clone();
+    let mut access_sets: Vec<Vec<(HashSet<u64>, HashSet<u64>)>> = Vec::with_capacity(blocks_txs.len());
     let t = Instant::now();
     for txs in blocks_txs.iter() {
-        let (results, _sets) = execute_revm_sequential_with_access_sets(
+        let (results, sets) = execute_revm_sequential_with_access_sets(
             &chain, &prep, spec_id, BlockEnv::default(), txs.clone(),
         )
         .expect("pre-execution failed");
+        access_sets.push(sets.into_iter().map(|x| (x.read_set, x.write_set)).collect());
         update_storage_with_results(&mut prep, results);
     }
     row.phases.pre_execute = t.elapsed();
+    let vegeta_only = engines_vegeta_only();
 
     // ── Phase 2: per-block conflict graph + intra-block reorder (Omakase).
     let mut prep = base.clone();
@@ -397,21 +459,9 @@ fn run_synthetic_batch(
         nt.update_txenv_nonces(txs);
     }
 
-    // ── Vegeta's schedule (Rule 1 order, WAW-only DAG) from the same
-    //    per-block graphs, per block. See `pevm::vegeta`.
-    let t = Instant::now();
-    let mut vegeta_blocks: Vec<(Vec<TxEnv>, pevm::dependency_graph::TransactionGraph)> = blocks_txs
-        .iter()
-        .zip(base_graphs.iter())
-        .map(|(txs, g)| vegeta::speculate_graph(txs.clone(), g))
-        .collect();
-    let mut vnt = pevm::utils::nonce_tracker::NonceTracker::new();
-    for (txs, _) in vegeta_blocks.iter_mut() {
-        vnt.update_txenv_nonces(txs);
-    }
-    row.vegeta_spec_s = t.elapsed().as_secs_f64();
-    row.vegeta_sched_bytes = vegeta_blocks.iter().map(|(_, g)| vegeta::graph_proposal_bytes(g)).sum();
-
+    // ── Vegeta (faithful model: speculation + batch replay + serial tail; see
+    //    `pevm::vegeta`). Scheduled here (untimed for the other engines);
+    //    executed as engine 6 below.
     // ── 1. Sequential (baseline).
     let mut s = base.clone();
     let t = Instant::now();
@@ -425,6 +475,9 @@ fn run_synthetic_batch(
     row.logical_seq = logical_digest(&s);
     let seq_total_balance = total_balance(&s);
 
+    let mut digest_cgraph: u64 = 0;
+    let mut integ_total_balance = revm::primitives::U256::ZERO;
+    if !vegeta_only {
     // ── 2. Block-STM, per block.
     let mut s = base.clone();
     let mut pevm_engine = Pevm::default();
@@ -464,7 +517,7 @@ fn run_synthetic_batch(
     row.cgraph_diag.add(&engine.last_diagnostics);
     update_storage_with_results(&mut s, r);
     row.cgraph_s = t.elapsed().as_secs_f64();
-    let digest_cgraph = state_digest(&s);
+    digest_cgraph = state_digest(&s);
 
     // ── 4. Graph-aware OCC, per block.
     let mut s = base.clone();
@@ -497,22 +550,21 @@ fn run_synthetic_batch(
     row.integ_s = t.elapsed().as_secs_f64();
     row.phases.execute = Duration::from_secs_f64(row.integ_s);
     row.logical_integ = logical_digest(&s);
-    let integ_total_balance = total_balance(&s);
+    integ_total_balance = total_balance(&s);
 
-    // ── 6. Vegeta: its schedule on the graph-aware OCC engine, per block.
-    let mut s = base.clone();
-    let t = Instant::now();
-    for (txs, graph) in vegeta_blocks.iter() {
-        let mut engine = GraphPevm::default();
-        let r = engine
-            .execute_revm_parallel(
-                &chain, &s, spec_id, BlockEnv::default(), txs.clone(), concurrency, graph.clone(),
-            )
-            .expect("vegeta failed");
-        row.vegeta_diag.add(&engine.last_diagnostics);
-        update_storage_with_results(&mut s, r);
     }
-    row.vegeta_s = t.elapsed().as_secs_f64();
+    // ── 6. Vegeta: faithful replay, per block.
+    let mut s = base.clone();
+    let (schedules, spec_s, exec_s, tail, _batches) = run_vegeta_faithful(
+        &chain, &mut s, spec_id, &BlockEnv::default(), blocks_txs, &access_sets, None, concurrency,
+    );
+    row.vegeta_spec_s = spec_s;
+    row.vegeta_s = exec_s;
+    row.vegeta_sched_bytes = schedules.iter().map(|x| x.serialized_len()).sum();
+    // For Vegeta "re-executions" are the transactions it re-runs serially at
+    // the end of the block (mispredicted access sets); it has no OCC aborts.
+    row.vegeta_diag.block_size = total_txs;
+    row.vegeta_diag.re_executions = tail;
     row.logical_vegeta = logical_digest(&s);
     let vegeta_total_balance = total_balance(&s);
 
@@ -527,7 +579,7 @@ fn run_synthetic_batch(
     // balances legitimately differ because reordering moves which
     // transaction pays SSTORE_SET rather than SSTORE_RESET. Total ether is
     // still conserved, which we check separately.
-    if cfg.check_state {
+    if cfg.check_state && !vegeta_only {
         assert_eq!(row.digest_par, row.digest_seq,
             "batch {batch_idx}: Block-STM state != sequential");
         assert_eq!(row.digest_concat, row.digest_seq,
@@ -540,6 +592,10 @@ fn run_synthetic_batch(
             "batch {batch_idx}: Vegeta slot/nonce state != sequential");
         assert_eq!(integ_total_balance, seq_total_balance,
             "batch {batch_idx}: Omakase did not conserve total balance");
+    }
+    if cfg.check_state {
+        assert_eq!(row.logical_vegeta, row.logical_seq,
+            "batch {batch_idx}: Vegeta slot/nonce state != sequential");
         assert_eq!(vegeta_total_balance, seq_total_balance,
             "batch {batch_idx}: Vegeta did not conserve total balance");
     }
@@ -814,15 +870,21 @@ fn test_rebuttal_real() {
 
         // ── Phase 1: sequential pre-execution (proposer-side pre-pass).
         let mut prep = storage.clone();
+        let mut access_sets: Vec<Vec<(HashSet<u64>, HashSet<u64>)>> = Vec::new();
         let t = Instant::now();
         for txs in blocks_txs.iter() {
-            if let Ok((results, _sets)) = execute_revm_sequential_with_access_sets(
+            match execute_revm_sequential_with_access_sets(
                 &chain, &prep, spec_id, real_block_env(), txs.clone(),
             ) {
-                update_storage_with_results(&mut prep, results);
+                Ok((results, sets)) => {
+                    access_sets.push(sets.into_iter().map(|x| (x.read_set, x.write_set)).collect());
+                    update_storage_with_results(&mut prep, results);
+                }
+                Err(_) => access_sets.push(Vec::new()),
             }
         }
         row.phases.pre_execute = t.elapsed();
+        let vegeta_only = engines_vegeta_only();
 
         // ── Phase 2: per-block conflict graph + intra-block reorder.
         let mut prep = storage.clone();
@@ -875,6 +937,7 @@ fn test_rebuttal_real() {
             nonce_tracker.update_txenv_nonces(txs);
         }
 
+        if !vegeta_only {
         // ── 2. Block-STM, per block.
         let mut s = storage.clone();
         let mut engine = Pevm::default();
@@ -971,41 +1034,19 @@ fn test_rebuttal_real() {
         row.phases.execute = Duration::from_secs_f64(row.integ_s);
         row.logical_integ = logical_digest(&s);
 
-        // ── 6. Vegeta: Rule-1 schedule on the graph-aware OCC engine, per block.
+        }
+        // ── 6. Vegeta: faithful replay (speculation + batches + serial tail), per block.
         if run_vegeta {
-            let t = Instant::now();
-            let mut vegeta_blocks: Vec<(Vec<TxEnv>, pevm::dependency_graph::TransactionGraph)> =
-                blocks_txs
-                    .iter()
-                    .zip(base_graphs.iter())
-                    .map(|(txs, g)| vegeta::speculate_graph(txs.clone(), g))
-                    .collect();
-            // Vegeta reorders within a block, so nonces need the same
-            // reassignment Omakase's integrated groups get — from an
-            // independent tracker.
-            let mut vegeta_nonces = NonceTracker { nonces: nonce_snapshot.clone() };
-            for (txs, _) in vegeta_blocks.iter_mut() {
-                vegeta_nonces.update_txenv_nonces(txs);
-            }
-            row.vegeta_spec_s = t.elapsed().as_secs_f64();
-            row.vegeta_sched_bytes =
-                vegeta_blocks.iter().map(|(_, g)| vegeta::graph_proposal_bytes(g)).sum();
-
             let mut s = storage.clone();
-            let t = Instant::now();
-            for (txs, graph) in vegeta_blocks.iter() {
-                let mut engine = GraphPevm::default();
-                match engine.execute_revm_parallel(
-                    &chain, &s, spec_id, real_block_env(), txs.clone(), concurrency, graph.clone(),
-                ) {
-                    Ok(r) => {
-                        row.vegeta_diag.add(&engine.last_diagnostics);
-                        update_storage_with_results(&mut s, r);
-                    }
-                    Err(e) => println!("  batch {batch_idx}: vegeta failed ({e:?})"),
-                }
-            }
-            row.vegeta_s = t.elapsed().as_secs_f64();
+            let (schedules, spec_s, exec_s, tail, _b) = run_vegeta_faithful(
+                &chain, &mut s, spec_id, &real_block_env(), &blocks_txs, &access_sets,
+                Some(&nonce_snapshot), concurrency,
+            );
+            row.vegeta_spec_s = spec_s;
+            row.vegeta_s = exec_s;
+            row.vegeta_sched_bytes = schedules.iter().map(|x| x.serialized_len()).sum();
+            row.vegeta_diag.block_size = total_txs;
+            row.vegeta_diag.re_executions = tail; // serial-tail transactions
             row.logical_vegeta = logical_digest(&s);
         }
 
@@ -1447,4 +1488,56 @@ phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_e
             delay_ns, batch_idx, total_txs, seq_s, par_s, concat_s, integ_exec_s, integ_s, overall.elapsed().as_secs_f64());
     }
     println!("✓ CSV -> {output}");
+}
+
+/// Probe: the literal Vegeta port (`speculate` + `replay`, Aria-style batches
+/// with a serial tail for mispredicted transactions) on a few real blocks, with
+/// per-block timing and replay statistics, to find out why it was slow.
+#[test]
+fn test_vegeta_replay_probe() {
+    let blocks_dir = std::env::var("BLOCKS_DIR").unwrap_or_else(|_| {
+        "/home/ubuntu/Omakase/eth-block-downloader/test_data/blocks_rw".to_string()
+    });
+    let start_block = env_u64("START_BLOCK", 19_557_289);
+    let n = env_usize("NUM_BLOCKS", 5);
+    let concurrency = NonZeroUsize::new(env_usize("NUM_THREADS", 8)).unwrap();
+    let block_numbers: Vec<u64> = (start_block..start_block + n as u64).collect();
+    let spec_id = get_spec_id(block_numbers[0]);
+    let storage = create_multi_block_storage(&block_numbers, &blocks_dir).expect("storage");
+    let chain = PevmEthereum::mainnet();
+    let mut nt = NonceTracker::new();
+    let mut blocks_txs = Vec::new();
+    for &bn in &block_numbers {
+        let (_, bs, txs) = load_block_for_execution(&format!("{blocks_dir}/block_{bn}.json"), true).expect("load");
+        nt.record_from_prestate(bn, &bs, &txs);
+        blocks_txs.push(txs);
+    }
+    // Sequential reference + access sets.
+    let mut s = storage.clone();
+    let mut sets_per_block = Vec::new();
+    let t = Instant::now();
+    for txs in &blocks_txs {
+        let (r, sets) = execute_revm_sequential_with_access_sets(&chain, &s, spec_id, real_block_env(), txs.clone()).expect("seq");
+        sets_per_block.push(sets);
+        update_storage_with_results(&mut s, r);
+    }
+    println!("sequential (with access sets): {:.3}s for {} txs", t.elapsed().as_secs_f64(), blocks_txs.iter().map(|b| b.len()).sum::<usize>());
+
+    let mut s = storage.clone();
+    for (i, (txs, sets)) in blocks_txs.iter().zip(sets_per_block.iter()).enumerate() {
+        let reads = sets.iter().map(|x| x.read_set.clone()).collect();
+        let writes = sets.iter().map(|x| x.write_set.clone()).collect();
+        let t0 = Instant::now();
+        let mut sched = vegeta::speculate(txs.clone(), reads, writes);
+        nt.update_txenv_nonces(&mut sched.txs);
+        let t_spec = t0.elapsed().as_secs_f64();
+        let t1 = Instant::now();
+        let res = vegeta::replay(&chain, &mut s, spec_id, real_block_env(), &sched, concurrency, |st, r| update_storage_with_results(st, r));
+        let t_rep = t1.elapsed().as_secs_f64();
+        match res {
+            Ok((_, st)) => println!("block {i}: {} txs, {} edges | speculate {:.3}s | replay {:.3}s: batches={} max_batch={} serial_tail={} (new_shared={} new_read={})",
+                txs.len(), sched.num_edges(), t_spec, t_rep, st.num_batches, st.max_batch, st.re_executed, st.re_exec_new_shared_key, st.re_exec_new_read_key),
+            Err(e) => println!("block {i}: replay failed after {:.3}s: {e:?}", t_rep),
+        }
+    }
 }

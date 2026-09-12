@@ -39,18 +39,33 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Omakase per-block conflict graph (access-set hashes + WAW edges) | 211.3 | 14.1 | 12.2% |
 | Vegeta schedule (same encoding) | 211.3 | 14.1 | 12.2% |
 
+**Worst case across rounds (execution phase, in-memory)**
+
+| Engine | mean speedup | worst round | p10 | rounds slower than sequential | p99/p50 latency |
+|---|---:|---:|---:|---:|---:|
+| Block-STM | 1.94× | 1.17× | 1.63× | 0 | 2.35 |
+| Block-STM, concatenated | 2.35× | 0.75× | 1.81× | 8 | 3.71 |
+| Omakase | 2.66× | 1.90× | 2.25× | 0 | 1.77 |
+
+**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
+
+| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
+|---|---:|---:|---:|---:|
+| low contention (bottom 20% Block-STM re-exec/tx) | 0.42 | 1.86× | 2.34× | 2.74× |
+| high contention (top 20%) | 0.70 | 1.81× | 1.99× | 2.52× |
+
 **Aborts and re-executions** — 2,387,073 txs (diagnostics build)
 
 | Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
 |---|---:|---:|---:|---:|---:|
-| Block-STM | 0.547 | 0.182 | 0.0292 | 0.1624 | 16% |
-| Block-STM, concatenated | 0.829 | 0.196 | 0.0048 | 0.1955 | 2% |
-| Graph OCC, concatenated | 0.650 | 0.360 | 0.0096 | 0.0407 | 3% |
-| Graph-aware OCC | 0.346 | 0.154 | 0.0149 | 0.0703 | 10% |
-| Vegeta | 0.339 | 0.195 | 0.0284 | 0.0244 | 15% |
-| Omakase | 0.419 | 0.205 | 0.0069 | 0.0540 | 3% |
+| Block-STM | 0.548 | 0.182 | 0.0291 | 0.0073 | 16% |
+| Block-STM, concatenated | 0.830 | 0.195 | 0.0048 | 0.0075 | 2% |
+| Graph OCC, concatenated | 0.649 | 0.360 | 0.0095 | 0.0027 | 3% |
+| Graph-aware OCC | 0.346 | 0.154 | 0.0148 | 0.0004 | 10% |
+| Vegeta | 0.339 | 0.195 | 0.0283 | 0.0006 | 15% |
+| Omakase | 0.419 | 0.206 | 0.0069 | 0.0009 | 3% |
 
-*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = the event that invalidates downstream readers, i.e. the trigger of a cascade.
+*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation (post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.
 
 ![](plot_real_speedup.png) ![](plot_real_phases.png)
 
@@ -91,18 +106,33 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Omakase per-block conflict graph (access-set hashes + WAW edges) | 192.2 | 12.8 | 12.1% |
 | Vegeta schedule (same encoding) | 192.1 | 12.8 | 12.1% |
 
+**Worst case across rounds (execution phase, in-memory)**
+
+| Engine | mean speedup | worst round | p10 | rounds slower than sequential | p99/p50 latency |
+|---|---:|---:|---:|---:|---:|
+| Block-STM | 2.04× | 1.24× | 1.72× | 0 | 2.82 |
+| Block-STM, concatenated | 2.85× | 1.59× | 2.25× | 0 | 2.99 |
+| Omakase | 2.43× | 1.43× | 2.05× | 0 | 2.94 |
+
+**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
+
+| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
+|---|---:|---:|---:|---:|
+| low contention (bottom 20% Block-STM re-exec/tx) | 0.53 | 2.26× | 3.34× | 2.69× |
+| high contention (top 20%) | 0.93 | 1.75× | 2.27× | 2.02× |
+
 **Aborts and re-executions** — 2,387,073 txs (diagnostics build)
 
 | Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
 |---|---:|---:|---:|---:|---:|
-| Block-STM | 0.730 | 0.214 | 0.0418 | 0.2033 | 19% |
-| Block-STM, concatenated | 1.170 | 0.218 | 0.0045 | 0.2343 | 2% |
+| Block-STM | 0.731 | 0.214 | 0.0418 | 0.0000 | 20% |
+| Block-STM, concatenated | 1.179 | 0.217 | 0.0045 | 0.0000 | 2% |
 | Graph OCC, concatenated | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 | Graph-aware OCC | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 | Vegeta | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 | Omakase | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 
-*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = the event that invalidates downstream readers, i.e. the trigger of a cascade.
+*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation (post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.
 
 ![](plot_v2_speedup.png) ![](plot_v2_phases.png)
 
@@ -135,21 +165,6 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | K | M | Block-STM | Concat | Concat+graph | Graph OCC | Vegeta | Omakase |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 2 | 10% | 0.100 | 0.101 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 4 | 10% | 0.101 | 0.106 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 6 | 10% | 0.100 | 0.108 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 8 | 10% | 0.101 | 0.110 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 2 | 20% | 0.452 | 0.471 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 4 | 20% | 0.453 | 0.596 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 6 | 20% | 0.453 | 0.714 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 8 | 20% | 0.453 | 0.797 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 2 | 30% | 0.943 | 1.057 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 4 | 30% | 0.943 | 1.318 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 6 | 30% | 0.947 | 1.559 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 8 | 30% | 0.943 | 1.717 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 2 | 40% | 1.529 | 1.832 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 4 | 40% | 1.531 | 2.243 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 6 | 40% | 1.536 | 2.631 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 8 | 40% | 1.530 | 2.830 | 0.000 | 0.000 | 0.000 | 0.000 |
 
 ![](plot_artificial_grid.png)
 
@@ -266,6 +281,18 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | 50 | 85.5 | 2.43 | 2.96 | 2.74 | 2.59 | 1.83 | 6% | 3.90 | 0.57 | 0.43 |
 
 Every account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.
+
+
+**Read latency × worker count** (real Ethereum, 20 batches; speedup over sequential at the same latency)
+
+| read latency µs | workers | Block-STM | Concat | Omakase exec | Omakase exec+integ |
+|---|---:|---:|---:|---:|---:|
+| 20 | 8 | 2.43 | 2.93 | 2.81 | 2.49 |
+| 20 | 16 | 2.19 | 2.83 | 2.69 | 2.37 |
+| 20 | 32 | 2.08 | 2.58 | 2.51 | 2.30 |
+| 50 | 8 | 2.43 | 2.96 | 2.74 | 2.59 |
+| 50 | 16 | 2.39 | 2.96 | 2.72 | 2.55 |
+| 50 | 32 | 2.28 | 2.87 | 2.54 | 2.43 |
 
 
 ## Live 4-validator Mysticeti deployment — minround1 (ERC20 8x4x8, steady state, per validator)

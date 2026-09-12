@@ -19,11 +19,29 @@ ENGINES = [  # (csv prefix, display name)
     ("concat", "Block-STM, concatenated"),
     ("cgraph", "Graph-aware OCC, concatenated"),
     ("graph", "Graph-aware OCC"),
-    ("vegeta", "Vegeta (schedule on graph OCC)"),
+    ("vegeta", "Vegeta (speculate + batch replay + serial tail)"),
     ("integrated", "Omakase"),
 ]
 DIAG = [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("cgraph", "Graph OCC, concatenated"),
         ("graph", "Graph-aware OCC"), ("vegeta", "Vegeta"), ("integ", "Omakase")]
+
+
+def overlay_vegeta(d, paths):
+    """Replace Vegeta's columns with the faithful-model re-measurement (same batches),
+    matching rows by batch_idx and source chunk; Vegeta's own sequential baseline is
+    kept out so the speedup denominator stays the shared one."""
+    v = load(paths)
+    if d is None or v is None:
+        return d
+    d = d.copy()
+    key = ["src_chunk", "batch_idx"]
+    for f in (d, v):
+        f["src_chunk"] = f["src"].str.extract(r"(\d{8}|v2|k\d+_m\d+)")[0].fillna("x")
+    cols = [c for c in v.columns if c.startswith("vegeta_")]
+    m = d.merge(v[key + cols], on=key, how="left", suffixes=("", "_new"))
+    for c in cols:
+        d[c] = m[c + "_new"].fillna(m[c]).values
+    return d
 
 
 def load(paths):
@@ -243,8 +261,31 @@ def main():
     real = load(sorted(glob.glob(os.path.join(D, "real_*.csv"))) and
                 [f for f in sorted(glob.glob(os.path.join(D, "real_*.csv"))) if not f.endswith("_diag.csv")])
     real_d = load([f for f in sorted(glob.glob(os.path.join(D, "real_*_diag.csv")))])
+    real = overlay_vegeta(real, sorted(glob.glob(os.path.join(D, "vegeta", "real_*.csv"))))
     v2 = load([os.path.join(D, "v2.csv")])
+    v2 = overlay_vegeta(v2, [os.path.join(D, "vegeta", "v2.csv")])
     v2_d = load([os.path.join(D, "v2_diag.csv")])
+
+    def congestion_section(d, dd):
+        """Worst-case / contention-split view: the congestion-control reading."""
+        out = ["**Worst case across rounds (execution phase, in-memory)**\n"]
+        rows = []
+        for k, name in [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("integrated", "Omakase")]:
+            sp = d.seq_time_s / d[f"{k}_time_s"]; ms = d[f"{k}_time_s"] / d.num_blocks * 1000
+            rows.append([name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 99) / np.percentile(ms, 50):.2f}"])
+        out.append(md_table(rows, ["Engine", "mean speedup", "worst round", "p10", "rounds slower than sequential", "p99/p50 latency"]))
+        if dd is not None and "par_re_exec" in dd:
+            rex = dd.par_re_exec / dd.num_txs
+            rows = []
+            for lab, m in [("low contention (bottom 20% Block-STM re-exec/tx)", rex <= rex.quantile(0.2)),
+                           ("high contention (top 20%)", rex >= rex.quantile(0.8))]:
+                s_ = dd[m]; seq = s_.seq_time_s.sum()
+                rows.append([lab, f"{rex[m].mean():.2f}", f"{seq / s_.par_time_s.sum():.2f}×",
+                             f"{seq / s_.concat_time_s.sum():.2f}×", f"{seq / s_.integrated_time_s.sum():.2f}×"])
+            out.append("\n**Speedup by contention level** (rounds split by Block-STM's re-execution rate)\n\n" +
+                       md_table(rows, ["rounds", "Block-STM re-exec/tx", "Block-STM", "Concat", "Omakase"]))
+        return "\n".join(out) + "\n"
 
     for label, d, dd in [("Real Ethereum (15 000 mainnet blocks)", real, real_d),
                          ("Synthetic V2 (paper §7.2.2)", v2, v2_d)]:
@@ -254,6 +295,7 @@ def main():
         sections.append(throughput_table(d, "Absolute throughput and per-block latency") + "\n")
         sections.append(phase_table(d, "Where the time goes — full pipeline including the preparatory phases") + "\n")
         sections.append(bandwidth_table(d, "Metadata shipped in a proposal") + "\n")
+        sections.append(congestion_section(d, dd))
         if dd is not None:
             sections.append(abort_table(dd, "Aborts and re-executions") + "\n")
         else:
@@ -300,8 +342,13 @@ def main():
             ["blocks/round", "rounds", "txs", "seq s", "Block-STM s", "Omakase serial s", "integration s",
              "Omakase pipelined s", "integration hidden"]) + "\n")
 
-    lat = sorted(glob.glob(os.path.join(D, "sweeps", "statelat_real_d*.csv")),
-                 key=lambda f: int(os.path.basename(f)[len("statelat_real_d"):-4]))
+    import re as _re
+    def _dt(f):  # (delay_ns, threads) from statelat_real_d<delay>[_t<threads>].csv
+        m = _re.match(r"statelat_real_d(\d+)(?:_t(\d+))?\.csv", os.path.basename(f))
+        return (int(m.group(1)), int(m.group(2) or 8))
+    lat_all = sorted(glob.glob(os.path.join(D, "sweeps", "statelat_real_d*.csv")), key=_dt)
+    lat = [f for f in lat_all if _dt(f)[1] == 8]
+    lat_threads = [f for f in lat_all if _dt(f)[1] != 8 or _dt(f)[0] in (20000, 50000)]
     if lat:
         rows = []
         for f in lat:
@@ -318,6 +365,17 @@ def main():
             ["read latency µs", "seq ms/block", "Block-STM ×", "Concat ×", "Omakase exec ×", "Omakase exec+integrate ×",
              "integrate ms/block", "integrate share of validator time", "exec saved vs Block-STM ms/block", "re-exec/tx Block-STM", "Omakase"]) +
             "\n\nEvery account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.\n")
+        if lat_threads:
+            rows = []
+            for f in lat_threads:
+                d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+                if not len(d):
+                    continue
+                dl, th = _dt(f); seq = d.seq_time_s.sum(); integ, ex = d.phase_integrate_s.sum(), d.integrated_time_s.sum()
+                rows.append([f"{dl / 1000:g}", th, f"{seq / d.par_time_s.sum():.2f}", f"{seq / d.concat_time_s.sum():.2f}",
+                             f"{seq / ex:.2f}", f"{seq / (ex + integ):.2f}"])
+            sections.append("\n**Read latency × worker count** (real Ethereum, 20 batches; speedup over sequential at the same latency)\n\n" +
+                            md_table(rows, ["read latency µs", "workers", "Block-STM", "Concat", "Omakase exec", "Omakase exec+integ"]) + "\n")
 
     lives = sorted(glob.glob(os.path.join(D, "live", "summary*.csv")))
     for live in lives:

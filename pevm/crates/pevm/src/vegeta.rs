@@ -344,18 +344,22 @@ fn intersects(a: &HashSet<u64>, b: &HashSet<u64>) -> bool {
 /// unfinished transactions. (Since `build_dag` collapses a WAR+RAW pair into
 /// WAW, the second clause can only be triggered by two different predecessors,
 /// which is how we read "on any previous transactions" in Rule 2.)
-fn pop_ready_batch(dag: &[Vec<(usize, Dep)>], done: &[bool], taken: &[bool]) -> Vec<usize> {
+fn pop_ready_batch(dag: &[Vec<(usize, Dep)>], done: &[bool], deferred: &[bool]) -> Vec<usize> {
     let mut ready = Vec::new();
     for i in 0..dag.len() {
-        if done[i] || taken[i] {
+        if done[i] || deferred[i] {
             continue;
         }
         let mut blocked = false;
         let mut has_war = false;
         let mut has_raw = false;
         for &(j, kind) in &dag[i] {
-            if done[j] {
-                continue; // completed predecessors impose no constraint
+            // Completed predecessors impose no constraint. Neither do deferred
+            // ones: Vegeta moves a mispredicted transaction to the end of the
+            // serial order (Figure 6: tx6 runs although tx4, its WAW parent,
+            // was deferred), so its former dependents proceed without it.
+            if done[j] || deferred[j] {
+                continue;
             }
             match kind {
                 Dep::Waw => {
@@ -551,14 +555,23 @@ where
     let mut read_deferred: Vec<(usize, HashSet<u64>)> = Vec::new(); // lines 9–10
     let mut new_keys: HashSet<u64> = HashSet::new(); // lines 11–12
 
+    // Transactions removed from the parallel phase (Algorithm 3 lines 5-10):
+    // they run in the serial tail and no longer take part in batch selection.
+    let mut deferred = vec![false; n];
+
     loop {
-        let taken = vec![false; n];
-        let ready = pop_ready_batch(&schedule.dag, &done, &taken);
+        let ready = pop_ready_batch(&schedule.dag, &done, &deferred);
         if ready.is_empty() {
             break;
         }
         stats.num_batches += 1;
         stats.max_batch = stats.max_batch.max(ready.len());
+        let trace = std::env::var("VEGETA_TRACE").is_ok();
+        let t_batch = std::time::Instant::now();
+        if trace {
+            eprintln!("[vegeta] batch {} ready={} done={} deferred={}", stats.num_batches, ready.len(),
+                done.iter().filter(|d| **d).count(), deferred.iter().filter(|d| **d).count());
+        }
 
         // The beneficiary balance every transaction in this batch will observe.
         let batch_beneficiary_base = storage
@@ -574,6 +587,7 @@ where
         let cursor = AtomicUsize::new(0);
         let collected: Mutex<Vec<Executed>> = Mutex::new(Vec::with_capacity(ready.len()));
         let failure: Mutex<Option<ExecutionError>> = Mutex::new(None);
+        let errored: Mutex<Vec<usize>> = Mutex::new(Vec::new());
         let nthreads = concurrency.get().min(ready.len().max(1));
         let storage_ref: &S = &*storage;
         std::thread::scope(|scope| {
@@ -603,8 +617,18 @@ where
                                 })
                             }
                             Err(e) => {
-                                *failure.lock().unwrap() = Some(e);
-                                break;
+                                // A pre-execution validation failure (typically
+                                // a nonce that is too high because the sender's
+                                // earlier transaction was deferred) sends the
+                                // transaction to the serial tail instead of
+                                // aborting the block.
+                                let msg = e.to_string();
+                                if msg.contains("nonce") || msg.contains("Nonce") {
+                                    errored.lock().unwrap().push(i);
+                                } else {
+                                    *failure.lock().unwrap() = Some(e);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -613,6 +637,11 @@ where
         });
         if let Some(e) = failure.into_inner().unwrap() {
             return Err(PevmError::ExecutionError(e));
+        }
+        for i in errored.into_inner().unwrap() {
+            deferred[i] = true;
+            txs_re.push(i);
+            stats.re_exec_new_shared_key += 1;
         }
         let executed = collected.into_inner().unwrap();
 
@@ -632,6 +661,7 @@ where
                 .chain(new_write.iter())
                 .any(|k| all_keys.contains(k));
             if touches_new_shared {
+                deferred[e.idx] = true;
                 txs_re.push(e.idx);
                 stats.re_exec_new_shared_key += 1;
                 continue;
@@ -646,6 +676,7 @@ where
             // Lines 9–10: a newly read key nobody else touched is deferred
             // until we know whether anyone newly wrote it.
             if !new_read.is_empty() {
+                deferred[e.idx] = true;
                 read_deferred.push((e.idx, new_read.into_iter().collect()));
                 continue;
             }
@@ -653,6 +684,10 @@ where
             commit_now.push(e);
         }
 
+        if trace {
+            eprintln!("[vegeta]   executed in {:.3}s; committing {} deferring {}", t_batch.elapsed().as_secs_f64(),
+                commit_now.len(), ready.len() - commit_now.len());
+        }
         // Line 14: commit in DAG (index) order so the result is deterministic.
         commit_now.sort_by_key(|e| e.idx);
         let mut batch_results = Vec::with_capacity(commit_now.len());
@@ -690,6 +725,9 @@ where
     tail.dedup();
     stats.re_executed = tail.len();
 
+    if std::env::var("VEGETA_TRACE").is_ok() {
+        eprintln!("[vegeta] serial tail: {} txs", tail.len());
+    }
     for idx in tail {
         let base = storage
             .basic(&beneficiary)
@@ -697,14 +735,14 @@ where
             .flatten()
             .map(|a| a.balance)
             .unwrap_or_default();
-        let (mut result, _, _) = execute_one(
-            chain,
-            &*storage,
-            spec_id,
-            block_env.clone(),
-            schedule.txs[idx].clone(),
-        )
-        .map_err(PevmError::ExecutionError)?;
+        let mut tx = schedule.txs[idx].clone();
+        // Moved to the end of the serial order, the transaction follows every
+        // other transaction of its sender that already executed.
+        if let Ok(Some(acct)) = storage.basic(&tx.caller) {
+            tx.nonce = Some(acct.nonce);
+        }
+        let (mut result, _, _) = execute_one(chain, &*storage, spec_id, block_env.clone(), tx)
+            .map_err(PevmError::ExecutionError)?;
         take_beneficiary_fee(&mut result, base);
         done[idx] = true;
         commit(storage, vec![result.clone()]);
