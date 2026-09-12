@@ -78,10 +78,11 @@ def phase_table(d, title):
         ["Build conflict graph + intra-block reorder", f"{gb:.1f}", f"{gb / tot * 100:.0f}%", f"{gb / n_blocks * 1000:.2f}", f"{gb / seq:.2f}×"],
         ["Integrate (greedy, per committed round)", f"{integ:.1f}", f"{integ / tot * 100:.0f}%", f"{integ / n_blocks * 1000:.2f}", f"{integ / seq:.2f}×"],
         ["Execute (Omakase, parallel)", f"{ex:.1f}", f"{ex / tot * 100:.0f}%", f"{ex / n_blocks * 1000:.2f}", f"{ex / seq:.2f}×"],
-        ["**End-to-end (all phases on one node)**", f"**{tot:.1f}**", "100%", f"**{tot / n_blocks * 1000:.2f}**", f"**{tot / seq:.2f}×**"],
+        ["**All phases on one node**", f"**{tot:.1f}**", "100%", f"**{tot / n_blocks * 1000:.2f}**", f"**{tot / seq:.2f}×** (speedup {seq / tot:.2f}×)"],
+        ["Validator-side: integrate + execute", f"{integ + ex:.1f}", "", f"{(integ + ex) / n_blocks * 1000:.2f}", f"{(integ + ex) / seq:.2f}× (speedup {seq / (integ + ex):.2f}×)"],
         ["Sequential execution (reference)", f"{seq:.1f}", "", f"{seq / n_blocks * 1000:.2f}", "1.00×"],
     ]
-    hdr = ["Phase", "total s", "share", "ms/block", "vs sequential"]
+    hdr = ["Phase", "total s", "share", "ms/block", "cost as a fraction of sequential time"]
     veg = d.vegeta_speculate_s.sum()
     note = (f"\n\nVegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: "
             f"{veg:.2f} s total, {veg / n_blocks * 1000:.3f} ms/block.")
@@ -281,6 +282,22 @@ def main():
             t = sweep_table(os.path.join(D, sub), pattern.replace("*_", f"{wl}_", 1), key, label)
             if t:
                 sections.append(f"\n## {title} — {wl}\n\n{t}\n")
+
+    pipes = sorted(glob.glob(os.path.join(D, "sweeps", "pipeline_real_b*.csv")))
+    if pipes:
+        rows = []
+        for f in pipes:
+            d = pd.read_csv(f).iloc[0]
+            sp = lambda x: d.seq_time_s / x
+            rows.append([int(d.blocks_per_round), int(d.rounds), int(d.num_txs), f"{d.seq_time_s:.2f}",
+                         f"{d.par_time_s:.2f} ({sp(d.par_time_s):.2f}×)",
+                         f"{d.omakase_serial_s:.2f} ({sp(d.omakase_serial_s):.2f}×)",
+                         f"{d.integrate_only_s:.2f}",
+                         f"{d.omakase_pipelined_s:.2f} ({sp(d.omakase_pipelined_s):.2f}×)",
+                         f"{(d.omakase_serial_s - d.omakase_pipelined_s) / d.integrate_only_s * 100:.0f}%"])
+        sections.append("\n## Pipelined integration — real\n\n" + md_table(rows,
+            ["blocks/round", "rounds", "txs", "seq s", "Block-STM s", "Omakase serial s", "integration s",
+             "Omakase pipelined s", "integration hidden"]) + "\n")
 
     if missing:
         sections.append("\n---\n_Still missing: " + ", ".join(missing) + "_\n")

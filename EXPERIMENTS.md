@@ -571,8 +571,17 @@ Real Ethereum, 150 batches × 100 blocks, t=8: Sequential 17.3k tx/s; Block-STM 
 **Concat Block-STM 37.0k (2.14×)**; Concat + graph 34.0k (1.96×); Graph-aware OCC 30.5k (1.76×);
 Vegeta 28.6k (1.65×); **Omakase 46.3k (2.67×)**, p99 5.9 ms/block vs 13.8 for Concat.
 Re-executions/tx: Block-STM 0.55, Concat 0.83, Concat+graph 0.65, Omakase 0.42.
-Preparatory phases: pre-execute 1.01× sequential, graph build 0.10×, integrate 0.19×; single-node
-end-to-end 1.68× vs 2.67× execution-only. Proposal metadata 12 % of calldata.
+Preparatory phases (cost as a fraction of sequential execution time): pre-execute 1.01×, graph build
+0.10×, integrate 0.19×, execute 0.37×. **Validator-side (integrate + execute) speedup is 1.78×, below
+Block-STM's 1.87× in this in-memory setting**: integration (1.73 ms/block) costs more than the
+execution it saves (1.46 ms/block). All stages on one node: 0.60× (i.e. slower than sequential);
+with P proposers sharing pre-execution, 1.19× (P=4) / 1.48× (P=10). Integration cost is independent
+of per-tx work while the saving scales with it: on the artificial TARGET sweep the validator-side
+speedup is 2.82× / 3.68× / 3.88× (TARGET 100 / 500 / 2000) vs Block-STM 2.08× / 2.35× / 2.41×, with
+integration fixed at ~0.5 ms/block against 1.8 / 8.0 / 30.6 ms saved. **Pipelining** (`test_rebuttal_pipeline_real`:
+integrate round r+1 on a separate thread while round r executes; 10 rounds x 100 Cancun blocks, 170,746 txs):
+sequential 9.87 s; Block-STM 4.96 s (1.99x); Omakase serialised 6.24 s (1.58x, integration 2.04 s);
+Omakase pipelined 4.45 s (2.22x) — 88 % of integration hidden. Proposal metadata 12 % of calldata.
 
 Synthetic V2 (exact hints): Concat + graph 2.99× > Concat 2.73× > Omakase 2.34× > Graph OCC 2.10×
 ≈ Vegeta 2.08× > Block-STM 1.96×; every graph-driven engine has 0 re-executions.

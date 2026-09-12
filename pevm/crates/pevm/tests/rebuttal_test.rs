@@ -1048,3 +1048,203 @@ fn test_rebuttal_real() {
     println!("\n✓ {done_batches} batch(es) in {:.1}s | CSV -> {output}",
         overall.elapsed().as_secs_f64());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipelined integration: does integrating round r+1 while executing round r
+// take integration off the validator's throughput-critical path?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Everything a round needs once the proposer-side pre-pass is done: the
+/// per-block graphs and reordered transactions the integrator consumes, and the
+/// pre-state to execute against.
+struct PreparedRound {
+    storage: InMemoryStorage,
+    spec_id: SpecId,
+    dep_graphs: Vec<pevm::dependency_graph::TransactionGraph>,
+    reordered: Vec<Vec<TxEnv>>,
+    blocks_txs: Vec<Vec<TxEnv>>,
+    nonces: hashbrown::HashMap<revm::primitives::Address, u64>,
+    num_txs: usize,
+}
+
+type Integrated = (Vec<Vec<TxEnv>>, Vec<pevm::dependency_graph::TransactionGraph>);
+
+fn integrate_round(r: &PreparedRound, cfg: &GreedyIntegratorConfig) -> Integrated {
+    let integrator = GreedyIntegrator::new(cfg.clone());
+    let (mut txns, graphs) =
+        integrator.integrate_pevm_graphs(r.dep_graphs.clone(), r.reordered.clone());
+    let mut nt = NonceTracker { nonces: r.nonces.clone() };
+    for txs in txns.iter_mut() {
+        nt.update_txenv_nonces(txs);
+    }
+    (txns, graphs)
+}
+
+fn execute_round(r: &PreparedRound, groups: &Integrated, concurrency: NonZeroUsize, num_blocks: usize) {
+    let chain = PevmEthereum::mainnet();
+    let mut s = r.storage.clone();
+    for (txs, graph) in groups.0.iter().zip(groups.1.iter()) {
+        let mut engine = GraphPevm::default();
+        if let Ok(res) = engine.execute_revm_parallel(
+            &chain, &s, r.spec_id, concat_block_env(num_blocks), txs.clone(), concurrency, graph.clone(),
+        ) {
+            update_storage_with_results(&mut s, res);
+        }
+    }
+}
+
+/// Measures, over N consecutive real rounds, the wall-clock time of
+///   (a) sequential execution, (b) per-block Block-STM, (c) Omakase with
+///   integration and execution strictly serial, and (d) Omakase with the
+///   integration of round r+1 running on a separate thread while round r
+///   executes.
+/// Pre-execution and graph construction are done up front and untimed (they
+/// are proposer-side); integration is what a validator adds, and (d) shows
+/// whether spare cores hide it. Execution uses NUM_THREADS workers; integration
+/// gets one extra thread.
+#[test]
+fn test_rebuttal_pipeline_real() {
+    use std::io::Write;
+
+    let blocks_dir = std::env::var("BLOCKS_DIR").unwrap_or_else(|_| {
+        "/home/ubuntu/Omakase/eth-block-downloader/test_data/blocks_rw".to_string()
+    });
+    let start_block = env_u64("START_BLOCK", 19_557_289);
+    let batch_size = env_usize("BATCH_SIZE", 100);
+    let num_rounds = env_usize("NUM_ROUNDS", 10);
+    let concurrency = NonZeroUsize::new(env_usize("NUM_THREADS", 8)).expect("NUM_THREADS>0");
+    let tau_cv = env_f64("TAU_CV", 0.5);
+    let hot_key_threshold = env_f64("HOT_KEY_THRESHOLD", 1.5);
+    let merge_cap = env_usize("MERGE_CAP", 10);
+    let output = std::env::var("OUTPUT")
+        .unwrap_or_else(|_| "experiments/rebuttal/sweeps/pipeline_real.csv".to_string());
+    let chain = PevmEthereum::mainnet();
+    let cfg = GreedyIntegratorConfig { num_threads: concurrency.get(), tau_cv, max_group_blocks: merge_cap };
+
+    // ── Prepare rounds (proposer side; untimed).
+    let mut rounds: Vec<PreparedRound> = Vec::new();
+    let mut idx = 0usize;
+    while rounds.len() < num_rounds {
+        let first = start_block + (idx * batch_size) as u64;
+        idx += 1;
+        let block_numbers: Vec<u64> = (first..first + batch_size as u64).collect();
+        if idx > num_rounds * 2 {
+            break;
+        }
+        if block_numbers.iter().any(|n| !std::path::Path::new(&format!("{blocks_dir}/block_{n}.json")).exists()) {
+            continue;
+        }
+        let spec_id = get_spec_id(block_numbers[0]);
+        let Ok(storage) = create_multi_block_storage(&block_numbers, &blocks_dir) else { continue };
+        let mut blocks_txs = Vec::new();
+        let mut nt = NonceTracker::new();
+        let mut ok = true;
+        for &bn in &block_numbers {
+            match load_block_for_execution(&format!("{blocks_dir}/block_{bn}.json"), true) {
+                Ok((_, bs, txs)) => {
+                    nt.record_from_prestate(bn, &bs, &txs);
+                    blocks_txs.push(txs);
+                }
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if !ok { continue; }
+        // Sequential must succeed for the round to be usable.
+        let mut s = storage.clone();
+        for txs in blocks_txs.clone() {
+            match execute_revm_sequential(&chain, &s, spec_id, real_block_env(), txs) {
+                Ok(r) => update_storage_with_results(&mut s, r),
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if !ok { continue; }
+        let mut prep = storage.clone();
+        let mut dep_graphs = Vec::new();
+        let mut reordered = Vec::new();
+        for (i, txs) in blocks_txs.iter().enumerate() {
+            let Ok((mut g, res)) = GraphPevm::construct_graph_pevm_by_sequential(
+                &chain, &prep, spec_id, real_block_env(), txs.clone(), i as u64,
+            ) else { ok = false; break; };
+            update_storage_with_results(&mut prep, res);
+            let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut g, concurrency.get());
+            dep_graphs.push(ng);
+            reordered.push(rtxs);
+        }
+        if !ok { continue; }
+        for g in &mut dep_graphs {
+            g.set_hot_key_threshold(hot_key_threshold);
+        }
+        let num_txs = blocks_txs.iter().map(|b| b.len()).sum();
+        println!("  prepared round {} ({}..{}, {} txs)", rounds.len(), block_numbers[0], block_numbers[batch_size - 1], num_txs);
+        rounds.push(PreparedRound { storage, spec_id, dep_graphs, reordered, blocks_txs, nonces: nt.nonces, num_txs });
+    }
+    assert!(!rounds.is_empty(), "no usable rounds");
+    let total_txs: usize = rounds.iter().map(|r| r.num_txs).sum();
+    let nb = batch_size;
+
+    // ── (a) sequential
+    let t = Instant::now();
+    for r in &rounds {
+        let mut s = r.storage.clone();
+        for txs in r.blocks_txs.clone() {
+            if let Ok(res) = execute_revm_sequential(&chain, &s, r.spec_id, real_block_env(), txs) {
+                update_storage_with_results(&mut s, res);
+            }
+        }
+    }
+    let seq_s = t.elapsed().as_secs_f64();
+
+    // ── (b) per-block Block-STM
+    let t = Instant::now();
+    for r in &rounds {
+        let mut s = r.storage.clone();
+        let mut engine = Pevm::default();
+        for txs in r.blocks_txs.clone() {
+            if let Ok(res) = engine.execute_revm_parallel(&chain, &s, r.spec_id, real_block_env(), txs, concurrency) {
+                update_storage_with_results(&mut s, res);
+            }
+        }
+    }
+    let par_s = t.elapsed().as_secs_f64();
+
+    // ── (c) Omakase, integration and execution serial
+    let t = Instant::now();
+    let mut integ_only = 0.0;
+    for r in &rounds {
+        let ti = Instant::now();
+        let groups = integrate_round(r, &cfg);
+        integ_only += ti.elapsed().as_secs_f64();
+        execute_round(r, &groups, concurrency, nb);
+    }
+    let serial_s = t.elapsed().as_secs_f64();
+
+    // ── (d) Omakase, integration of round r+1 overlapped with execution of round r
+    let t = Instant::now();
+    let cfg_ref = &cfg;
+    let rounds_ref = &rounds;
+    std::thread::scope(|scope| {
+        let mut pending = Some(scope.spawn(move || integrate_round(&rounds_ref[0], cfg_ref)));
+        for i in 0..rounds_ref.len() {
+            let groups = pending.take().unwrap().join().expect("integrator thread panicked");
+            if i + 1 < rounds_ref.len() {
+                pending = Some(scope.spawn(move || integrate_round(&rounds_ref[i + 1], cfg_ref)));
+            }
+            execute_round(&rounds_ref[i], &groups, concurrency, nb);
+        }
+    });
+    let pipelined_s = t.elapsed().as_secs_f64();
+
+    if let Some(dir) = std::path::Path::new(&output).parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let mut w = std::fs::File::create(&output).expect("create output");
+    writeln!(w, "rounds,blocks_per_round,num_txs,threads,seq_time_s,par_time_s,omakase_serial_s,omakase_pipelined_s,integrate_only_s").unwrap();
+    writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6}",
+        rounds.len(), nb, total_txs, concurrency.get(), seq_s, par_s, serial_s, pipelined_s, integ_only).unwrap();
+
+    let sp = |x: f64| seq_s / x;
+    println!(
+        "\n✓ {} rounds x {} blocks, {} txs | seq {:.2}s | Block-STM {:.2}s ({:.2}x) | Omakase serial {:.2}s ({:.2}x, integration {:.2}s) | Omakase pipelined {:.2}s ({:.2}x) | CSV -> {}",
+        rounds.len(), nb, total_txs, seq_s, par_s, sp(par_s), serial_s, sp(serial_s), integ_only, pipelined_s, sp(pipelined_s), output
+    );
+}

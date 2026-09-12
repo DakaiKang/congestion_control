@@ -19,13 +19,14 @@ Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5,
 
 **Where the time goes — full pipeline including the preparatory phases**
 
-| Phase | total s | share | ms/block | vs sequential |
+| Phase | total s | share | ms/block | cost as a fraction of sequential time |
 |---|---:|---:|---:|---:|
 | Pre-execute (proposer, once per block) | 139.6 | 60% | 9.31 | 1.01× |
 | Build conflict graph + intra-block reorder | 14.1 | 6% | 0.94 | 0.10× |
 | Integrate (greedy, per committed round) | 25.9 | 11% | 1.73 | 0.19× |
 | Execute (Omakase, parallel) | 51.6 | 22% | 3.44 | 0.37× |
-| **End-to-end (all phases on one node)** | **231.2** | 100% | **15.42** | **1.68×** |
+| **All phases on one node** | **231.2** | 100% | **15.42** | **1.68×** (speedup 0.60×) |
+| Validator-side: integrate + execute | 77.5 |  | 5.17 | 0.56× (speedup 1.78×) |
 | Sequential execution (reference) | 137.7 |  | 9.18 | 1.00× |
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 9.53 s total, 0.635 ms/block.
@@ -70,13 +71,14 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 
 **Where the time goes — full pipeline including the preparatory phases**
 
-| Phase | total s | share | ms/block | vs sequential |
+| Phase | total s | share | ms/block | cost as a fraction of sequential time |
 |---|---:|---:|---:|---:|
 | Pre-execute (proposer, once per block) | 197.4 | 65% | 13.16 | 1.03× |
 | Build conflict graph + intra-block reorder | 11.5 | 4% | 0.77 | 0.06× |
 | Integrate (greedy, per committed round) | 12.4 | 4% | 0.83 | 0.06× |
 | Execute (Omakase, parallel) | 81.9 | 27% | 5.46 | 0.43× |
-| **End-to-end (all phases on one node)** | **303.1** | 100% | **20.21** | **1.58×** |
+| **All phases on one node** | **303.1** | 100% | **20.21** | **1.58×** (speedup 0.63×) |
+| Validator-side: integrate + execute | 94.3 |  | 6.28 | 0.49× (speedup 2.03×) |
 | Sequential execution (reference) | 191.6 |  | 12.77 | 1.00× |
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 6.44 s total, 0.429 ms/block.
@@ -241,3 +243,11 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | 100 | 2.08 | 3.41 | 3.74 | 2.09 | 2.10 | 3.26 | 25.0 | 2.255 | 0.000 |
 | 500 | 2.35 | 4.08 | 4.27 | 2.38 | 2.39 | 3.82 | 25.2 | 3.462 | 0.000 |
 | 2000 | 2.41 | 4.25 | 4.40 | 2.46 | 2.45 | 3.92 | 25.3 | 4.160 | 0.000 |
+
+
+## Pipelined integration — real
+
+| blocks/round | rounds | txs | seq s | Block-STM s | Omakase serial s | integration s | Omakase pipelined s | integration hidden |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 10 | 170746 | 9.87 | 4.96 (1.99×) | 6.24 (1.58×) | 2.04 | 4.45 (2.22×) | 88% |
+| 20 | 20 | 70070 | 3.94 | 2.05 (1.93×) | 2.88 (1.37×) | 0.82 | 2.14 (1.84×) | 90% |
