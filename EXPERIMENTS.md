@@ -652,3 +652,21 @@ Reading: integration's share of validator time falls 32 % → 6 %; Omakase inclu
 overtakes per-block Block-STM at δ ≈ 10 µs and leads by 0.16× at 50 µs. **Concat stays ahead at every δ**
 (its larger window hides read latency better; Omakase's groups average ~5 blocks and the graph serialises
 part of them). The in-memory argument therefore closes the gap to Block-STM, not to concatenation.
+
+### Correction: the "re-exec wrote a new location" metric (2026-09-12)
+
+`MvMemory::record` is only called by a *successful* incarnation. A transaction whose incarnation 0
+was blocked (ESTIMATE / nonce) therefore never recorded, and its first successful execution was compared
+against an empty previous write set and counted as "wrote a new location". The column was measuring
+post-blocking first executions, not control-flow divergence. Fixed: the counter now requires a previously
+recorded incarnation (`recorded_once`). Re-measured on 2 Cancun batches (~18k txs each): Block-STM 33 / 60,
+Graph OCC 0 / 1, Omakase 6 / 1 (previously ~3000 / ~1200 / ~900). **Re-executions on real Ethereum almost
+never change the write set**: cascades propagate through *values* (dependents re-read and re-execute), not
+through access-set changes. All `*_diag.csv` were regenerated with the corrected build (old files in
+`old_newloc_metric/`); Table 4 of the paper and the "cascade trigger 3x" claim in the feedback are withdrawn.
+
+Ablation (MERGE_CAP=0 → groups of ≤2 blocks): Omakase's excess validation aborts over Graph-aware OCC
+disappears (2972 vs 2647; 2668 vs 2625; 3000 vs 2953), confirming that the excess comes from merged blocks
+(cross-block RAW/WAR are not graph edges; the block barrier used to resolve them for free; per-batch
+correlation with blocks merged r = 0.54). Its lower cascade-abort count persists (134-172 vs 209-233) and is
+therefore not a merging effect — likely the integrator's hot-key-aware re-simulation; unverified.

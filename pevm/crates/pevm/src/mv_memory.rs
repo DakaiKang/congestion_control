@@ -55,6 +55,14 @@ pub struct MvMemory {
     pub(crate) blocking_retry: AtomicUsize,
     #[cfg(feature = "diagnostics")]
     pub(crate) wrote_new_location: AtomicUsize,
+    /// Whether tx_idx has ever recorded a (successful) incarnation. A
+    /// transaction whose incarnation 0 was *blocked* (ESTIMATE / nonce) never
+    /// records, so its first successful execution would otherwise be counted as
+    /// "wrote a new location" against an empty previous write set even though
+    /// nothing diverged. `wrote_new_location` only counts when a previous
+    /// incarnation actually recorded.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) recorded_once: Vec<std::sync::atomic::AtomicBool>,
     #[cfg(feature = "diagnostics")]
     pub(crate) incarnation0_keys: Vec<Mutex<Option<(HashSet<MemoryLocationHash>, HashSet<MemoryLocationHash>)>>>,
 }
@@ -98,6 +106,8 @@ impl MvMemory {
             blocking_retry: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
             wrote_new_location: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            recorded_once: (0..block_size).map(|_| std::sync::atomic::AtomicBool::new(false)).collect(),
             #[cfg(feature = "diagnostics")]
             incarnation0_keys: (0..block_size).map(|_| Mutex::new(None)).collect(),
         }
@@ -177,8 +187,12 @@ impl MvMemory {
         }
 
         #[cfg(feature = "diagnostics")]
-        if wrote_new_location && tx_version.tx_incarnation > 0 {
-            self.wrote_new_location.fetch_add(1, Ordering::Relaxed);
+        {
+            let previously_recorded =
+                self.recorded_once[tx_version.tx_idx].swap(true, Ordering::Relaxed);
+            if wrote_new_location && tx_version.tx_incarnation > 0 && previously_recorded {
+                self.wrote_new_location.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         wrote_new_location

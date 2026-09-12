@@ -1030,6 +1030,13 @@ fn test_rebuttal_real() {
         write_row(&mut w, &row);
         w.flush().unwrap();
         done_batches += 1;
+        if std::env::var("PRINT_BLOCKING").is_ok() {
+            for (name, dg) in [("par", &row.par_diag), ("graph", &row.graph_diag), ("integ", &row.integ_diag), ("vegeta", &row.vegeta_diag)] {
+                println!("    BLOCKING {name}: re_exec={} valid={} blocking={} [estimate={} nonce={} retry={}] newloc={} cascade={}",
+                    dg.re_executions, dg.validation_aborts, dg.blocking_aborts, dg.blocking_estimate, dg.blocking_nonce, dg.blocking_retry,
+                    dg.wrote_new_location, dg.cascade_aborts);
+            }
+        }
 
         let tp = |s: f64| if s > 0.0 { total_txs as f64 / s } else { 0.0 };
         println!(

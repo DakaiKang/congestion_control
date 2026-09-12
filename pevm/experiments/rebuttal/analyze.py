@@ -114,7 +114,8 @@ def abort_table(d, title):
            "re-exec writing a new location / tx", "cascade share of aborts"]
     return (f"**{title}** — {int(n):,} txs (diagnostics build)\n\n" + md_table(rows, hdr) +
             "\n\n*cascade abort* = validation failure because a lower-indexed writer appeared after the read; "
-            "*re-exec writing a new location* = the event that invalidates downstream readers, i.e. the trigger of a cascade.")
+            "*re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation "
+            "(post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.")
 
 
 def artificial_grid(dirpath):
