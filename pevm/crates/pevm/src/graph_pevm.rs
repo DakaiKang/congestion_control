@@ -196,6 +196,9 @@ impl GraphPevm {
         if let Some(abort_reason) = self.abort_reason.take() {
             match abort_reason {
                 AbortReason::FallbackToSequential => {
+                    if std::env::var("PEVM_TRACE_FALLBACK").is_ok() {
+                        eprintln!("[GraphPevm] FALLBACK to sequential (self-destructed account read) block_size={}", txs.len());
+                    }
                     self.dropper.drop((mv_memory, scheduler, Vec::new()));
                     return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
                 }

@@ -139,6 +139,51 @@ def proposer_table(D, main_d, pattern, title):
             "(`run_roundsize_full.sh`).\n")
 
 
+def worst_rounds_section(d, dd):
+    """Concatenated round's worst rounds, separating pevm's whole-window sequential
+    fallback (a read of a self-destructed account aborts the optimistic window and
+    re-executes it sequentially; marked by zero re-executions in the diagnostics run)
+    from genuine contention."""
+    if d is None or dd is None or "concat_re_exec" not in dd:
+        return ""
+    t = d.copy(); t["src"] = t.src.str.replace("_diag", "")
+    g = dd.copy(); g["src"] = g.src.str.replace("_diag", "")
+    fb = set(zip(g.src[g.concat_re_exec == 0], g.batch_idx[g.concat_re_exec == 0]))
+    t["fallback"] = [(a, b) in fb for a, b in zip(t.src, t.batch_idx)]
+    eng = [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("cgraph", "Graph OCC, concatenated"),
+           ("graph", "Graph-aware OCC"), ("integrated", "Omakase")]
+    out = [f"**Concatenated round: whole-window sequential fallback** — {int(t.fallback.sum())} of {len(t)} rounds "
+           "(concat re-executions = 0 in the diagnostics run; confirmed with `PEVM_TRACE_FALLBACK=1`: a transaction "
+           "reads an account self-destructed earlier in the same optimistic window, pevm abandons the window and "
+           "re-executes all of it sequentially). Per-block Block-STM and Omakase's <=10-block groups never fell back "
+           "on these rounds because the self-destruct and the read land in different windows.\n"]
+    rows = []
+    for _, r in t[t.fallback].sort_values("seq_time_s").iterrows():
+        rows.append([r.src, int(r.batch_idx), f"{int(r.num_txs):,}", f"{r.seq_time_s*1000/r.num_blocks:.2f}"] +
+                    [f"{r.seq_time_s / r[k + '_time_s']:.2f}×" for k, _ in eng])
+    out.append(md_table(rows, ["chunk", "round", "txs", "seq ms/block"] + [n for _, n in eng]))
+    out.append("\n**Per-round statistics with and without the fallback rounds** (execution phase, speedup over sequential)\n")
+    rows = []
+    for lab, sub in (("all rounds", t), ("excluding fallback rounds", t[~t.fallback])):
+        for k, name in eng:
+            sp = sub.seq_time_s / sub[f"{k}_time_s"]; ms = sub[f"{k}_time_s"] / sub.num_blocks * 1000
+            rows.append([lab, name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 99) / np.percentile(ms, 50):.2f}"])
+    out.append(md_table(rows, ["rounds", "engine", "mean", "worst", "p10", "rounds < 1×", "p99/p50"]))
+    out.append("\n**Worst genuine (non-fallback) rounds for the concatenated round**, with every engine's speedup and re-executions per tx\n")
+    sub = t[~t.fallback].copy(); sub["spc"] = sub.seq_time_s / sub.concat_time_s
+    sub = sub.sort_values("spc").head(10).merge(g, on=["src", "batch_idx"], suffixes=("", "_d"))
+    rows = []
+    for _, r in sub.iterrows():
+        n = r.num_txs
+        rows.append([r.src, int(r.batch_idx), f"{int(n):,}", f"{r.seq_time_s*1000/r.num_blocks:.2f}"] +
+                    [f"{r.seq_time_s / r[k + '_time_s']:.2f}×" for k, _ in eng] +
+                    [f"{r.concat_re_exec_d / n:.2f}", f"{r.par_re_exec_d / n:.2f}", f"{r.integ_re_exec_d / n:.2f}"])
+    out.append(md_table(rows, ["chunk", "round", "txs", "seq ms/block"] + [n for _, n in eng] +
+                        ["re-exec/tx concat", "Block-STM", "Omakase"]))
+    return "\n".join(out) + "\n"
+
+
 def bandwidth_table(d, title):
     cd, og, vg = d.calldata_bytes.sum(), d.omakase_graph_bytes.sum(), d.vegeta_sched_bytes.sum()
     n_blocks = d.num_blocks.sum()
@@ -331,6 +376,8 @@ def main():
         sections.append(proposer_table(D, d, rs_pat, "Every stage on one node with P proposers") + "\n")
         sections.append(bandwidth_table(d, "Metadata shipped in a proposal") + "\n")
         sections.append(congestion_section(d, dd))
+        if "Real" in label:
+            sections.append(worst_rounds_section(d, dd))
         if dd is not None:
             sections.append(abort_table(dd, "Aborts and re-executions") + "\n")
         else:

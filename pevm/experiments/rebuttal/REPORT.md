@@ -61,6 +61,69 @@ Integration cost per block grows with the round (more candidate merges) while ex
 | Block-STM, concatenated | 2.35× | 0.75× | 1.81× | 8 | 3.71 |
 | Omakase | 2.66× | 1.90× | 2.25× | 0 | 1.77 |
 
+**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
+
+| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
+|---|---:|---:|---:|---:|
+| low contention (bottom 20% Block-STM re-exec/tx) | 0.42 | 1.87× | 2.35× | 2.73× |
+| high contention (top 20%) | 0.69 | 1.80× | 2.09× | 2.49× |
+
+**Concatenated round: whole-window sequential fallback** — 8 of 150 rounds (concat re-executions = 0 in the diagnostics run; confirmed with `PEVM_TRACE_FALLBACK=1`: a transaction reads an account self-destructed earlier in the same optimistic window, pevm abandons the window and re-executes all of it sequentially). Per-block Block-STM and Omakase's <=10-block groups never fell back on these rounds because the self-destruct and the read land in different windows.
+
+| chunk | round | txs | seq ms/block | Block-STM | Block-STM, concatenated | Graph OCC, concatenated | Graph-aware OCC | Omakase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| real_16774645.csv | 41 | 15,896 | 6.53 | 1.99× | 0.78× | 0.87× | 1.74× | 2.36× |
+| real_16774645.csv | 17 | 14,382 | 6.68 | 2.12× | 0.81× | 0.84× | 1.86× | 2.39× |
+| real_16774645.csv | 14 | 14,110 | 7.69 | 1.96× | 0.86× | 0.89× | 1.93× | 2.67× |
+| real_18581726.csv | 30 | 15,299 | 9.97 | 1.70× | 0.78× | 0.91× | 1.56× | 2.96× |
+| real_19557289.csv | 4 | 17,481 | 10.17 | 1.87× | 0.93× | 0.96× | 1.69× | 2.21× |
+| real_18581726.csv | 31 | 15,405 | 10.43 | 1.68× | 0.75× | 0.71× | 1.54× | 3.23× |
+| real_19557289.csv | 34 | 17,917 | 10.51 | 1.93× | 0.77× | 0.82× | 1.81× | 2.77× |
+| real_19557289.csv | 26 | 17,812 | 10.64 | 1.95× | 0.90× | 0.92× | 1.85× | 3.17× |
+
+**Per-round statistics with and without the fallback rounds** (execution phase, speedup over sequential)
+
+| rounds | engine | mean | worst | p10 | rounds < 1× | p99/p50 |
+|---|---:|---:|---:|---:|---:|---:|
+| all rounds | Block-STM | 1.94× | 1.17× | 1.63× | 0 | 2.35 |
+| all rounds | Block-STM, concatenated | 2.35× | 0.75× | 1.81× | 8 | 3.71 |
+| all rounds | Graph OCC, concatenated | 2.12× | 0.71× | 1.72× | 11 | 3.57 |
+| all rounds | Graph-aware OCC | 1.80× | 1.16× | 1.54× | 0 | 2.17 |
+| all rounds | Omakase | 2.66× | 1.90× | 2.25× | 0 | 1.77 |
+| excluding fallback rounds | Block-STM | 1.94× | 1.17× | 1.62× | 0 | 2.36 |
+| excluding fallback rounds | Block-STM, concatenated | 2.44× | 1.25× | 1.90× | 0 | 2.56 |
+| excluding fallback rounds | Graph OCC, concatenated | 2.19× | 0.76× | 1.93× | 3 | 3.18 |
+| excluding fallback rounds | Graph-aware OCC | 1.81× | 1.16× | 1.54× | 0 | 2.18 |
+| excluding fallback rounds | Omakase | 2.66× | 1.90× | 2.26× | 0 | 1.73 |
+
+**Worst genuine (non-fallback) rounds for the concatenated round**, with every engine's speedup and re-executions per tx
+
+| chunk | round | txs | seq ms/block | Block-STM | Block-STM, concatenated | Graph OCC, concatenated | Graph-aware OCC | Omakase | re-exec/tx concat | Block-STM | Omakase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| real_18581726.csv | 39 | 16,163 | 24.18 | 1.17× | 1.25× | 1.29× | 1.16× | 4.03× | 0.81 | 0.46 | 0.43 |
+| real_18581726.csv | 11 | 14,306 | 14.49 | 1.37× | 1.52× | 1.47× | 1.33× | 2.29× | 0.90 | 0.54 | 0.47 |
+| real_18581726.csv | 21 | 14,683 | 14.82 | 1.36× | 1.58× | 1.69× | 1.40× | 3.37× | 1.19 | 0.72 | 0.49 |
+| real_18581726.csv | 43 | 15,510 | 10.76 | 1.53× | 1.67× | 1.98× | 1.45× | 2.89× | 1.16 | 0.55 | 0.55 |
+| real_18581726.csv | 45 | 15,203 | 9.46 | 1.61× | 1.71× | 1.62× | 1.51× | 2.73× | 1.07 | 0.64 | 0.57 |
+| real_18581726.csv | 18 | 15,544 | 11.81 | 1.51× | 1.74× | 1.72× | 1.45× | 3.26× | 0.99 | 0.57 | 0.53 |
+| real_18581726.csv | 26 | 14,274 | 11.33 | 1.59× | 1.79× | 1.77× | 1.51× | 3.10× | 0.95 | 0.56 | 0.43 |
+| real_18581726.csv | 3 | 13,339 | 9.30 | 1.53× | 1.81× | 2.23× | 1.45× | 2.96× | 1.18 | 0.67 | 0.57 |
+| real_18581726.csv | 15 | 15,072 | 11.20 | 1.54× | 1.83× | 1.90× | 1.48× | 1.90× | 0.91 | 0.56 | 0.49 |
+| real_18581726.csv | 19 | 15,573 | 9.84 | 1.62× | 1.85× | 1.73× | 1.53× | 2.10× | 1.09 | 0.70 | 0.47 |
+
+**Aborts and re-executions** — 2,387,073 txs (diagnostics build)
+
+| Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
+|---|---:|---:|---:|---:|---:|
+| Block-STM | 0.544 | 0.183 | 0.1351 | 0.0073 | 74% |
+| Block-STM, concatenated | 0.827 | 0.197 | 0.1832 | 0.0075 | 93% |
+| Graph OCC, concatenated | 0.650 | 0.361 | 0.2634 | 0.0027 | 73% |
+| Graph-aware OCC | 0.346 | 0.154 | 0.1035 | 0.0004 | 67% |
+| Vegeta | 0.010 | 0.000 | 0.0000 | 0.0000 | 0% |
+| Omakase | 0.420 | 0.207 | 0.1415 | 0.0008 | 68% |
+
+*cascade abort* = validation failure caused by the *re-execution* of a lower-indexed transaction (the invalidating write carries incarnation > 0, is an ESTIMATE left by an aborted incarnation, or is a version the reader saw that a later incarnation no longer writes); an abort caused by a lower-indexed writer's first execution is an ordinary optimistic abort. *re-exec writing a new location* = re-executions whose write set gained a location the previous incarnation had not written (post-blocking first executions excluded).
+
 ![](plot_real_speedup.png) ![](plot_real_phases.png)
 
 
@@ -121,6 +184,26 @@ Integration cost per block grows with the round (more candidate merges) while ex
 | Block-STM | 2.04× | 1.24× | 1.72× | 0 | 2.82 |
 | Block-STM, concatenated | 2.85× | 1.59× | 2.25× | 0 | 2.99 |
 | Omakase | 2.43× | 1.43× | 2.05× | 0 | 2.94 |
+
+**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
+
+| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
+|---|---:|---:|---:|---:|
+| low contention (bottom 20% Block-STM re-exec/tx) | 0.49 | 2.20× | 3.40× | 2.64× |
+| high contention (top 20%) | 0.92 | 1.56× | 2.23× | 1.85× |
+
+**Aborts and re-executions** — 1,226,448 txs (diagnostics build)
+
+| Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
+|---|---:|---:|---:|---:|---:|
+| Block-STM | 0.683 | 0.205 | 0.1463 | 0.0000 | 71% |
+| Block-STM, concatenated | 1.067 | 0.207 | 0.1805 | 0.0000 | 87% |
+| Graph OCC, concatenated | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
+| Graph-aware OCC | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
+| Vegeta | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
+| Omakase | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
+
+*cascade abort* = validation failure caused by the *re-execution* of a lower-indexed transaction (the invalidating write carries incarnation > 0, is an ESTIMATE left by an aborted incarnation, or is a version the reader saw that a later incarnation no longer writes); an abort caused by a lower-indexed writer's first execution is an ordinary optimistic abort. *re-exec writing a new location* = re-executions whose write set gained a location the previous incarnation had not written (post-blocking first executions excluded).
 
 ![](plot_v2_speedup.png) ![](plot_v2_phases.png)
 
@@ -337,7 +420,3 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | **mean** |  |  | **20.51** | **10.32** | **2.72** | **4.20** | **12.77** |
 
 The prototype re-derives every block's graph at every validator (it does not ship graphs with proposals), so the pre-execute + graph column is counted P = 4 times; the last column charges each validator only its own quarter of it. The remainder (total minus the three phases) is hex decoding and state bookkeeping.
-
-
----
-_Still missing: Real Ethereum (15 000 mainnet blocks) (diagnostics), Synthetic V2 (paper §7.2.2) (diagnostics)_
