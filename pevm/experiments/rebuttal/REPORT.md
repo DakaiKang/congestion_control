@@ -189,15 +189,15 @@ Integration cost per block grows with the round (more candidate merges) while ex
 
 | rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
 |---|---:|---:|---:|---:|
-| low contention (bottom 20% Block-STM re-exec/tx) | 0.49 | 2.20× | 3.40× | 2.64× |
-| high contention (top 20%) | 0.92 | 1.56× | 2.23× | 1.85× |
+| low contention (bottom 20% Block-STM re-exec/tx) | 0.53 | 2.21× | 3.24× | 2.64× |
+| high contention (top 20%) | 0.93 | 1.72× | 2.23× | 1.98× |
 
-**Aborts and re-executions** — 1,226,448 txs (diagnostics build)
+**Aborts and re-executions** — 2,387,073 txs (diagnostics build)
 
 | Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
 |---|---:|---:|---:|---:|---:|
-| Block-STM | 0.683 | 0.205 | 0.1463 | 0.0000 | 71% |
-| Block-STM, concatenated | 1.067 | 0.207 | 0.1805 | 0.0000 | 87% |
+| Block-STM | 0.726 | 0.215 | 0.1551 | 0.0000 | 72% |
+| Block-STM, concatenated | 1.161 | 0.219 | 0.1915 | 0.0000 | 87% |
 | Graph OCC, concatenated | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 | Graph-aware OCC | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
 | Vegeta | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
