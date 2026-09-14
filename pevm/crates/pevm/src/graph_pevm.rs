@@ -148,9 +148,13 @@ impl GraphPevm {
             Ok("cross") => { dependency_graph.add_raw_edges(true); }
             _ => {}
         }
+        #[cfg(feature = "diagnostics")]
+        let block_ids: Vec<u32> = dependency_graph.nodes.iter().map(|n| n.replica as u32).collect();
         let scheduler = GraphScheduler::new(block_size, dependency_graph);
 
         let mv_memory = chain.build_mv_memory(&block_env, &txs);
+        #[cfg(feature = "diagnostics")]
+        mv_memory.set_block_ids(block_ids);
         let vm = Vm::new(storage, &mv_memory, chain, &block_env, &txs, spec_id);
 
         let additional = block_size.saturating_sub(self.execution_results.len());

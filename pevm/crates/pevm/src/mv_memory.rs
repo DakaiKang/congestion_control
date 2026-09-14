@@ -61,6 +61,14 @@ pub struct MvMemory {
     /// first execution (ordinary optimistic abort) or a re-execution (cascade).
     #[cfg(feature = "diagnostics")]
     pub(crate) first_write_inc: DashMap<(MemoryLocationHash, TxIdx), TxIncarnation>,
+    /// Block id (graph node `replica`) of every transaction, when the engine
+    /// knows it; lets validation tell cross-block from intra-block aborts.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) block_of: std::sync::OnceLock<Vec<u32>>,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) cross_block_aborts: AtomicUsize,
+    #[cfg(feature = "diagnostics")]
+    pub(crate) cross_block_cascade: AtomicUsize,
     /// Whether tx_idx has ever recorded a (successful) incarnation. A
     /// transaction whose incarnation 0 was *blocked* (ESTIMATE / nonce) never
     /// records, so its first successful execution would otherwise be counted as
@@ -104,6 +112,12 @@ impl MvMemory {
             cascade_aborts: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
             first_write_inc: DashMap::default(),
+            #[cfg(feature = "diagnostics")]
+            block_of: std::sync::OnceLock::new(),
+            #[cfg(feature = "diagnostics")]
+            cross_block_aborts: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            cross_block_cascade: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
             total_aborts: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
@@ -223,6 +237,8 @@ impl MvMemory {
         {
             d.validation_aborts = self.total_aborts.load(Ordering::Relaxed);
             d.cascade_aborts = self.cascade_aborts.load(Ordering::Relaxed);
+            d.cross_block_aborts = self.cross_block_aborts.load(Ordering::Relaxed);
+            d.cross_block_cascade = self.cross_block_cascade.load(Ordering::Relaxed);
             d.wrote_new_location = self.wrote_new_location.load(Ordering::Relaxed);
             d.blocking_estimate = self.blocking_estimate.load(Ordering::Relaxed);
             d.blocking_nonce = self.blocking_nonce.load(Ordering::Relaxed);
@@ -238,15 +254,32 @@ impl MvMemory {
     /// produces). A failure caused by the *first* execution of a lower-indexed
     /// writer that simply had not run yet is an ordinary optimistic abort.
     #[cfg(feature = "diagnostics")]
-    fn record_abort(&self, cascade: bool) {
+    fn record_abort(&self, cascade: bool, reader: TxIdx, writer: Option<TxIdx>) {
         self.total_aborts.fetch_add(1, Ordering::Relaxed);
         if cascade {
             self.cascade_aborts.fetch_add(1, Ordering::Relaxed);
         }
+        if let (Some(ids), Some(w)) = (self.block_of.get(), writer) {
+            if ids.get(w) != ids.get(reader) {
+                self.cross_block_aborts.fetch_add(1, Ordering::Relaxed);
+                if cascade {
+                    self.cross_block_cascade.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
     }
     #[cfg(not(feature = "diagnostics"))]
     #[inline(always)]
-    fn record_abort(&self, _cascade: bool) {}
+    fn record_abort(&self, _cascade: bool, _reader: TxIdx, _writer: Option<TxIdx>) {}
+
+    /// Diagnostics: tell validation which block each transaction came from.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn set_block_ids(&self, ids: Vec<u32>) {
+        let _ = self.block_of.set(ids);
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    #[inline(always)]
+    pub(crate) fn set_block_ids(&self, _ids: Vec<u32>) {}
 
     /// Diagnostics: did `writer` first write `location` in a re-execution?
     #[cfg(feature = "diagnostics")]
@@ -278,7 +311,7 @@ impl MvMemory {
                                     // execution that had not run yet is an ordinary abort.
                                     let cascade = closest_idx == &prior_version.tx_idx
                                         || self.written_by_reexecution(location, *closest_idx);
-                                    self.record_abort(cascade);
+                                    self.record_abort(cascade, tx_idx, Some(*closest_idx));
                                     return false;
                                 }
                             }
@@ -286,13 +319,13 @@ impl MvMemory {
                             Some((closest_idx, MemoryEntry::Estimate)) => {
                                 let cascade = closest_idx == &prior_version.tx_idx
                                     || self.written_by_reexecution(location, *closest_idx);
-                                self.record_abort(cascade);
+                                self.record_abort(cascade, tx_idx, Some(*closest_idx));
                                 return false;
                             }
                             // The version we read has vanished: its writer re-executed
                             // and no longer writes here.
                             None => {
-                                self.record_abort(true);
+                                self.record_abort(true, tx_idx, Some(prior_version.tx_idx));
                                 return false;
                             }
                         },
@@ -303,7 +336,7 @@ impl MvMemory {
                             // location in a re-execution; a first execution that had
                             // not run yet is the ordinary optimistic abort.
                             Some((closest_idx, _)) => {
-                                self.record_abort(self.written_by_reexecution(location, *closest_idx));
+                                self.record_abort(self.written_by_reexecution(location, *closest_idx), tx_idx, Some(*closest_idx));
                                 return false;
                             }
                         },
@@ -313,7 +346,11 @@ impl MvMemory {
             {
                 // We read a multi-version entry that no longer exists at all: its
                 // writer re-executed and dropped the location.
-                self.record_abort(true);
+                let writer = prior_origins.iter().find_map(|o| match o {
+                    ReadOrigin::MvMemory(v) => Some(v.tx_idx),
+                    _ => None,
+                });
+                self.record_abort(true, tx_idx, writer);
                 return false;
             }
         }

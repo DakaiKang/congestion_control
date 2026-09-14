@@ -194,7 +194,8 @@ cgraph_re_exec,cgraph_validation_aborts,cgraph_cascade_aborts,cgraph_wrote_new_l
 graph_re_exec,graph_validation_aborts,graph_cascade_aborts,graph_wrote_new_loc,\
 integ_re_exec,integ_validation_aborts,integ_cascade_aborts,integ_wrote_new_loc,\
 vegeta_re_exec,vegeta_validation_aborts,vegeta_cascade_aborts,vegeta_wrote_new_loc,\
-digest_seq,digest_par,digest_concat,logical_seq,logical_integ,logical_vegeta";
+digest_seq,digest_par,digest_concat,logical_seq,logical_integ,logical_vegeta,\
+cgraph_cross_block_aborts,cgraph_cross_block_cascade,graph_cross_block_aborts,graph_cross_block_cascade,integ_cross_block_aborts,integ_cross_block_cascade";
 
 fn write_row(w: &mut impl std::io::Write, r: &Row) {
     let tp = |s: f64| if s > 0.0 { r.num_txs as f64 / s } else { 0.0 };
@@ -212,6 +213,7 @@ fn write_row(w: &mut impl std::io::Write, r: &Row) {
 {},{},{},{},\
 {},{},{},{},\
 {},{},{},{},\
+{},{},{},{},{},{},\
 {},{},{},{},{},{}",
         r.batch_idx, r.num_blocks, r.num_txs, r.threads, r.merge_cap,
         r.seq_s, tp(r.seq_s), r.par_s, tp(r.par_s), r.concat_s, tp(r.concat_s), r.cgraph_s, tp(r.cgraph_s),
@@ -234,6 +236,9 @@ fn write_row(w: &mut impl std::io::Write, r: &Row) {
         r.vegeta_diag.re_executions, r.vegeta_diag.validation_aborts,
         r.vegeta_diag.cascade_aborts, r.vegeta_diag.wrote_new_location,
         r.digest_seq, r.digest_par, r.digest_concat, r.logical_seq, r.logical_integ, r.logical_vegeta,
+        r.cgraph_diag.cross_block_aborts, r.cgraph_diag.cross_block_cascade,
+        r.graph_diag.cross_block_aborts, r.graph_diag.cross_block_cascade,
+        r.integ_diag.cross_block_aborts, r.integ_diag.cross_block_cascade,
     )
     .unwrap();
 }

@@ -24,6 +24,12 @@ pub struct ExecDiagnostics {
     /// caused by a lower-indexed writer's *first* execution are ordinary
     /// optimistic aborts, not cascades.
     pub cascade_aborts: usize,
+    /// Validation failures whose invalidating writer belongs to a different
+    /// block (graph node `replica`) than the reader: dependencies a block
+    /// boundary resolved before integration. Graph-driven engines only.
+    pub cross_block_aborts: usize,
+    /// Subset of `cross_block_aborts` that are cascades.
+    pub cross_block_cascade: usize,
     /// Re-executions that wrote a memory location the previous incarnation had
     /// not written. These are the re-executions that can invalidate *other*
     /// transactions, i.e. the trigger for a cascade.
@@ -61,6 +67,8 @@ impl ExecDiagnostics {
         self.re_executions += o.re_executions;
         self.validation_aborts += o.validation_aborts;
         self.cascade_aborts += o.cascade_aborts;
+        self.cross_block_aborts += o.cross_block_aborts;
+        self.cross_block_cascade += o.cross_block_cascade;
         self.wrote_new_location += o.wrote_new_location;
         self.blocking_aborts += o.blocking_aborts;
         self.blocking_estimate += o.blocking_estimate;
