@@ -641,7 +641,9 @@ impl<DB: Database> Database for TrackingDB<DB> {
         // and lazy transfer sender/recipient are skipped, mirroring pevm's
         // parallel path. Without the flag only storage slots are recorded
         // (the submission's code path).
-        if track_basic_reads() && !self.should_skip(&address) {
+        // Lazy (pure-transfer) sender/recipient accounts are *not* skipped here:
+        // the sender's own account read is what orders same-sender transfers.
+        if track_basic_reads() && address != Address::ZERO && address != self.coinbase {
             self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
         }
         self.inner.basic(address)
