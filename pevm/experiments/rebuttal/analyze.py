@@ -186,8 +186,8 @@ def worst_rounds_section(d, dd):
         for k, name in eng:
             sp = sub.seq_time_s / sub[f"{k}_time_s"]; ms = sub[f"{k}_time_s"] / sub.num_blocks * 1000
             rows.append([lab, name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
-                         int((sp < 1.0).sum()), f"{np.percentile(ms, 99) / np.percentile(ms, 50):.2f}"])
-    out.append(md_table(rows, ["rounds", "engine", "mean", "worst", "p10", "rounds < 1×", "p99/p50"]))
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 90) / np.percentile(ms, 50):.2f}"])
+    out.append(md_table(rows, ["rounds", "engine", "mean", "worst", "p10", "rounds < 1×", "p90/p50"]))
     out.append("\n**Worst genuine (non-fallback) rounds for the concatenated round**, with every engine's speedup and re-executions per tx\n")
     sub = t[~t.fallback].copy(); sub["spc"] = sub.seq_time_s / sub.concat_time_s
     sub = sub.sort_values("spc").head(10).merge(g, on=["src", "batch_idx"], suffixes=("", "_d"))
@@ -372,8 +372,8 @@ def main():
         for k, name in [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("integrated", "Omakase")]:
             sp = d.seq_time_s / d[f"{k}_time_s"]; ms = d[f"{k}_time_s"] / d.num_blocks * 1000
             rows.append([name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
-                         int((sp < 1.0).sum()), f"{np.percentile(ms, 99) / np.percentile(ms, 50):.2f}"])
-        out.append(md_table(rows, ["Engine", "mean speedup", "worst round", "p10", "rounds slower than sequential", "p99/p50 latency"]))
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 90) / np.percentile(ms, 50):.2f}"])
+        out.append(md_table(rows, ["Engine", "mean speedup", "worst round", "p10", "rounds slower than sequential", "p90/p50 per-block time"]))
         if dd is not None and "par_re_exec" in dd:
             rex = dd.par_re_exec / dd.num_txs
             rows = []
