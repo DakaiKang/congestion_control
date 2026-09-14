@@ -791,6 +791,13 @@ impl TransactionGraph {
                 .collect();
             
             let mut key_spans: HashMap<u64, KeyAccessSpan> = HashMap::new();
+
+            // Only keys that some transaction *writes* can be hot: a key that is
+            // merely read (e.g. a popular contract's account info, which every
+            // caller reads) creates no dependency and must not veto integration.
+            let written: HashSet<u64> = self.nodes.iter()
+                .flat_map(|n| n.write_set.iter().copied())
+                .collect();
             
             for (_thread_id, tx_id, start_time, end_time) in &result.execution_order {
                 if let Some(&node) = node_map.get(&(tx_id.id as u64)) {
@@ -799,6 +806,7 @@ impl TransactionGraph {
                     let all_keys: HashSet<u64> = node.read_set.iter()
                         .chain(node.write_set.iter())
                         .copied()
+                        .filter(|k| written.contains(k))
                         .collect();
                     
                     for key in all_keys {
