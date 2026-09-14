@@ -25,8 +25,11 @@ Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5,
 | Build conflict graph + intra-block reorder | 14.1 | 6% | 0.94 | 0.10× |
 | Integrate (greedy, per committed round) | 25.9 | 11% | 1.73 | 0.19× |
 | Execute (Omakase, parallel) | 51.6 | 22% | 3.44 | 0.37× |
-| **All phases on one node** | **231.2** | 100% | **15.42** | **1.68×** (speedup 0.60×) |
+| All phases on one node (single proposer, P = 1) | 231.2 | 100% | 15.42 | 1.68× (speedup 0.60×) |
 | Validator-side: integrate + execute | 77.5 |  | 5.17 | 0.56× (speedup 1.78×) |
+| **Every stage on one node, 1/P of proposer stages, P = 20** | **85.2** |  | **5.68** | **0.62×** (speedup 1.62×) |
+| **Every stage on one node, 1/P of proposer stages, P = 50** | **80.6** |  | **5.37** | **0.59×** (speedup 1.71×) |
+| **Every stage on one node, 1/P of proposer stages, P = 100** | **79.1** |  | **5.27** | **0.57×** (speedup 1.74×) |
 | Sequential execution (reference) | 137.7 |  | 9.18 | 1.00× |
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 24.02 s total, 1.601 ms/block.
@@ -92,8 +95,11 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Build conflict graph + intra-block reorder | 11.5 | 4% | 0.77 | 0.06× |
 | Integrate (greedy, per committed round) | 12.4 | 4% | 0.83 | 0.06× |
 | Execute (Omakase, parallel) | 81.9 | 27% | 5.46 | 0.43× |
-| **All phases on one node** | **303.1** | 100% | **20.21** | **1.58×** (speedup 0.63×) |
+| All phases on one node (single proposer, P = 1) | 303.1 | 100% | 20.21 | 1.58× (speedup 0.63×) |
 | Validator-side: integrate + execute | 94.3 |  | 6.28 | 0.49× (speedup 2.03×) |
+| **Every stage on one node, 1/P of proposer stages, P = 20** | **104.7** |  | **6.98** | **0.55×** (speedup 1.83×) |
+| **Every stage on one node, 1/P of proposer stages, P = 50** | **98.4** |  | **6.56** | **0.51×** (speedup 1.95×) |
+| **Every stage on one node, 1/P of proposer stages, P = 100** | **96.3** |  | **6.42** | **0.50×** (speedup 1.99×) |
 | Sequential execution (reference) | 191.6 |  | 12.77 | 1.00× |
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 31.88 s total, 2.125 ms/block.
@@ -336,3 +342,16 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | integrated | 0 | 39,970 | 80% | 50,245 | 5.3 | 1,930 |
 
 The generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; *executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.
+
+
+## Live Omakase executor cost per phase — phases_minround1000 (us per committed tx, steady state)
+
+| validator | rounds | blocks/round | total | pre-execute + graph | integrate | execute | own 1/4 of proposer stages |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| integrated_v0.log | 1733 | 4.7 | 20.37 | 10.20 | 2.72 | 4.26 | 12.72 |
+| integrated_v1.log | 1729 | 4.7 | 20.45 | 10.28 | 2.70 | 4.28 | 12.74 |
+| integrated_v2.log | 1726 | 4.7 | 20.56 | 10.40 | 2.70 | 4.00 | 12.77 |
+| integrated_v3.log | 1731 | 4.7 | 20.65 | 10.40 | 2.77 | 4.26 | 12.86 |
+| **mean** |  |  | **20.51** | **10.32** | **2.72** | **4.20** | **12.77** |
+
+The prototype re-derives every block's graph at every validator (it does not ship graphs with proposals), so the pre-execute + graph column is counted P = 4 times; the last column charges each validator only its own quarter of it. The remainder (total minus the three phases) is hex decoding and state bookkeeping.

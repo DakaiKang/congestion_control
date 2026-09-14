@@ -271,6 +271,9 @@ pub struct PevmExecutor {
     pub execution_mode: ExecutionMode,
     pub storage: InMemoryStorage,
     pub chain: PevmEthereum,
+    /// Wall time of the last `execute_round` in Integrated mode, ms:
+    /// [proposer-side pre-execute + graph build + reorder, integrate, execute].
+    pub last_phase_ms: [f64; 3],
 }
 
 impl PevmExecutor {
@@ -279,6 +282,7 @@ impl PevmExecutor {
             execution_mode,
             storage: load_in_memory_storage(&workload_type),
             chain: PevmEthereum::mainnet(),
+            last_phase_ms: [0.0; 3],
         }
     }
 
@@ -356,7 +360,11 @@ impl PevmExecutor {
                 }
 
                 // Proposer side: pre-execute each block, build its conflict
-                // graph, reorder within the block.
+                // graph, reorder within the block. (The prototype does not ship
+                // graphs with proposals, so every validator redoes this for
+                // every block of the round; a deployment does it once, at the
+                // proposer, i.e. 1/P of it per validator. Timed separately.)
+                let t_phase = std::time::Instant::now();
                 let mut prep = self.storage.clone();
                 let mut dep_graphs = Vec::with_capacity(num_blocks);
                 let mut reordered = Vec::with_capacity(num_blocks);
@@ -384,6 +392,8 @@ impl PevmExecutor {
                 for g in &mut dep_graphs {
                     g.set_hot_key_threshold(1.5);
                 }
+                let prep_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+                let t_phase = std::time::Instant::now();
 
                 // Validator side: integrate, reassign nonces, execute groups.
                 let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
@@ -395,6 +405,8 @@ impl PevmExecutor {
                 for txs in groups.iter_mut() {
                     nonces.update_txenv_nonces(txs);
                 }
+                let integ_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+                let t_phase = std::time::Instant::now();
                 for (txs, graph) in groups.into_iter().zip(graphs.into_iter()) {
                     let mut engine = GraphPevm::default();
                     match engine.execute_revm_parallel(
@@ -404,6 +416,7 @@ impl PevmExecutor {
                         Err(e) => tracing::error!("Integrated execution failed: {:?}", e),
                     }
                 }
+                self.last_phase_ms = [prep_ms, integ_ms, t_phase.elapsed().as_secs_f64() * 1000.0];
             }
         }
         (num_blocks, num_txs)

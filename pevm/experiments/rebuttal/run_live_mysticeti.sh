@@ -10,7 +10,7 @@
 #   PEVM_THREADS         execution workers per validator (8, as in the paper)
 set -uo pipefail
 MYST=/home/ubuntu/Omakase/congestion_control/mysticeti
-OUT=/home/ubuntu/Omakase/congestion_control/pevm/experiments/rebuttal/live
+OUT=${OUT:-/home/ubuntu/Omakase/congestion_control/pevm/experiments/rebuttal/live}
 DUR=${DUR:-90}          # seconds per run
 WARM=${WARM:-20}        # seconds discarded at the start
 COMMITTEE=${COMMITTEE:-4}

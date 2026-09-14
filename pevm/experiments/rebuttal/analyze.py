@@ -6,7 +6,7 @@ can be re-run while the campaign is still going.
 
     python3 experiments/rebuttal/analyze.py [--dir experiments/rebuttal] [--out REPORT.md]
 """
-import argparse, glob, os, sys
+import argparse, glob, os, re, sys
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -96,8 +96,13 @@ def phase_table(d, title):
         ["Build conflict graph + intra-block reorder", f"{gb:.1f}", f"{gb / tot * 100:.0f}%", f"{gb / n_blocks * 1000:.2f}", f"{gb / seq:.2f}×"],
         ["Integrate (greedy, per committed round)", f"{integ:.1f}", f"{integ / tot * 100:.0f}%", f"{integ / n_blocks * 1000:.2f}", f"{integ / seq:.2f}×"],
         ["Execute (Omakase, parallel)", f"{ex:.1f}", f"{ex / tot * 100:.0f}%", f"{ex / n_blocks * 1000:.2f}", f"{ex / seq:.2f}×"],
-        ["**All phases on one node**", f"**{tot:.1f}**", "100%", f"**{tot / n_blocks * 1000:.2f}**", f"**{tot / seq:.2f}×** (speedup {seq / tot:.2f}×)"],
+        ["All phases on one node (single proposer, P = 1)", f"{tot:.1f}", "100%", f"{tot / n_blocks * 1000:.2f}", f"{tot / seq:.2f}× (speedup {seq / tot:.2f}×)"],
         ["Validator-side: integrate + execute", f"{integ + ex:.1f}", "", f"{(integ + ex) / n_blocks * 1000:.2f}", f"{(integ + ex) / seq:.2f}× (speedup {seq / (integ + ex):.2f}×)"],
+    ] + [
+        [f"**Every stage on one node, 1/P of proposer stages, P = {P}**", f"**{integ + ex + (pre + gb) / P:.1f}**", "", f"**{(integ + ex + (pre + gb) / P) / n_blocks * 1000:.2f}**",
+         f"**{(integ + ex + (pre + gb) / P) / seq:.2f}×** (speedup {seq / (integ + ex + (pre + gb) / P):.2f}×)"]
+        for P in (20, 50, 100)
+    ] + [
         ["Sequential execution (reference)", f"{seq:.1f}", "", f"{seq / n_blocks * 1000:.2f}", "1.00×"],
     ]
     hdr = ["Phase", "total s", "share", "ms/block", "cost as a fraction of sequential time"]
@@ -392,6 +397,31 @@ def main():
             "\n\nThe generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; "
             "*executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), "
             "and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.\n")
+    # Per-phase executor cost of the live Omakase mode (ROUND lines with prep_ms/integ_ms/exec_only_ms).
+    ph_pat = re.compile(r"ROUND blocks=(\d+) txs=(\d+) exec_ms=([\d.]+) total_txs=\d+ elapsed_s=([\d.]+) "
+                        r"Throughput = [\d.]+ prep_ms=([\d.]+) integ_ms=([\d.]+) exec_only_ms=([\d.]+)")
+    for pdir in sorted(glob.glob(os.path.join(D, "live", "phases_*"))):
+        rows, agg = [], [0.0] * 5
+        for f in sorted(glob.glob(os.path.join(pdir, "integrated_v*.log"))):
+            st = [tuple(map(float, m.groups())) for m in ph_pat.finditer(open(f, errors="ignore").read())]
+            st = [r for r in st if 20 <= r[3] <= 90]
+            if not st:
+                continue
+            txs = sum(r[1] for r in st)
+            tot, pre, integ, ex = (sum(r[i] for r in st) for i in (2, 4, 5, 6))
+            rows.append([os.path.basename(f), f"{len(st)}", f"{sum(r[0] for r in st) / len(st):.1f}", f"{tot * 1e3 / txs:.2f}",
+                         f"{pre * 1e3 / txs:.2f}", f"{integ * 1e3 / txs:.2f}", f"{ex * 1e3 / txs:.2f}", f"{(tot - pre * 0.75) * 1e3 / txs:.2f}"])
+            for i, v in enumerate((txs, tot, pre, integ, ex)):
+                agg[i] += v
+        if rows:
+            txs, tot, pre, integ, ex = agg
+            rows.append(["**mean**", "", "", f"**{tot * 1e3 / txs:.2f}**", f"**{pre * 1e3 / txs:.2f}**", f"**{integ * 1e3 / txs:.2f}**",
+                         f"**{ex * 1e3 / txs:.2f}**", f"**{(tot - pre * 0.75) * 1e3 / txs:.2f}**"])
+            sections.append(f"\n## Live Omakase executor cost per phase — {os.path.basename(pdir)} (us per committed tx, steady state)\n\n" +
+                md_table(rows, ["validator", "rounds", "blocks/round", "total", "pre-execute + graph", "integrate", "execute", "own 1/4 of proposer stages"]) +
+                "\n\nThe prototype re-derives every block's graph at every validator (it does not ship graphs with proposals), so the "
+                "pre-execute + graph column is counted P = 4 times; the last column charges each validator only its own quarter of it. "
+                "The remainder (total minus the three phases) is hex decoding and state bookkeeping.\n")
 
     if missing:
         sections.append("\n---\n_Still missing: " + ", ".join(missing) + "_\n")

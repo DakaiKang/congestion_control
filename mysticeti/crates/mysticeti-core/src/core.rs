@@ -485,9 +485,11 @@ impl<H: BlockHandler> Core<H> {
         self.executed_txns += num_txs;
         let secs_f64 = self.start_time_point.elapsed().as_secs_f64();
         // error level so the line survives RUST_LOG=error in benchmark runs.
+        let ph = self.pevm_executor.as_ref().expect("executor missing").last_phase_ms;
         tracing::error!(
-            "ROUND blocks={} txs={} exec_ms={:.2} total_txs={} elapsed_s={:.2} Throughput = {}",
-            num_blocks, num_txs, exec_ms, self.executed_txns, secs_f64, self.executed_txns as f64 / secs_f64
+            "ROUND blocks={} txs={} exec_ms={:.2} total_txs={} elapsed_s={:.2} Throughput = {} prep_ms={:.2} integ_ms={:.2} exec_only_ms={:.2}",
+            num_blocks, num_txs, exec_ms, self.executed_txns, secs_f64, self.executed_txns as f64 / secs_f64,
+            ph[0], ph[1], ph[2]
         );
     }
 

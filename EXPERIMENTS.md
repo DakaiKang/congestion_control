@@ -574,8 +574,9 @@ Re-executions/tx: Block-STM 0.55, Concat 0.83, Concat+graph 0.65, Omakase 0.42.
 Preparatory phases (cost as a fraction of sequential execution time): pre-execute 1.01×, graph build
 0.10×, integrate 0.19×, execute 0.37×. **Validator-side (integrate + execute) speedup is 1.78×, below
 Block-STM's 1.87× in this in-memory setting**: integration (1.73 ms/block) costs more than the
-execution it saves (1.46 ms/block). All stages on one node: 0.60× (i.e. slower than sequential);
-with P proposers sharing pre-execution, 1.19× (P=4) / 1.48× (P=10). Integration cost is independent
+execution it saves (1.46 ms/block). A validator pays integrate + execute plus 1/P of the
+proposer stages (pre-execute + graph build = 10.25 ms/block): 1.62× / 1.71× / 1.74× for P = 20 / 50 / 100
+(summing every stage on one node, 0.60×, describes a single-proposer chain). Integration cost is independent
 of per-tx work while the saving scales with it: on the artificial TARGET sweep the validator-side
 speedup is 2.82× / 3.68× / 3.88× (TARGET 100 / 500 / 2000) vs Block-STM 2.08× / 2.35× / 2.41×, with
 integration fixed at ~0.5 ms/block against 1.8 / 8.0 / 30.6 ms saved. **Pipelining** (`test_rebuttal_pipeline_real`:
@@ -629,7 +630,11 @@ so at most ~4 blocks per round, all validators on one 36-thread machine (8 execu
 discarded). Every mode: ~40.0k committed tx/s per validator (generator-bound; sequential executor 39-42 % busy).
 Executor time per committed tx with ~1000-tx rounds (9.8 blocks): sequential 9.9 us, Block-STM 11.1 us,
 concatenated 8.1 us, Omakase all stages 19.9 us (busy 80 %). With 1-2-block rounds Omakase is 84 % busy at the
-same throughput. Conclusion: functional end-to-end under multi-proposer consensus; on this cheap, exact-hint
+same throughput. Re-run with per-phase timing (`live/phases_minround1000/`, `live_phases.py`; ROUND log now
+carries `prep_ms integ_ms exec_only_ms`): 20.5 us/tx = 10.3 pre-execute + graph build (every validator
+re-derives every block's graph — the prototype does not ship graphs with proposals) + 2.7 integrate + 4.2
+execute + ~3.3 decode/state bookkeeping; charging each validator only its own 1/4 of the proposer stages
+gives 12.8 us/tx. Conclusion: functional end-to-end under multi-proposer consensus; on this cheap, exact-hint
 workload no parallel executor beats sequential and the preparatory stages double CPU per tx — the cost side of
 the ledger, consistent with the offline all-stages accounting. `PEVM_MIN_ROUND_TXS` accumulates commits into
 larger execution rounds.
