@@ -34,6 +34,17 @@ Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5,
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 24.02 s total, 1.601 ms/block.
 
+**Every stage on one node with P proposers** — round size = P (one block per proposer per round); ms/block
+
+| P | blocks | seq. | proposer stages (pre-exec + graph) | integrate | execute | validator + proposer/P | exec only | integ + exec | every stage on one node, 1/P | Block-STM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20 | 15,000 | 9.37 | 10.39 | 1.63 | 4.01 | 6.16 | 2.33× | 1.66× | **1.52×** | 1.84× |
+| 50 | 15,000 | 9.33 | 10.40 | 1.72 | 3.74 | 5.66 | 2.50× | 1.71× | **1.65×** | 1.86× |
+| 100 | 15,000 | 9.18 | 10.25 | 1.73 | 3.44 | 5.27 | 2.67× | 1.78× | **1.74×** | 1.87× |
+
+Integration cost per block grows with the round (more candidate merges) while execution improves (more inter-block parallelism); the proposer stages are paid once per block by its proposer, so a validator pays 1/P of them. Round size 100 is the main campaign; the other sizes are the full-dataset round-size runs (`run_roundsize_full.sh`).
+
+
 **Metadata shipped in a proposal**
 
 | Payload | MB total | KB/block | vs calldata |
@@ -49,26 +60,6 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Block-STM | 1.94× | 1.17× | 1.63× | 0 | 2.35 |
 | Block-STM, concatenated | 2.35× | 0.75× | 1.81× | 8 | 3.71 |
 | Omakase | 2.66× | 1.90× | 2.25× | 0 | 1.77 |
-
-**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
-
-| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
-|---|---:|---:|---:|---:|
-| low contention (bottom 20% Block-STM re-exec/tx) | 0.42 | 1.86× | 2.34× | 2.74× |
-| high contention (top 20%) | 0.70 | 1.81× | 1.99× | 2.52× |
-
-**Aborts and re-executions** — 2,387,073 txs (diagnostics build)
-
-| Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
-|---|---:|---:|---:|---:|---:|
-| Block-STM | 0.548 | 0.182 | 0.0291 | 0.0073 | 16% |
-| Block-STM, concatenated | 0.830 | 0.195 | 0.0048 | 0.0075 | 2% |
-| Graph OCC, concatenated | 0.649 | 0.360 | 0.0095 | 0.0027 | 3% |
-| Graph-aware OCC | 0.346 | 0.154 | 0.0148 | 0.0004 | 10% |
-| Vegeta | 0.339 | 0.195 | 0.0283 | 0.0006 | 15% |
-| Omakase | 0.419 | 0.206 | 0.0069 | 0.0009 | 3% |
-
-*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation (post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.
 
 ![](plot_real_speedup.png) ![](plot_real_phases.png)
 
@@ -104,6 +95,17 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 
 Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: 31.88 s total, 2.125 ms/block.
 
+**Every stage on one node with P proposers** — round size = P (one block per proposer per round); ms/block
+
+| P | blocks | seq. | proposer stages (pre-exec + graph) | integrate | execute | validator + proposer/P | exec only | integ + exec | every stage on one node, 1/P | Block-STM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20 | 15,000 | 13.09 | 13.96 | 0.77 | 5.60 | 7.07 | 2.34× | 2.06× | **1.85×** | 2.01× |
+| 50 | 15,000 | 13.07 | 13.91 | 0.82 | 5.57 | 6.66 | 2.35× | 2.05× | **1.96×** | 2.00× |
+| 100 | 15,000 | 12.77 | 13.93 | 0.83 | 5.46 | 6.42 | 2.34× | 2.03× | **1.99×** | 1.96× |
+
+Integration cost per block grows with the round (more candidate merges) while execution improves (more inter-block parallelism); the proposer stages are paid once per block by its proposer, so a validator pays 1/P of them. Round size 100 is the main campaign; the other sizes are the full-dataset round-size runs (`run_roundsize_full.sh`).
+
+
 **Metadata shipped in a proposal**
 
 | Payload | MB total | KB/block | vs calldata |
@@ -119,26 +121,6 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 | Block-STM | 2.04× | 1.24× | 1.72× | 0 | 2.82 |
 | Block-STM, concatenated | 2.85× | 1.59× | 2.25× | 0 | 2.99 |
 | Omakase | 2.43× | 1.43× | 2.05× | 0 | 2.94 |
-
-**Speedup by contention level** (rounds split by Block-STM's re-execution rate)
-
-| rounds | Block-STM re-exec/tx | Block-STM | Concat | Omakase |
-|---|---:|---:|---:|---:|
-| low contention (bottom 20% Block-STM re-exec/tx) | 0.53 | 2.26× | 3.34× | 2.69× |
-| high contention (top 20%) | 0.93 | 1.75× | 2.27× | 2.02× |
-
-**Aborts and re-executions** — 2,387,073 txs (diagnostics build)
-
-| Engine | re-executions / tx | validation aborts / tx | cascade aborts / tx | re-exec writing a new location / tx | cascade share of aborts |
-|---|---:|---:|---:|---:|---:|
-| Block-STM | 0.731 | 0.214 | 0.0418 | 0.0000 | 20% |
-| Block-STM, concatenated | 1.179 | 0.217 | 0.0045 | 0.0000 | 2% |
-| Graph OCC, concatenated | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
-| Graph-aware OCC | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
-| Vegeta | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
-| Omakase | 0.000 | 0.000 | 0.0000 | 0.0000 | 0% |
-
-*cascade abort* = validation failure because a lower-indexed writer appeared after the read; *re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation (post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.
 
 ![](plot_v2_speedup.png) ![](plot_v2_phases.png)
 
@@ -355,3 +337,7 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | **mean** |  |  | **20.51** | **10.32** | **2.72** | **4.20** | **12.77** |
 
 The prototype re-derives every block's graph at every validator (it does not ship graphs with proposals), so the pre-execute + graph column is counted P = 4 times; the last column charges each validator only its own quarter of it. The remainder (total minus the three phases) is hex decoding and state bookkeeping.
+
+
+---
+_Still missing: Real Ethereum (15 000 mainnet blocks) (diagnostics), Synthetic V2 (paper §7.2.2) (diagnostics)_

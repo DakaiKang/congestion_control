@@ -219,40 +219,72 @@ impl MvMemory {
         d
     }
 
+    /// Diagnostics: count a validation failure, and whether it is a *cascade*
+    /// abort, i.e. the invalidating write was produced by a **re-execution** of
+    /// a lower-indexed transaction (incarnation > 0, an ESTIMATE marker left by
+    /// an aborted incarnation, or a write that a later incarnation no longer
+    /// produces). A failure caused by the *first* execution of a lower-indexed
+    /// writer that simply had not run yet is an ordinary optimistic abort.
+    #[cfg(feature = "diagnostics")]
+    fn record_abort(&self, cascade: bool) {
+        self.total_aborts.fetch_add(1, Ordering::Relaxed);
+        if cascade {
+            self.cascade_aborts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    #[inline(always)]
+    fn record_abort(&self, _cascade: bool) {}
+
     pub(crate) fn validate_read_locations(&self, tx_idx: TxIdx) -> bool {
         for (location, prior_origins) in &index_mutex!(self.last_locations, tx_idx).read {
             if let Some(written_transactions) = self.data.get(location) {
                 let mut iter = written_transactions.range(..tx_idx);
                 for prior_origin in prior_origins {
-                    if let ReadOrigin::MvMemory(prior_version) = prior_origin {
-                        if let Some((closest_idx, MemoryEntry::Data(tx_incarnation, ..))) =
-                            iter.next_back()
-                        {
-                            if closest_idx != &prior_version.tx_idx
-                                || &prior_version.tx_incarnation != tx_incarnation
-                            {
-                                #[cfg(feature = "diagnostics")]
-                                self.total_aborts.fetch_add(1, Ordering::Relaxed);
+                    let closest = iter.next_back();
+                    match prior_origin {
+                        ReadOrigin::MvMemory(prior_version) => match closest {
+                            Some((closest_idx, MemoryEntry::Data(tx_incarnation, ..))) => {
+                                if closest_idx != &prior_version.tx_idx
+                                    || &prior_version.tx_incarnation != tx_incarnation
+                                {
+                                    // Cascade iff the write now in the way comes from a
+                                    // re-executed transaction; a first-time writer that
+                                    // appeared in between is an ordinary abort.
+                                    self.record_abort(*tx_incarnation > 0);
+                                    return false;
+                                }
+                            }
+                            // ESTIMATE (the writer we read is re-executing) or the
+                            // version we read has vanished (its next incarnation no
+                            // longer writes here): both are caused by a re-execution.
+                            _ => {
+                                self.record_abort(true);
                                 return false;
                             }
-                        } else {
-                            #[cfg(feature = "diagnostics")]
-                            self.total_aborts.fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-                    } else if iter.next_back().is_some() {
-                        #[cfg(feature = "diagnostics")]
-                        {
-                            self.cascade_aborts.fetch_add(1, Ordering::Relaxed);
-                            self.total_aborts.fetch_add(1, Ordering::Relaxed);
-                        }
-                        return false;
+                        },
+                        ReadOrigin::Storage => match closest {
+                            None => {}
+                            Some((_, MemoryEntry::Data(tx_incarnation, ..))) => {
+                                // We read storage believing no lower-indexed writer
+                                // existed. If the writer's entry is a re-execution it
+                                // is a cascade; a first execution that had not run yet
+                                // is the ordinary optimistic abort.
+                                self.record_abort(*tx_incarnation > 0);
+                                return false;
+                            }
+                            Some((_, MemoryEntry::Estimate)) => {
+                                self.record_abort(true);
+                                return false;
+                            }
+                        },
                     }
                 }
             } else if prior_origins.len() != 1 || prior_origins.last() != Some(&ReadOrigin::Storage)
             {
-                #[cfg(feature = "diagnostics")]
-                self.total_aborts.fetch_add(1, Ordering::Relaxed);
+                // We read a multi-version entry that no longer exists at all: its
+                // writer re-executed and dropped the location.
+                self.record_abort(true);
                 return false;
             }
         }

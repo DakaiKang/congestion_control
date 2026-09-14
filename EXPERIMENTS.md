@@ -575,8 +575,10 @@ Preparatory phases (cost as a fraction of sequential execution time): pre-execut
 0.10×, integrate 0.19×, execute 0.37×. **Validator-side (integrate + execute) speedup is 1.78×, below
 Block-STM's 1.87× in this in-memory setting**: integration (1.73 ms/block) costs more than the
 execution it saves (1.46 ms/block). A validator pays integrate + execute plus 1/P of the
-proposer stages (pre-execute + graph build = 10.25 ms/block): 1.62× / 1.71× / 1.74× for P = 20 / 50 / 100
-(summing every stage on one node, 0.60×, describes a single-proposer chain). Integration cost is independent
+proposer stages (pre-execute + graph build ≈ 10.3 ms/block). Measured at round size P (one block per
+proposer, full dataset, `run_roundsize_full.sh`): integration 1.63 / 1.72 / 1.73 ms/block, execution
+4.01 / 3.74 / 3.44 → **1.52× / 1.65× / 1.74× for P = 20 / 50 / 100** (synthetic 1.85× / 1.96× / 1.99×);
+summing every stage on one node, 0.60×, describes a single-proposer chain. Integration cost is independent
 of per-tx work while the saving scales with it: on the artificial TARGET sweep the validator-side
 speedup is 2.82× / 3.68× / 3.88× (TARGET 100 / 500 / 2000) vs Block-STM 2.08× / 2.35× / 2.41×, with
 integration fixed at ~0.5 ms/block against 1.8 / 8.0 / 30.6 ms saved. **Pipelining** (`test_rebuttal_pipeline_real`:

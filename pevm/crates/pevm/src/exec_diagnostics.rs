@@ -17,10 +17,12 @@ pub struct ExecDiagnostics {
     /// Validation failures: a transaction's re-read of its read set disagreed
     /// with what it originally observed.
     pub validation_aborts: usize,
-    /// Subset of `validation_aborts` where the transaction had read a location
-    /// from storage (believing no prior writer existed) and a lower-indexed
-    /// writer later appeared — the write-after-read invalidation that makes
-    /// aborts cascade downstream.
+    /// Subset of `validation_aborts` caused by the *re-execution* of a
+    /// lower-indexed transaction: the invalidating write carries incarnation
+    /// > 0, is an ESTIMATE left by an aborted incarnation, or is a version the
+    /// transaction read that a later incarnation no longer produces. Aborts
+    /// caused by a lower-indexed writer's *first* execution are ordinary
+    /// optimistic aborts, not cascades.
     pub cascade_aborts: usize,
     /// Re-executions that wrote a memory location the previous incarnation had
     /// not written. These are the re-executions that can invalidate *other*

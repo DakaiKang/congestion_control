@@ -112,6 +112,33 @@ def phase_table(d, title):
     return f"**{title}**\n\n" + md_table(rows, hdr) + note
 
 
+def proposer_table(D, main_d, pattern, title):
+    """Every stage on one node with one block per proposer per round: a validator
+    pays integrate + execute at round size P plus 1/P of the proposer stages,
+    all measured at round size P (round size 100 = the main campaign)."""
+    rows = []
+    for P in (5, 10, 20, 50, 100):
+        d = main_d if P == 100 else load(sorted(glob.glob(os.path.join(D, "sweeps", pattern.format(P=P)))))
+        if d is None:
+            continue
+        nb = d.num_blocks.sum(); seq = d.seq_time_s.sum()
+        pre, gb, integ, ex = (d[c].sum() for c in ("phase_pre_execute_s", "phase_graph_build_s", "phase_integrate_s", "phase_execute_s"))
+        par = d.par_time_s.sum()
+        full = integ + ex + (pre + gb) / P
+        f = lambda x: f"{x / nb * 1000:.2f}"
+        rows.append([P, f"{int(nb):,}", f(seq), f(pre + gb), f(integ), f(ex), f(full), f"{seq / ex:.2f}×", f"{seq / (integ + ex):.2f}×",
+                     f"**{seq / full:.2f}×**", f"{seq / par:.2f}×"])
+    if not rows:
+        return ""
+    return (f"**{title}** — round size = P (one block per proposer per round); ms/block\n\n" +
+            md_table(rows, ["P", "blocks", "seq.", "proposer stages (pre-exec + graph)", "integrate", "execute",
+                            "validator + proposer/P", "exec only", "integ + exec", "every stage on one node, 1/P", "Block-STM"]) +
+            "\n\nIntegration cost per block grows with the round (more candidate merges) while execution improves "
+            "(more inter-block parallelism); the proposer stages are paid once per block by its proposer, so a validator "
+            "pays 1/P of them. Round size 100 is the main campaign; the other sizes are the full-dataset round-size runs "
+            "(`run_roundsize_full.sh`).\n")
+
+
 def bandwidth_table(d, title):
     cd, og, vg = d.calldata_bytes.sum(), d.omakase_graph_bytes.sum(), d.vegeta_sched_bytes.sum()
     n_blocks = d.num_blocks.sum()
@@ -136,9 +163,11 @@ def abort_table(d, title):
     hdr = ["Engine", "re-executions / tx", "validation aborts / tx", "cascade aborts / tx",
            "re-exec writing a new location / tx", "cascade share of aborts"]
     return (f"**{title}** — {int(n):,} txs (diagnostics build)\n\n" + md_table(rows, hdr) +
-            "\n\n*cascade abort* = validation failure because a lower-indexed writer appeared after the read; "
-            "*re-exec writing a new location* = a re-execution whose write set differs from its previous *recorded* incarnation "
-            "(post-blocking first executions excluded). On real Ethereum this is ~0 for every engine: cascades propagate through values, not access sets.")
+            "\n\n*cascade abort* = validation failure caused by the *re-execution* of a lower-indexed transaction "
+            "(the invalidating write carries incarnation > 0, is an ESTIMATE left by an aborted incarnation, or is a version "
+            "the reader saw that a later incarnation no longer writes); an abort caused by a lower-indexed writer's first "
+            "execution is an ordinary optimistic abort. *re-exec writing a new location* = re-executions whose write set gained "
+            "a location the previous incarnation had not written (post-blocking first executions excluded).")
 
 
 def artificial_grid(dirpath):
@@ -263,8 +292,8 @@ def main():
                 "Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5, τ_hot = 1.5, InMemoryStorage.\n"]
     missing = []
 
-    real = load(sorted(glob.glob(os.path.join(D, "real_*.csv"))) and
-                [f for f in sorted(glob.glob(os.path.join(D, "real_*.csv"))) if not f.endswith("_diag.csv")])
+    real = load([f for f in sorted(glob.glob(os.path.join(D, "real_*.csv")))
+                 if re.fullmatch(r"real_\d+\.csv", os.path.basename(f))])  # timing runs only (not *_diag*.csv)
     real_d = load([f for f in sorted(glob.glob(os.path.join(D, "real_*_diag.csv")))])
     real = overlay_vegeta(real, sorted(glob.glob(os.path.join(D, "vegeta", "real_*.csv"))))
     v2 = load([os.path.join(D, "v2.csv")])
@@ -292,13 +321,14 @@ def main():
                        md_table(rows, ["rounds", "Block-STM re-exec/tx", "Block-STM", "Concat", "Omakase"]))
         return "\n".join(out) + "\n"
 
-    for label, d, dd in [("Real Ethereum (15 000 mainnet blocks)", real, real_d),
-                         ("Synthetic V2 (paper §7.2.2)", v2, v2_d)]:
+    for label, d, dd, rs_pat in [("Real Ethereum (15 000 mainnet blocks)", real, real_d, "roundsize_full_real_b{P}_*.csv"),
+                                 ("Synthetic V2 (paper §7.2.2)", v2, v2_d, "roundsize_full_v2_b{P}.csv")]:
         sections.append(f"\n## {label}\n")
         if d is None:
             missing.append(label); sections.append("_no results yet_\n"); continue
         sections.append(throughput_table(d, "Absolute throughput and per-block latency") + "\n")
         sections.append(phase_table(d, "Where the time goes — full pipeline including the preparatory phases") + "\n")
+        sections.append(proposer_table(D, d, rs_pat, "Every stage on one node with P proposers") + "\n")
         sections.append(bandwidth_table(d, "Metadata shipped in a proposal") + "\n")
         sections.append(congestion_section(d, dd))
         if dd is not None:
