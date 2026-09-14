@@ -594,6 +594,38 @@ impl TransactionGraph {
         Ok(edges_added)
     }
 
+    /// Experimental (`GRAPH_RAW_EDGES=all|cross`): add read-after-write edges
+    /// over the final execution order, so a reader is gated on the last
+    /// preceding writer of every key it reads. `cross_only` adds them only
+    /// when writer and reader come from different blocks (`replica`), i.e. the
+    /// dependencies a block boundary used to resolve before integration.
+    /// Returns the number of edges added. Nodes must be in execution order.
+    pub fn add_raw_edges(&mut self, cross_only: bool) -> usize {
+        let mut last_writer: HashMap<u64, usize> = HashMap::new();
+        let mut added = 0;
+        for i in 0..self.nodes.len() {
+            let replica = self.nodes[i].replica;
+            let reads: Vec<u64> = self.nodes[i].read_set.iter().copied().collect();
+            for k in reads {
+                if let Some(&j) = last_writer.get(&k) {
+                    if j != i
+                        && (!cross_only || self.nodes[j].replica != replica)
+                        && !self.nodes[j].children_indices.contains(&i)
+                    {
+                        self.nodes[j].children_indices.push(i);
+                        self.nodes[i].parent_indices.push(j);
+                        added += 1;
+                    }
+                }
+            }
+            let writes: Vec<u64> = self.nodes[i].write_set.iter().copied().collect();
+            for k in writes {
+                last_writer.insert(k, i);
+            }
+        }
+        added
+    }
+
     /// Detect and store hot keys
     fn detect_hot_keys(&mut self) {
         self.hot_keys.clear();

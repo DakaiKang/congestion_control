@@ -141,6 +141,13 @@ impl GraphPevm {
         }
 
         let block_size = txs.len();
+        let mut dependency_graph = dependency_graph;
+        // Experimental: gate readers on preceding writers (see TransactionGraph::add_raw_edges).
+        match std::env::var("GRAPH_RAW_EDGES").as_deref() {
+            Ok("all") => { dependency_graph.add_raw_edges(false); }
+            Ok("cross") => { dependency_graph.add_raw_edges(true); }
+            _ => {}
+        }
         let scheduler = GraphScheduler::new(block_size, dependency_graph);
 
         let mv_memory = chain.build_mv_memory(&block_env, &txs);
