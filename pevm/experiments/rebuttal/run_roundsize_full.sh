@@ -9,7 +9,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 D=/home/ubuntu/Omakase/eth-block-downloader/test_data
-OUT=experiments/rebuttal/sweeps; mkdir -p "$OUT"
+OUT=${REB_ROOT:-experiments/rebuttal}/sweeps; mkdir -p "$OUT"
 export NUM_THREADS=8 TAU_CV=0.5 HOT_KEY_THRESHOLD=1.5 CHECK_STATE=1 BLOCKS_DIR=$D/blocks_rw
 have() { [ -s "$1" ] && [ "$(wc -l < "$1")" -gt 2 ]; }
 cargo build --release --test rebuttal_test >/dev/null 2>&1 || { echo "build failed"; exit 1; }

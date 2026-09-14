@@ -17,7 +17,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 D=/home/ubuntu/Omakase/eth-block-downloader/test_data
-OUT=experiments/rebuttal/sweeps; mkdir -p "$OUT"
+OUT=${REB_ROOT:-experiments/rebuttal}/sweeps; mkdir -p "$OUT"
 export TAU_CV=0.5 HOT_KEY_THRESHOLD=1.5 HOT_SET_SIZE=5 K=4 M=40 CHECK_STATE=1
 export BLOCKS_DIR=$D/blocks_rw
 REAL_START=19557289 REAL_BATCHES=20

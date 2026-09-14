@@ -9,7 +9,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-OUT=experiments/rebuttal/artificial
+OUT=${REB_ROOT:-experiments/rebuttal}/artificial
 mkdir -p "$OUT"
 export NUM_BATCHES=${NUM_BATCHES:-100} BLOCKS_PER_BATCH=50 TXNS_PER_BLOCK=100 HOT_SET_SIZE=5
 export NUM_THREADS=8 TAU_CV=0.5 HOT_KEY_THRESHOLD=1.5 CHECK_STATE=1
