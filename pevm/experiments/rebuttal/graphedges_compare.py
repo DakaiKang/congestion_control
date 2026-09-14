@@ -9,7 +9,7 @@ def load(files, nb):
     fs = [pd.read_csv(f).head(nb) for f in files if os.path.exists(f) and os.path.getsize(f) > 0]
     return pd.concat(fs, ignore_index=True) if fs else None
 sets = {"waw (submission)": (load([f"{D}/real_{c}.csv" for c in chunks], NB), load([f"{D}/graphedges/waw_diag_{c}.csv" for c in chunks], NB))}
-for mode in ("raw", "raw+waw"):
+for mode in ("raw", "raw+waw", "rawB", "raw+wawB"):
     sets[mode] = (load([f"{D}/graphedges/{mode}_timing_{c}.csv" for c in chunks], NB), load([f"{D}/graphedges/{mode}_diag_{c}.csv" for c in chunks], NB))
 eng = [("par", "par", "Block-STM"), ("concat", "concat", "Concat"), ("cgraph", "cgraph", "Concat+graph"), ("graph", "graph", "Graph OCC"), ("integrated", "integ", "Omakase")]
 print(f"{'GRAPH_EDGES':18s}{'engine':14s}{'rnds':>5}{'speedup':>9}{'p99 ms/blk':>11}{'re-exec':>9}{'val':>7}{'cascade':>9}{'blocking':>10}{'x-blk val':>11}{'x-blk casc':>12}{'groups':>8}")

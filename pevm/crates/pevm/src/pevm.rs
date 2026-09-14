@@ -606,6 +606,13 @@ pub struct TxAccessSets {
 /// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
 ///   `recipient` are excluded from the read set (pevm returns a mock account and
 ///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
+/// `TRACK_BASIC_READS=1`: include account-level (balance/nonce/code) reads in
+/// the predicted read set used for conflict-graph construction.
+pub(crate) fn track_basic_reads() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("TRACK_BASIC_READS").map(|v| v == "1").unwrap_or(false))
+}
+
 pub(crate) struct TrackingDB<DB> {
     pub inner: DB,
     pub reads: HashSet<u64>,
@@ -628,7 +635,15 @@ impl<DB: Database> Database for TrackingDB<DB> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        // MemoryLocation::Basic excluded: only storage slots are compared for divergence analysis
+        // Account-level reads are recorded only with TRACK_BASIC_READS=1 (the
+        // paper's Algorithm 1 needs them: a transaction's read of its own
+        // sender account is what orders same-sender transactions). Coinbase
+        // and lazy transfer sender/recipient are skipped, mirroring pevm's
+        // parallel path. Without the flag only storage slots are recorded
+        // (the submission's code path).
+        if track_basic_reads() && !self.should_skip(&address) {
+            self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
+        }
         self.inner.basic(address)
     }
 
