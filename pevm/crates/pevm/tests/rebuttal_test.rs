@@ -195,7 +195,8 @@ graph_re_exec,graph_validation_aborts,graph_cascade_aborts,graph_wrote_new_loc,\
 integ_re_exec,integ_validation_aborts,integ_cascade_aborts,integ_wrote_new_loc,\
 vegeta_re_exec,vegeta_validation_aborts,vegeta_cascade_aborts,vegeta_wrote_new_loc,\
 digest_seq,digest_par,digest_concat,logical_seq,logical_integ,logical_vegeta,\
-cgraph_cross_block_aborts,cgraph_cross_block_cascade,graph_cross_block_aborts,graph_cross_block_cascade,integ_cross_block_aborts,integ_cross_block_cascade";
+cgraph_cross_block_aborts,cgraph_cross_block_cascade,graph_cross_block_aborts,graph_cross_block_cascade,integ_cross_block_aborts,integ_cross_block_cascade,\
+par_fallbacks,concat_fallbacks,cgraph_fallbacks,graph_fallbacks,integ_fallbacks";
 
 fn write_row(w: &mut impl std::io::Write, r: &Row) {
     let tp = |s: f64| if s > 0.0 { r.num_txs as f64 / s } else { 0.0 };
@@ -214,7 +215,8 @@ fn write_row(w: &mut impl std::io::Write, r: &Row) {
 {},{},{},{},\
 {},{},{},{},\
 {},{},{},{},{},{},\
-{},{},{},{},{},{}",
+{},{},{},{},{},{},\
+{},{},{},{},{}",
         r.batch_idx, r.num_blocks, r.num_txs, r.threads, r.merge_cap,
         r.seq_s, tp(r.seq_s), r.par_s, tp(r.par_s), r.concat_s, tp(r.concat_s), r.cgraph_s, tp(r.cgraph_s),
         r.graph_s, tp(r.graph_s), r.integ_s, tp(r.integ_s), r.vegeta_s, tp(r.vegeta_s),
@@ -239,6 +241,8 @@ fn write_row(w: &mut impl std::io::Write, r: &Row) {
         r.cgraph_diag.cross_block_aborts, r.cgraph_diag.cross_block_cascade,
         r.graph_diag.cross_block_aborts, r.graph_diag.cross_block_cascade,
         r.integ_diag.cross_block_aborts, r.integ_diag.cross_block_cascade,
+        r.par_diag.fallbacks, r.concat_diag.fallbacks, r.cgraph_diag.fallbacks,
+        r.graph_diag.fallbacks, r.integ_diag.fallbacks,
     )
     .unwrap();
 }
@@ -1377,7 +1381,8 @@ fn test_rebuttal_state_latency_real() {
     }
     let mut w = std::io::BufWriter::new(std::fs::File::create(&output).expect("create output"));
     writeln!(w, "batch_idx,num_blocks,num_txs,delay_ns,seq_time_s,par_time_s,concat_time_s,integrated_time_s,\
-phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_exec,num_integrated_groups").unwrap();
+phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_exec,num_integrated_groups,\
+par_fallbacks,concat_fallbacks,integ_fallbacks").unwrap();
     let chain = PevmEthereum::mainnet();
     let overall = Instant::now();
     let wrap = |s: InMemoryStorage| LatencyStorage { inner: s, delay_ns };
@@ -1453,10 +1458,12 @@ phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_e
         let mut s = wrap(storage.clone());
         let mut engine = Pevm::default();
         let mut par_re = 0usize;
+        let mut par_fb = 0usize;
         let t = Instant::now();
         for txs in blocks_txs.clone() {
             if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, real_block_env(), txs, concurrency) {
                 par_re += engine.last_diagnostics.re_executions;
+                par_fb += engine.last_diagnostics.fallbacks;
                 update_storage_with_results(&mut s.inner, r);
             }
         }
@@ -1471,23 +1478,26 @@ phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_e
             update_storage_with_results(&mut s.inner, r);
         }
         let concat_s = t.elapsed().as_secs_f64();
+        let concat_fb = engine.last_diagnostics.fallbacks;
 
         // Omakase execution.
         let mut s = wrap(storage.clone());
         let mut integ_re = 0usize;
+        let mut integ_fb = 0usize;
         let t = Instant::now();
         for (txs, graph) in groups.into_iter().zip(graphs.into_iter()) {
             let mut engine = GraphPevm::default();
             if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, concat_block_env(blocks_txs.len()), txs, concurrency, graph) {
                 integ_re += engine.last_diagnostics.re_executions;
+                integ_fb += engine.last_diagnostics.fallbacks;
                 update_storage_with_results(&mut s.inner, r);
             }
         }
         let integ_exec_s = t.elapsed().as_secs_f64();
 
-        writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}",
+        writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{}",
             batch_idx, blocks_txs.len(), total_txs, delay_ns, seq_s, par_s, concat_s, integ_exec_s,
-            pre_s, build_s, integ_s, par_re, integ_re, num_groups).unwrap();
+            pre_s, build_s, integ_s, par_re, integ_re, num_groups, par_fb, concat_fb, integ_fb).unwrap();
         w.flush().unwrap();
         println!("  d={}ns batch {} txs={} | seq {:.2}s par {:.2}s concat {:.2}s omakase {:.2}s (+integ {:.2}s) | cum {:.0}s",
             delay_ns, batch_idx, total_txs, seq_s, par_s, concat_s, integ_exec_s, integ_s, overall.elapsed().as_secs_f64());

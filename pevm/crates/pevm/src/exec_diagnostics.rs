@@ -34,6 +34,11 @@ pub struct ExecDiagnostics {
     /// not written. These are the re-executions that can invalidate *other*
     /// transactions, i.e. the trigger for a cascade.
     pub wrote_new_location: usize,
+    /// Number of optimistic windows the engine abandoned and re-executed
+    /// sequentially (e.g. a read of an account self-destructed in the same
+    /// window, or a scheduler abort). Rounds with any fallback are excluded
+    /// from the reported statistics (implementation artifact).
+    pub fallbacks: usize,
     /// Aborts caused by blocking on an ESTIMATE marker or an out-of-order nonce.
     pub blocking_aborts: usize,
     pub blocking_estimate: usize,
@@ -70,6 +75,7 @@ impl ExecDiagnostics {
         self.cross_block_aborts += o.cross_block_aborts;
         self.cross_block_cascade += o.cross_block_cascade;
         self.wrote_new_location += o.wrote_new_location;
+        self.fallbacks += o.fallbacks;
         self.blocking_aborts += o.blocking_aborts;
         self.blocking_estimate += o.blocking_estimate;
         self.blocking_nonce += o.blocking_nonce;

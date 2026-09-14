@@ -210,6 +210,7 @@ impl GraphPevm {
                     if std::env::var("PEVM_TRACE_FALLBACK").is_ok() {
                         eprintln!("[GraphPevm] FALLBACK to sequential (self-destructed account read) block_size={}", txs.len());
                     }
+                    self.last_diagnostics = crate::ExecDiagnostics { block_size: txs.len(), fallbacks: 1, ..Default::default() };
                     self.dropper.drop((mv_memory, scheduler, Vec::new()));
                     return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
                 }
@@ -223,6 +224,7 @@ impl GraphPevm {
         // Scheduler aborted due to timeout/deadlock (no abort_reason set).
         // Fall back to sequential execution to guarantee correctness.
         if scheduler.is_aborted() {
+            self.last_diagnostics = crate::ExecDiagnostics { block_size: txs.len(), fallbacks: 1, ..Default::default() };
             self.dropper.drop((mv_memory, scheduler, Vec::new()));
             return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
         }

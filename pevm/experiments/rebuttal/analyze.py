@@ -10,6 +10,24 @@ import argparse, glob, os, re, sys
 import numpy as np
 import pandas as pd
 import matplotlib
+
+# Rounds in which any engine abandoned an optimistic window and re-executed it
+# sequentially (an implementation artifact of the Block-STM engine, e.g. a
+# read of an account self-destructed in the same window) are excluded from
+# every statistic. Files written before the *_fallbacks columns existed are
+# taken as-is. DROPPED records how many rounds each file lost.
+DROPPED = {}
+_pd_read_csv = pd.read_csv
+def _read_csv_no_fallback(path, *a, **kw):
+    d = _pd_read_csv(path, *a, **kw)
+    fb = [c for c in d.columns if c.endswith("_fallbacks")]
+    if fb:
+        m = d[fb].fillna(0).sum(axis=1) > 0
+        if m.any():
+            DROPPED[os.path.basename(str(path))] = int(m.sum())
+            d = d[~m].reset_index(drop=True)
+    return d
+pd.read_csv = _read_csv_no_fallback
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -335,6 +353,8 @@ def main():
     out = a.out or os.path.join(D, "REPORT.md")
     sections = ["# Rebuttal experiments — generated tables\n",
                 "Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5, τ_hot = 1.5, InMemoryStorage.\n"]
+    sections.append("Rounds in which any engine fell back to sequential execution of an optimistic window are excluded "
+                    "from every table (see the note at the end for the count per file).\n")
     missing = []
 
     real = load([f for f in sorted(glob.glob(os.path.join(D, "real_*.csv")))
@@ -502,6 +522,10 @@ def main():
 
     if missing:
         sections.append("\n---\n_Still missing: " + ", ".join(missing) + "_\n")
+    if DROPPED:
+        sections.append("\n## Rounds excluded because an engine fell back to sequential execution\n\n" +
+                        md_table([[k, v] for k, v in sorted(DROPPED.items())], ["file", "rounds excluded"]) + "\n")
+
     with open(out, "w") as f:
         f.write("\n".join(sections))
     print("\n".join(sections))
