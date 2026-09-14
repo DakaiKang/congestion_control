@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use revm::primitives::Bytecode;
 
 use crate::{
-    BuildIdentityHasher, BuildSuffixHasher, MemoryEntry, MemoryLocationHash, ReadOrigin, ReadSet,
+    BuildIdentityHasher, BuildSuffixHasher, MemoryEntry, MemoryLocationHash, ReadOrigin, ReadSet, TxIncarnation,
     TxIdx, TxVersion, WriteSet,
 };
 
@@ -55,6 +55,12 @@ pub struct MvMemory {
     pub(crate) blocking_retry: AtomicUsize,
     #[cfg(feature = "diagnostics")]
     pub(crate) wrote_new_location: AtomicUsize,
+    /// (location, tx) -> incarnation at which that transaction *first* wrote
+    /// the location (reset if a later incarnation stops writing it). Lets
+    /// validation tell whether the write that invalidated a read came from a
+    /// first execution (ordinary optimistic abort) or a re-execution (cascade).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) first_write_inc: DashMap<(MemoryLocationHash, TxIdx), TxIncarnation>,
     /// Whether tx_idx has ever recorded a (successful) incarnation. A
     /// transaction whose incarnation 0 was *blocked* (ESTIMATE / nonce) never
     /// records, so its first successful execution would otherwise be counted as
@@ -96,6 +102,8 @@ impl MvMemory {
             reexec_write_changed: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
             cascade_aborts: AtomicUsize::new(0),
+            #[cfg(feature = "diagnostics")]
+            first_write_inc: DashMap::default(),
             #[cfg(feature = "diagnostics")]
             total_aborts: AtomicUsize::new(0),
             #[cfg(feature = "diagnostics")]
@@ -168,6 +176,8 @@ impl MvMemory {
                 if let Some(mut written_transactions) = self.data.get_mut(prev_location) {
                     written_transactions.remove(&tx_version.tx_idx);
                 }
+                #[cfg(feature = "diagnostics")]
+                self.first_write_inc.remove(&(*prev_location, tx_version.tx_idx));
                 last_locations.write.swap_remove(last_location_idx);
             } else {
                 last_location_idx += 1;
@@ -183,6 +193,8 @@ impl MvMemory {
             if !last_locations.write.contains(&location) {
                 last_locations.write.push(location);
                 wrote_new_location = true;
+                #[cfg(feature = "diagnostics")]
+                self.first_write_inc.insert((location, tx_version.tx_idx), tx_version.tx_incarnation);
             }
         }
 
@@ -236,6 +248,17 @@ impl MvMemory {
     #[inline(always)]
     fn record_abort(&self, _cascade: bool) {}
 
+    /// Diagnostics: did `writer` first write `location` in a re-execution?
+    #[cfg(feature = "diagnostics")]
+    fn written_by_reexecution(&self, location: &MemoryLocationHash, writer: TxIdx) -> bool {
+        self.first_write_inc.get(&(*location, writer)).map(|v| *v > 0).unwrap_or(false)
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    #[inline(always)]
+    fn written_by_reexecution(&self, _location: &MemoryLocationHash, _writer: TxIdx) -> bool {
+        false
+    }
+
     pub(crate) fn validate_read_locations(&self, tx_idx: TxIdx) -> bool {
         for (location, prior_origins) in &index_mutex!(self.last_locations, tx_idx).read {
             if let Some(written_transactions) = self.data.get(location) {
@@ -248,33 +271,39 @@ impl MvMemory {
                                 if closest_idx != &prior_version.tx_idx
                                     || &prior_version.tx_incarnation != tx_incarnation
                                 {
-                                    // Cascade iff the write now in the way comes from a
-                                    // re-executed transaction; a first-time writer that
-                                    // appeared in between is an ordinary abort.
-                                    self.record_abort(*tx_incarnation > 0);
+                                    // Same writer, new incarnation: its re-execution
+                                    // changed the value we read -> cascade. A different
+                                    // writer got in between: cascade only if it first
+                                    // wrote this location in a re-execution; a first
+                                    // execution that had not run yet is an ordinary abort.
+                                    let cascade = closest_idx == &prior_version.tx_idx
+                                        || self.written_by_reexecution(location, *closest_idx);
+                                    self.record_abort(cascade);
                                     return false;
                                 }
                             }
-                            // ESTIMATE (the writer we read is re-executing) or the
-                            // version we read has vanished (its next incarnation no
-                            // longer writes here): both are caused by a re-execution.
-                            _ => {
+                            // ESTIMATE left by an aborted incarnation of the writer.
+                            Some((closest_idx, MemoryEntry::Estimate)) => {
+                                let cascade = closest_idx == &prior_version.tx_idx
+                                    || self.written_by_reexecution(location, *closest_idx);
+                                self.record_abort(cascade);
+                                return false;
+                            }
+                            // The version we read has vanished: its writer re-executed
+                            // and no longer writes here.
+                            None => {
                                 self.record_abort(true);
                                 return false;
                             }
                         },
                         ReadOrigin::Storage => match closest {
                             None => {}
-                            Some((_, MemoryEntry::Data(tx_incarnation, ..))) => {
-                                // We read storage believing no lower-indexed writer
-                                // existed. If the writer's entry is a re-execution it
-                                // is a cascade; a first execution that had not run yet
-                                // is the ordinary optimistic abort.
-                                self.record_abort(*tx_incarnation > 0);
-                                return false;
-                            }
-                            Some((_, MemoryEntry::Estimate)) => {
-                                self.record_abort(true);
+                            // We read storage believing no lower-indexed writer
+                            // existed. Cascade iff the writer first produced this
+                            // location in a re-execution; a first execution that had
+                            // not run yet is the ordinary optimistic abort.
+                            Some((closest_idx, _)) => {
+                                self.record_abort(self.written_by_reexecution(location, *closest_idx));
                                 return false;
                             }
                         },
