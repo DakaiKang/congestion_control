@@ -705,3 +705,35 @@ Merge 2.48x vs default 2.46x; Shanghai 2.53x vs 2.55x; Cancun 2.98x vs 2.93x (al
 Within +-2 %: merging more (22 -> 14 groups) buys nothing on real Ethereum; the default already sits on a
 flat optimum, and the gap to the concatenated round at low contention is structural, not a tuning choice.
 The "adopt as default" sentence is withdrawn.
+
+### Cascade-abort definition corrected (2026-09-14)
+
+The earlier `cascade_aborts` counter counted "read from storage, then a lower-indexed writer appeared", which
+(a) includes a writer's *late first execution* (an ordinary optimistic abort) and (b) misses "read version
+(j,k), j re-executed to k+1" (the typical cascade). New definition (`mv_memory.rs::validate_read_locations`,
+diagnostics build): a validation failure is a cascade iff the invalidating write comes from a
+**re-execution** — same writer with a new incarnation, an ESTIMATE / vanished version of the writer we read,
+or a different lower-indexed writer that *first* produced the location in incarnation > 0 (tracked in a
+diagnostics-only `first_write_inc` map). Old CSVs kept as `*_diag_v1.csv`; `run_diag_rerun.sh` regenerates.
+
+Real Ethereum, 2.39 M tx (per tx): Block-STM re-exec 0.544 / val 0.183 / cascade 0.135 / blocking 0.361;
+concat 0.827 / 0.197 / 0.183 / 0.630; concat+graph 0.650 / 0.361 / 0.263 / 0.289; Graph OCC 0.346 / 0.154 /
+**0.103** / 0.192; Omakase 0.420 / 0.207 / 0.141 / 0.213. Consequences: (1) ~3/4 of Block-STM's validation
+failures are strict cascades (93 % for concat); (2) per-block graph gating cuts cascades 24 % and re-execs 36 %;
+(3) **Omakase does not reduce cascades vs Block-STM** (0.141 vs 0.135) — merged groups re-expose cross-block RAW
+conflicts; its 23 % fewer re-execs come from fewer *blocking* re-executions (0.213 vs 0.361). The "4x fewer
+cascade aborts" claim is withdrawn. `wrote_new_location`: 0.7 % of tx for Block-STM/concat, <= 0.3 % for
+graph-driven engines (earlier "< 3e-3 for every engine" was wrong for Block-STM/concat).
+
+### Concatenated round: worst rounds are pevm's sequential fallback (2026-09-14)
+
+The 8 real rounds where the concatenated window ran below 1x (worst 0.75x) all have `concat_re_exec = 0`
+in the diagnostics run: pevm hit `ReadError::SelfDestructedAccount` -> `AbortReason::FallbackToSequential`
+and re-executed the whole ~15k-tx window sequentially (confirmed with `PEVM_TRACE_FALLBACK=1` on chunk
+18581726 round 31: both concat engines fell back, per-block Block-STM and Omakase's groups did not). Concat+graph
+has 10 such rounds. Excluding them: concat mean 2.44x, worst 1.25x, p10 1.90x, p99/p50 2.56, p99 9.45 ms/block
+(vs 13.82 with them); Omakase 2.66x / 1.90x / 2.26x / 1.73. Contention quintiles (Block-STM re-exec rate) show no
+differential degradation without the fallback rounds (concat -6 %, Omakase -9 %, Block-STM -4 %), so the old
+"-15 % vs -8 %" claim is withdrawn. The worst genuine concat rounds (all in chunk 18581726: rounds 39, 11, 21,
+43, 45; concat 1.25-1.71x, re-exec 0.8-1.2/tx) run at 2.3-4.0x under Omakase (0.4-0.6 re-exec/tx). REPORT.md
+section "Concatenated round: whole-window sequential fallback".
