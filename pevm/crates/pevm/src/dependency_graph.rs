@@ -3,13 +3,16 @@ use std::sync::OnceLock;
 
 /// Which dependencies become graph edges (env `GRAPH_EDGES`).
 ///
-/// * `Waw` (default, the code path used for the submission's experiments):
-///   an edge only between two writers of the same key; the per-key tail is the
-///   last *toucher*.
-/// * `Raw` (paper, Algorithm 1): the per-key tail is the last *writer*; every
-///   reader of a key gets an edge from that writer; a key's head set is the
-///   readers before its first write plus the first writer. No intra-block WAW
-///   edges (write versions are ordered by index in the OCC engine).
+/// * `Raw` (default; the paper's Algorithm 1): the per-key tail is the last
+///   *writer*; every reader of a key gets an edge from that writer; a key's
+///   head set is the readers before its first write plus the first writer. No
+///   explicit WAW edges: with account-level reads in the read set (see
+///   `TRACK_BASIC_READS`) every writer has read the account it writes, so
+///   consecutive writers are already RAW-linked (measured identical to
+///   `RawWaw` on real Ethereum).
+/// * `Waw` (`GRAPH_EDGES=waw`; the code path the submission's experiments
+///   used): an edge only between two writers of the same key; the per-key
+///   tail is the last *toucher*.
 /// * `RawWaw`: `Raw` plus an edge between consecutive writers of a key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EdgeMode {
@@ -21,9 +24,9 @@ pub enum EdgeMode {
 impl EdgeMode {
     pub fn from_env() -> Self {
         match std::env::var("GRAPH_EDGES").as_deref() {
-            Ok("raw") => EdgeMode::Raw,
+            Ok("waw") => EdgeMode::Waw,
             Ok("raw+waw") | Ok("raw_waw") | Ok("rawwaw") => EdgeMode::RawWaw,
-            _ => EdgeMode::Waw,
+            _ => EdgeMode::Raw,
         }
     }
     pub fn current() -> Self {

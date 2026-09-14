@@ -606,11 +606,13 @@ pub struct TxAccessSets {
 /// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
 ///   `recipient` are excluded from the read set (pevm returns a mock account and
 ///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
-/// `TRACK_BASIC_READS=1`: include account-level (balance/nonce/code) reads in
-/// the predicted read set used for conflict-graph construction.
+/// Include account-level (balance/nonce/code) reads in the predicted read set
+/// used for conflict-graph construction (default on, as the paper's Algorithm 1
+/// requires; `TRACK_BASIC_READS=0` restores the storage-only read set of the
+/// submission's experiments).
 pub(crate) fn track_basic_reads() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("TRACK_BASIC_READS").map(|v| v == "1").unwrap_or(false))
+    *F.get_or_init(|| std::env::var("TRACK_BASIC_READS").map(|v| v != "0").unwrap_or(true))
 }
 
 pub(crate) struct TrackingDB<DB> {
@@ -635,12 +637,11 @@ impl<DB: Database> Database for TrackingDB<DB> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        // Account-level reads are recorded only with TRACK_BASIC_READS=1 (the
-        // paper's Algorithm 1 needs them: a transaction's read of its own
-        // sender account is what orders same-sender transactions). Coinbase
-        // and lazy transfer sender/recipient are skipped, mirroring pevm's
-        // parallel path. Without the flag only storage slots are recorded
-        // (the submission's code path).
+        // Account-level reads are part of the predicted read set (the paper's
+        // Algorithm 1 needs them: a transaction's read of its own sender
+        // account is what orders same-sender transactions). Only the zero
+        // address and the coinbase are skipped. TRACK_BASIC_READS=0 restores
+        // the storage-only read set of the submission's experiments.
         // Lazy (pure-transfer) sender/recipient accounts are *not* skipped here:
         // the sender's own account read is what orders same-sender transfers.
         if track_basic_reads() && address != Address::ZERO && address != self.coinbase {
