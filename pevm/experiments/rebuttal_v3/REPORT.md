@@ -40,6 +40,8 @@ Vegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pa
 
 | P | blocks | seq. | proposer stages (pre-exec + graph) | integrate | execute | validator + proposer/P | exec only | integ + exec | every stage on one node, 1/P | Block-STM |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 | 14,945 | 9.17 | 10.53 | 1.97 | 4.58 | 8.65 | 2.00× | 1.40× | **1.06×** | 1.82× |
+| 10 | 14,600 | 9.18 | 10.59 | 2.24 | 4.29 | 7.59 | 2.14× | 1.41× | **1.21×** | 1.83× |
 | 20 | 14,360 | 9.16 | 10.60 | 2.43 | 3.97 | 6.93 | 2.31× | 1.43× | **1.32×** | 1.85× |
 | 50 | 14,100 | 9.09 | 10.46 | 2.59 | 3.72 | 6.52 | 2.44× | 1.44× | **1.39×** | 1.87× |
 | 100 | 13,100 | 9.29 | 10.69 | 2.71 | 3.61 | 6.43 | 2.57× | 1.47× | **1.44×** | 1.88× |
@@ -404,12 +406,18 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | real_18581726_diag.csv | 7 |
 | real_19557289.csv | 5 |
 | real_19557289_diag.csv | 5 |
+| roundsize_full_real_b10_16774645.csv | 12 |
+| roundsize_full_real_b10_18581726.csv | 18 |
+| roundsize_full_real_b10_19557289.csv | 10 |
 | roundsize_full_real_b20_16774645.csv | 14 |
 | roundsize_full_real_b20_18581726.csv | 11 |
 | roundsize_full_real_b20_19557289.csv | 7 |
 | roundsize_full_real_b50_16774645.csv | 6 |
 | roundsize_full_real_b50_18581726.csv | 9 |
 | roundsize_full_real_b50_19557289.csv | 3 |
+| roundsize_full_real_b5_16774645.csv | 4 |
+| roundsize_full_real_b5_18581726.csv | 5 |
+| roundsize_full_real_b5_19557289.csv | 2 |
 | roundsize_real_b10.csv | 2 |
 | roundsize_real_b100.csv | 2 |
 | roundsize_real_b20.csv | 4 |
