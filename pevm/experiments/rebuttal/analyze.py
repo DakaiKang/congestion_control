@@ -303,6 +303,36 @@ def sweep_table(dirpath, pattern, key, label):
     return md_table(rows, hdr)
 
 
+def param_sweep_table(D, prefix, tag, label, default):
+    """Omakase as an integration parameter varies (hot-key threshold / tau_cv sweeps,
+    ENGINES=omakase runs): files sweeps/<prefix>_real_<tag><value>_<chunk>.csv, the
+    three dataset chunks of one value merged (fallback rounds already dropped by load)."""
+    files = sorted(glob.glob(os.path.join(D, "sweeps", f"{prefix}_real_{tag}*_*.csv")))
+    if not files:
+        return None
+    by_val = {}
+    for f in files:
+        m = re.search(rf"_{tag}([0-9.]+)_\d+\.csv$", os.path.basename(f))
+        if m:
+            by_val.setdefault(float(m.group(1)), []).append(f)
+    rows = []
+    for v in sorted(by_val):
+        d = load(by_val[v])
+        if d is None or not (d.integrated_time_s > 0).all():
+            continue
+        seq, integ = d.seq_time_s.sum(), d.integrated_time_s.sum()
+        per = d.seq_time_s / d.integrated_time_s
+        nb = d.num_blocks.sum()
+        mark = " (paper)" if abs(v - default) < 1e-9 else ""
+        rows.append([f"{v:g}{mark}", len(d), f"**{seq / integ:.2f}×**", f"{per.mean():.2f}", f"{per.median():.2f}",
+                     f"{per.min():.2f}", f"{per.max():.2f}", f"{d.num_integrated_groups.mean():.1f}",
+                     f"{d.phase_integrate_s.sum() / nb * 1000:.2f}", f"{d.integ_re_exec.sum() / d.num_txs.sum():.3f}"])
+    if not rows:
+        return None
+    return md_table(rows, [label, "rounds", "Omakase speedup (agg.)", "mean/round", "median", "min", "max",
+                           "groups/round", "integrate ms/block", "re-exec/tx"])
+
+
 def plot_engines(d, title, path):
     fig, ax = plt.subplots(figsize=(7, 3.6))
     seq = d.seq_time_s.sum()
@@ -427,6 +457,14 @@ def main():
             t = sweep_table(os.path.join(D, sub), pattern.replace("*_", f"{wl}_", 1), key, label)
             if t:
                 sections.append(f"\n## {title} — {wl}\n\n{t}\n")
+
+    for prefix, tag, label, default, title in [
+        ("hot", "h", "hot-key threshold τ_hot", 1.5, "Hot-key threshold sweep (τ_CV = 0.5) — real"),
+        ("tau", "t", "CV threshold τ_CV", 0.5, "τ_CV sweep (τ_hot = 1.5) — real"),
+    ]:
+        t = param_sweep_table(D, prefix, tag, label, default)
+        if t:
+            sections.append(f"\n## {title}\n\nOnly Omakase depends on this parameter (sequential + Omakase timed, `ENGINES=omakase`).\n\n{t}\n")
 
     pipes = sorted(glob.glob(os.path.join(D, "sweeps", "pipeline_real_b*.csv")))
     if pipes:

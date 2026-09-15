@@ -31,7 +31,7 @@ runs all of them in sequence (no two timing runs share the machine) and then
 generates the report:
 
 ```bash
-scripts/all_experiments.sh          # ~13 h on a c4.8xlarge (18 cores / 36 threads)
+scripts/all_experiments.sh          # ~15 h on a c4.8xlarge (18 cores / 36 threads)
 ```
 
 Results go to `pevm/experiments/results/` (override with `RESULTS=...`), and
@@ -54,6 +54,18 @@ already exist, so an interrupted run can be restarted, and each can be run alone
 | `11_state_latency.sh` | Emulated per-read state latency 0–50 µs, 8/16/32 workers | 1 h |
 | `12_live_mysticeti.sh` | Four-validator Mysticeti deployment, four executors | 10 min |
 | `13_graph_construction_ablation.sh` | Algorithm 1 graph vs. write-after-write-only variant | 40 min |
+| `14_hot_key_sweep.sh` | Hot-key threshold τ_hot 0.5–5.0 (paper §7.4), full real dataset, Omakase only | 1 h |
+| `15_tau_cv_sweep.sh` | CV threshold τ_CV 0.1–2.0 (paper §7.4), full real dataset, Omakase only | 1 h |
+
+Scripts 01–13 are the SIGMOD author-feedback experiments; together with 14–15
+they cover every figure and table of the paper's evaluation (§7.4 parameter
+sweeps, §7.5 speedup, §7.6 absolute throughput and stronger baselines, §7.7
+end-to-end stage cost and latency, §7.8 aborts, §7.9 artificial workload). The
+two integration thresholds affect only Omakase, so 14 and 15 time sequential and
+Omakase alone (`ENGINES=omakase`); the older `bench_test`-based sweep scripts
+under `pevm/experiments/` (`run_param_sweeps_t8.sh`, `run_thread_sweep.sh`)
+produced the submission's figures with the write-after-write-only graph and
+are kept for reference only.
 
 Two conventions apply to every statistic: the conflict graph is built as the
 paper's Algorithm 1 specifies (RAW edges from the last writer, account-level
@@ -67,5 +79,6 @@ window and re-executed it sequentially (`*_fallbacks` columns) are excluded by
 `NUM_THREADS`, `TAU_CV`, `HOT_KEY_THRESHOLD`, `MERGE_CAP`, `BATCH_SIZE`,
 `MAX_BATCHES`, `START_BLOCK`, `STATE_DELAY_NS`, `TARGET`, `K`/`M` (artificial
 ρ_inter/ρ_intra), `ENGINES=vegeta` (Vegeta and sequential only),
-`PEVM_TRACE_FALLBACK=1` (print sequential fallbacks). See `EXPERIMENTS.md` for
+`ENGINES=omakase` (sequential and Omakase only), `PEVM_TRACE_FALLBACK=1` (print
+sequential fallbacks). See `EXPERIMENTS.md` for
 the full list and the recorded results.

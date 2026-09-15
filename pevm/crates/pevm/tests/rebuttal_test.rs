@@ -286,9 +286,14 @@ fn round_graph(
 
 
 /// Which engines to time. `ENGINES=vegeta` runs only sequential + Vegeta (fast
-/// re-measurement of one engine); anything else runs the full set.
+/// re-measurement of one engine); `ENGINES=omakase` runs only sequential +
+/// Omakase (for the integration-parameter sweeps, whose knobs affect no other
+/// engine); anything else runs the full set.
 fn engines_vegeta_only() -> bool {
     std::env::var("ENGINES").map(|v| v == "vegeta").unwrap_or(false)
+}
+fn engines_omakase_only() -> bool {
+    std::env::var("ENGINES").map(|v| v == "omakase").unwrap_or(false)
 }
 
 /// Faithful Vegeta (Algorithms 1-3: speculation, Aria-style parallel batches
@@ -412,6 +417,7 @@ fn run_synthetic_batch(
     }
     row.phases.pre_execute = t.elapsed();
     let vegeta_only = engines_vegeta_only();
+    let omakase_only = engines_omakase_only();
 
     // ── Phase 2: per-block conflict graph + intra-block reorder (Omakase).
     let mut prep = base.clone();
@@ -487,6 +493,7 @@ fn run_synthetic_batch(
     let mut digest_cgraph: u64 = 0;
     let mut integ_total_balance = revm::primitives::U256::ZERO;
     if !vegeta_only {
+    if !omakase_only {
     // ── 2. Block-STM, per block.
     let mut s = base.clone();
     let mut pevm_engine = Pevm::default();
@@ -542,6 +549,7 @@ fn run_synthetic_batch(
         update_storage_with_results(&mut s, r);
     }
     row.graph_s = t.elapsed().as_secs_f64();
+    }
 
     // ── 5. Omakase (integrated groups).
     let mut s = base.clone();
@@ -563,6 +571,8 @@ fn run_synthetic_batch(
 
     }
     // ── 6. Vegeta: faithful replay, per block.
+    let mut vegeta_total_balance = seq_total_balance;
+    if !omakase_only {
     let mut s = base.clone();
     let (schedules, spec_s, exec_s, tail, _batches) = run_vegeta_faithful(
         &chain, &mut s, spec_id, &BlockEnv::default(), blocks_txs, &access_sets, None, concurrency,
@@ -575,7 +585,10 @@ fn run_synthetic_batch(
     row.vegeta_diag.block_size = total_txs;
     row.vegeta_diag.re_executions = tail;
     row.logical_vegeta = logical_digest(&s);
-    let vegeta_total_balance = total_balance(&s);
+    vegeta_total_balance = total_balance(&s);
+    } else {
+        row.logical_vegeta = row.logical_seq;
+    }
 
     // Correctness.
     //
@@ -588,13 +601,15 @@ fn run_synthetic_batch(
     // balances legitimately differ because reordering moves which
     // transaction pays SSTORE_SET rather than SSTORE_RESET. Total ether is
     // still conserved, which we check separately.
-    if cfg.check_state && !vegeta_only {
+    if cfg.check_state && !vegeta_only && !omakase_only {
         assert_eq!(row.digest_par, row.digest_seq,
             "batch {batch_idx}: Block-STM state != sequential");
         assert_eq!(row.digest_concat, row.digest_seq,
             "batch {batch_idx}: concatenated-block Block-STM state != sequential");
         assert_eq!(digest_cgraph, row.digest_seq,
             "batch {batch_idx}: concat+graph state != sequential");
+    }
+    if cfg.check_state && !vegeta_only {
         assert_eq!(row.logical_integ, row.logical_seq,
             "batch {batch_idx}: Omakase slot/nonce state != sequential");
         assert_eq!(row.logical_vegeta, row.logical_seq,
@@ -894,6 +909,7 @@ fn test_rebuttal_real() {
         }
         row.phases.pre_execute = t.elapsed();
         let vegeta_only = engines_vegeta_only();
+        let omakase_only = engines_omakase_only();
 
         // ── Phase 2: per-block conflict graph + intra-block reorder.
         let mut prep = storage.clone();
@@ -947,6 +963,7 @@ fn test_rebuttal_real() {
         }
 
         if !vegeta_only {
+        if !omakase_only {
         // ── 2. Block-STM, per block.
         let mut s = storage.clone();
         let mut engine = Pevm::default();
@@ -1022,6 +1039,7 @@ fn test_rebuttal_real() {
             }
         }
         row.graph_s = t.elapsed().as_secs_f64();
+        }
 
         // ── 5. Omakase.
         let mut s = storage.clone();
@@ -1045,7 +1063,7 @@ fn test_rebuttal_real() {
 
         }
         // ── 6. Vegeta: faithful replay (speculation + batches + serial tail), per block.
-        if run_vegeta {
+        if run_vegeta && !omakase_only {
             let mut s = storage.clone();
             let (schedules, spec_s, exec_s, tail, _b) = run_vegeta_faithful(
                 &chain, &mut s, spec_id, &real_block_env(), &blocks_txs, &access_sets,
@@ -1070,7 +1088,7 @@ fn test_rebuttal_real() {
         // is precisely why the paper's synthetic workload exists). The
         // artificial workload in `test_rebuttal_artificial` is where exact
         // equivalence is actually asserted.
-        if row.digest_par != row.digest_seq {
+        if row.par_s > 0.0 && row.digest_par != row.digest_seq {
             println!("    note: batch {batch_idx} Block-STM digest != sequential (expected: lazy beneficiary settlement)");
         }
         if row.concat_s > 0.0 && row.digest_concat != row.digest_par {
