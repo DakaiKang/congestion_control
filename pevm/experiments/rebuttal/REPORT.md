@@ -2,6 +2,8 @@
 
 Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5, τ_hot = 1.5, InMemoryStorage.
 
+Rounds in which any engine fell back to sequential execution of an optimistic window are excluded from every table (see the note at the end for the count per file).
+
 
 ## Real Ethereum (15 000 mainnet blocks)
 
