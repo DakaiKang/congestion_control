@@ -20,6 +20,7 @@ for b in ${SIZES:-20 50}; do
     START_BLOCK=$start BATCH_SIZE=$b MAX_BATCHES=$((5000 / b)) OUTPUT="$f" cargo test --release --test rebuttal_test \
         test_rebuttal_real -- --nocapture --exact 2>&1 | grep -aE "✓|panicked|skipping|failed \(" | tail -3
   done
+  [ -n "${SKIP_V2:-}" ] && continue
   f="$OUT/roundsize_full_v2_b${b}.csv"; have "$f" && { echo "skip $f"; continue; }
   echo "==> $f  $(date +%H:%M)"
   BATCH_SIZE=$b MAX_BATCHES=$((15000 / b)) OUTPUT="$f" cargo test --release --test rebuttal_test \
