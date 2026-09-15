@@ -43,7 +43,7 @@ for b in 100 20; do
       test_rebuttal_pipeline_real -- --nocapture --exact 2>&1 | grep -aE "✓|panicked|pipelined" | tail -2
 done
 # Live 4-validator Mysticeti (rebuild picks up the new graph code; env passes through)
-( cd mysticeti && cargo build --release -p mysticeti 2>&1 | grep -E "^error" -A 6; echo "MYST_BUILD_EXIT=${PIPESTATUS[0]}" )
+( cd ../mysticeti && cargo build --release -p mysticeti 2>&1 | grep -E "^error" -A 6; echo "MYST_BUILD_EXIT=${PIPESTATUS[0]}" )
 OUT=$PWD/$REB_ROOT/live PEVM_MIN_ROUND_TXS=1000 PEVM_LOAD=150000 $S/run_live_mysticeti.sh
 [ -f $REB_ROOT/live/summary.csv ] && mv $REB_ROOT/live/summary.csv $REB_ROOT/live/summary_minround1000.csv
 python3 $S/analyze.py --dir $REB_ROOT > /dev/null 2>&1 && echo "REPORT: $REB_ROOT/REPORT.md"
