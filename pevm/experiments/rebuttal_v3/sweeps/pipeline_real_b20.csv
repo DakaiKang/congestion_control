@@ -1,0 +1,2 @@
+rounds,blocks_per_round,num_txs,threads,seq_time_s,par_time_s,omakase_serial_s,omakase_pipelined_s,integrate_only_s
+20,20,70070,8,3.885905,1.986545,3.310837,2.185350,1.242495

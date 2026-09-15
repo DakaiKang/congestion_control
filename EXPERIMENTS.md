@@ -737,3 +737,23 @@ differential degradation without the fallback rounds (concat -6 %, Omakase -9 %,
 "-15 % vs -8 %" claim is withdrawn. The worst genuine concat rounds (all in chunk 18581726: rounds 39, 11, 21,
 43, 45; concat 1.25-1.71x, re-exec 0.8-1.2/tx) run at 2.3-4.0x under Omakase (0.4-0.6 re-exec/tx). REPORT.md
 section "Concatenated round: whole-window sequential fallback".
+
+### Campaign v3 — paper's Algorithm 1 graph (2026-09-14/15), `pevm/experiments/rebuttal_v3/`
+
+Default construction is now `GRAPH_EDGES=raw` (RAW edges from the last writer, head sets) with account-level
+reads in the predicted read set (`TRACK_BASIC_READS`, default on); hot-key detection counts only keys that some
+transaction writes. Every statistic excludes rounds in which any engine fell back to sequential execution
+(`*_fallbacks` columns; 19/150 real rounds, 0 synthetic). Old WAW-only results stay in `experiments/rebuttal/`
+as the ablation. Headline (real, 131 rounds, t=8): Sequential 17.1k tx/s; Block-STM 1.88x; concat 2.35x;
+concat+graph 2.15x; Graph OCC 1.68x; Vegeta 1.32x; **Omakase 2.56x (43.7k tx/s), p99 6.10 ms/block**.
+Aborts/tx: Block-STM 0.547 re-exec / 0.135 cascade / 0.364 blocking; Omakase 0.328 / 0.108 / 0.165 (-40% / -20% /
+-55%); Graph OCC 0.294 / 0.087 / 0.163; WAW-only Omakase 0.420 / 0.141 / 0.213. Two thirds of Omakase's residual
+aborts have a cross-block writer, two thirds of those are cascades (value propagation). Costs: pre-exec 9.46,
+graph 1.23, integrate 2.71 (+57% vs WAW-only), exec 3.61 ms/block; validator-side 1.47x (Block-STM 1.88x);
+P=20/50/100 all-stage 1.32/1.39/1.44x. Synthetic V2: Omakase 2.29x (WAW-only 2.34x), concat+graph 2.98x.
+Round size (2k sample): concat leads <=20 blocks, ties at 50 (2.57 vs 2.56), Omakase leads at 100 (2.66 vs 2.59).
+Threads: Omakase 2.65x->2.02x (8->32) vs concat 2.58->1.69. State latency: integration share 44%->9%, Omakase+integ
+overtakes Block-STM at ~50 us; concat ahead at every delta. Pipelining: 7.87 s serial (1.19x) -> 5.03 s (1.86x)
+vs Block-STM 4.85 s (1.94x), 88% hidden. Aggressive integration +1-6% on full real; unbounded cap 2.62x vs 2.65x
+(no collapse with RAW edges). Live Mysticeti (fresh build): 9.7 / 10.7 / 8.0 / 20.2 us/tx (Omakase 9.8 pre-exec +
+3.0 integrate + 4.1 exec; P=4 share 12.9). Bandwidth 18.4 KB/block, 16.1% of calldata.
