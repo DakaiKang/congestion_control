@@ -14,6 +14,27 @@ paper. It has two parts:
 `EXPERIMENTS.md` is the research log: datasets, exact invocations, parameter
 sweeps and their results. `CLAUDE.md` describes the code layout.
 
+## What is ours and what is upstream
+
+`pevm/` started as a fork of [risechain/pevm](https://github.com/risechain/pevm),
+which provides the Block-STM engine (`pevm.rs`, `scheduler.rs`, `mv_memory.rs`,
+`vm.rs`, `chain/`, `storage/`). Everything the paper describes is ours, in
+`pevm/crates/pevm/src/` unless noted:
+
+| Paper section | Component | File(s) |
+|---|---|---|
+| §5.1 | Pre-execution and conflict-graph construction (Algorithm 1), hot-resource detection | `dependency_graph.rs` |
+| §5.2–5.5 | Simulation, reordering, balance test and greedy integration (Algorithms 2–4) | `greedy_integrator.rs`, `graph_scheduler.rs` |
+| §5.6 | Graph-aware OCC engine (Algorithm 5) | `graph_pevm.rs`; multi-version memory extensions and abort accounting in `mv_memory.rs`, `exec_diagnostics.rs` |
+| §6 | Nonce tracking for reordered execution, graph serialization shipped with a block | `utils/nonce_tracker.rs`, `serialization/` |
+| §7.2 | Baselines reimplemented on the same engine: Vegeta, concatenated-round Block-STM and graph-aware OCC | `vegeta.rs`, `tests/rebuttal_test.rs` |
+| §7.3 | Synthetic and artificial workload generators, real-block loader | `tests/tx_simulator/`, `storage/block_loader.rs` |
+| §7 | Experiment harness, scripts and report generator | `tests/rebuttal_test.rs`, `scripts/`, `experiments/rebuttal/analyze.py` |
+| §7.7 | Executor integration into the Mysticeti prototype | `mysticeti/crates/mysticeti-core/src/{core,scheduler,schedule_fetcher,validator,transactions_generator,config}.rs`, `pevm/crates/pevm/src/api.rs` |
+
+`mysticeti/` is the upstream Mysticeti prototype with the files above modified;
+the consensus protocol itself is unchanged.
+
 ## Prerequisites
 
 - Rust (stable) and `cmake` (for the snmalloc allocator); build from `pevm/`.
