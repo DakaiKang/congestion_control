@@ -1336,7 +1336,20 @@ pub fn test_no_scheduling() {
 //         storage.update_accounts(state);
 // }
 
+/// Nanoseconds spent inside `update_storage_with_results` since process start
+/// (harness instrumentation; read and reset around each engine's timed region).
+pub static APPLY_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn update_storage_with_results(
+    storage: &mut InMemoryStorage,
+    results: Vec<PevmTxExecutionResult>,
+) {
+    let apply_t0 = std::time::Instant::now();
+    update_storage_with_results_inner(storage, results);
+    APPLY_NS.fetch_add(apply_t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn update_storage_with_results_inner(
     storage: &mut InMemoryStorage,
     results: Vec<PevmTxExecutionResult>,
 ) {

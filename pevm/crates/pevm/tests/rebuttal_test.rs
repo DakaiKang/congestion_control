@@ -873,6 +873,8 @@ fn test_rebuttal_real() {
         // ── Sequential baseline. A batch whose sequential replay errors is
         //    unusable, so bail out of it rather than reporting a bad speedup.
         let mut s = storage.clone();
+        let mut apply_ms: Vec<(&str, f64)> = Vec::new();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         let mut seq_ok = true;
         for txs in blocks_txs.clone() {
@@ -889,6 +891,7 @@ fn test_rebuttal_real() {
             continue;
         }
         row.seq_s = t.elapsed().as_secs_f64();
+        apply_ms.push(("seq", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
         row.digest_seq = state_digest(&s);
         row.logical_seq = logical_digest(&s);
 
@@ -967,6 +970,7 @@ fn test_rebuttal_real() {
         // ── 2. Block-STM, per block.
         let mut s = storage.clone();
         let mut engine = Pevm::default();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         let mut ok = true;
         for txs in blocks_txs.clone() {
@@ -988,12 +992,14 @@ fn test_rebuttal_real() {
             continue;
         }
         row.par_s = t.elapsed().as_secs_f64();
+        apply_ms.push(("par", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
         row.digest_par = state_digest(&s);
 
         // ── 3. Concatenated-block Block-STM (R4-O2).
         let concat: Vec<TxEnv> = blocks_txs.iter().flat_map(|b| b.iter().cloned()).collect();
         let mut s = storage.clone();
         let mut engine = Pevm::default();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         match engine.execute_revm_parallel(
             &chain, &s, spec_id, concat_block_env(blocks_txs.len()), concat.clone(), concurrency,
@@ -1002,6 +1008,7 @@ fn test_rebuttal_real() {
                 row.concat_diag.add(&engine.last_diagnostics);
                 update_storage_with_results(&mut s, r);
                 row.concat_s = t.elapsed().as_secs_f64();
+                apply_ms.push(("concat", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
                 row.digest_concat = state_digest(&s);
             }
             Err(e) => println!("  batch {batch_idx}: concat block-stm failed ({e:?})"),
@@ -1011,6 +1018,7 @@ fn test_rebuttal_real() {
         let rg = round_graph(&base_graphs, hot_key_threshold);
         let mut s = storage.clone();
         let mut engine = GraphPevm::default();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         match engine.execute_revm_parallel(
             &chain, &s, spec_id, concat_block_env(blocks_txs.len()), concat, concurrency, rg,
@@ -1019,12 +1027,14 @@ fn test_rebuttal_real() {
                 row.cgraph_diag.add(&engine.last_diagnostics);
                 update_storage_with_results(&mut s, r);
                 row.cgraph_s = t.elapsed().as_secs_f64();
+                apply_ms.push(("cgraph", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
             }
             Err(e) => println!("  batch {batch_idx}: concat+graph failed ({e:?})"),
         }
 
         // ── 4. Graph-aware OCC, per block.
         let mut s = storage.clone();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         for (txs, graph) in reordered.iter().zip(dep_graphs.iter()) {
             let mut engine = GraphPevm::default();
@@ -1039,10 +1049,12 @@ fn test_rebuttal_real() {
             }
         }
         row.graph_s = t.elapsed().as_secs_f64();
+        apply_ms.push(("graph", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
         }
 
         // ── 5. Omakase.
         let mut s = storage.clone();
+        let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         for (txs, graph) in integrated_txns.iter().zip(integrated_graphs.iter()) {
             let mut engine = GraphPevm::default();
@@ -1058,6 +1070,7 @@ fn test_rebuttal_real() {
             }
         }
         row.integ_s = t.elapsed().as_secs_f64();
+        apply_ms.push(("integ", (pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed) - a0) as f64 / 1e6));
         row.phases.execute = Duration::from_secs_f64(row.integ_s);
         row.logical_integ = logical_digest(&s);
 
@@ -1098,6 +1111,10 @@ fn test_rebuttal_real() {
         write_row(&mut w, &row);
         w.flush().unwrap();
         done_batches += 1;
+        if std::env::var("APPLY_TIMING").is_ok() {
+            let parts: Vec<String> = apply_ms.iter().map(|(n, ms)| format!("{n}={ms:.2}")).collect();
+            println!("    APPLY_MS batch {} blocks {} txs {} {}", batch_idx, block_numbers.len(), total_txs, parts.join(" "));
+        }
         if std::env::var("PRINT_BLOCKING").is_ok() {
             for (name, dg) in [("par", &row.par_diag), ("graph", &row.graph_diag), ("integ", &row.integ_diag), ("vegeta", &row.vegeta_diag)] {
                 println!("    BLOCKING {name}: re_exec={} valid={} blocking={} [estimate={} nonce={} retry={}] newloc={} cascade={}",
