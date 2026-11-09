@@ -273,6 +273,17 @@ Integration cost per block grows with the round (more candidate merges) while ex
 | 32 | 1.22 | 1.69 | 2.07 | 1.52 | 1.19 | 2.02 | 72.7 | 1.603 | 0.243 |
 
 
+## Thread-count sweep — v2
+
+| worker threads | Block-STM | Concat | Concat+graph | Graph OCC | Vegeta | Omakase | groups/batch | re-exec/tx: Concat | Omakase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 1.93 | 2.69 | 3.02 | 2.12 | 1.42 | 2.21 | 93.2 | 0.297 | 0.000 |
+| 8 | 2.14 | 3.49 | 3.79 | 2.20 | 1.49 | 2.54 | 66.7 | 0.870 | 0.000 |
+| 16 | 1.37 | 2.42 | 3.28 | 2.04 | 1.44 | 2.26 | 84.8 | 1.289 | 0.000 |
+| 24 | 1.24 | 2.23 | 3.22 | 1.92 | 1.40 | 1.98 | 95.8 | 1.385 | 0.000 |
+| 32 | 1.25 | 2.20 | 3.28 | 1.82 | 1.35 | 1.83 | 98.2 | 1.401 | 0.000 |
+
+
 ## Round-size sweep — artificial
 
 | blocks per round | Block-STM | Concat | Concat+graph | Graph OCC | Vegeta | Omakase | groups/batch | re-exec/tx: Concat | Omakase |
@@ -342,6 +353,32 @@ Integration cost per block grows with the round (more candidate merges) while ex
 | 2000 | 2.45 | 4.30 | 4.44 | 2.47 | 2.04 | 3.94 | 25.3 | 4.138 | 0.000 |
 
 
+## Hot-key threshold sweep (τ_CV = 0.5) — real
+
+Only Omakase depends on this parameter (sequential + Omakase timed, `ENGINES=omakase`).
+
+| hot-key threshold τ_hot | rounds | Omakase speedup (agg.) | mean/round | median | min | max | groups/round | integrate ms/block | re-exec/tx |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.5 | 145 | **2.38×** | 2.37 | 2.22 | 1.71 | 5.71 | 58.1 | 2.02 | 0.278 |
+| 1 | 141 | **2.57×** | 2.56 | 2.42 | 1.84 | 4.48 | 19.1 | 2.73 | 0.322 |
+| 1.5 (paper) | 138 | **2.58×** | 2.57 | 2.41 | 1.84 | 4.48 | 18.6 | 2.75 | 0.326 |
+| 3 | 137 | **2.58×** | 2.57 | 2.42 | 1.86 | 4.54 | 18.2 | 2.76 | 0.327 |
+| 5 | 137 | **2.58×** | 2.57 | 2.40 | 1.86 | 4.46 | 18.2 | 2.75 | 0.325 |
+
+
+## τ_CV sweep (τ_hot = 1.5) — real
+
+Only Omakase depends on this parameter (sequential + Omakase timed, `ENGINES=omakase`).
+
+| CV threshold τ_CV | rounds | Omakase speedup (agg.) | mean/round | median | min | max | groups/round | integrate ms/block | re-exec/tx |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.1 | 130 | **2.62×** | 2.60 | 2.42 | 1.96 | 4.65 | 12.3 | 3.34 | 0.316 |
+| 0.3 | 134 | **2.60×** | 2.59 | 2.43 | 1.87 | 4.62 | 14.7 | 3.10 | 0.320 |
+| 0.5 (paper) | 138 | **2.56×** | 2.55 | 2.39 | 1.82 | 4.61 | 18.6 | 2.73 | 0.326 |
+| 1 | 143 | **2.48×** | 2.47 | 2.30 | 1.81 | 4.30 | 33.9 | 2.21 | 0.317 |
+| 2 | 150 | **2.21×** | 2.20 | 2.05 | 1.64 | 5.45 | 97.1 | 1.37 | 0.239 |
+
+
 ## Pipelined integration — real
 
 | blocks/round | rounds | txs | seq s | Block-STM s | Omakase serial s | integration s | Omakase pipelined s | integration hidden |
@@ -396,6 +433,20 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | aggressive_real_c10.csv | 1 |
 | aggressive_real_c1000.csv | 9 |
 | aggressive_real_c50.csv | 7 |
+| hot_real_h0.5_18581726.csv | 4 |
+| hot_real_h0.5_19557289.csv | 1 |
+| hot_real_h1.0_16774645.csv | 2 |
+| hot_real_h1.0_18581726.csv | 5 |
+| hot_real_h1.0_19557289.csv | 2 |
+| hot_real_h1.5_16774645.csv | 4 |
+| hot_real_h1.5_18581726.csv | 6 |
+| hot_real_h1.5_19557289.csv | 2 |
+| hot_real_h3.0_16774645.csv | 4 |
+| hot_real_h3.0_18581726.csv | 7 |
+| hot_real_h3.0_19557289.csv | 2 |
+| hot_real_h5.0_16774645.csv | 4 |
+| hot_real_h5.0_18581726.csv | 7 |
+| hot_real_h5.0_19557289.csv | 2 |
 | mergecap_real_c10.csv | 2 |
 | mergecap_real_c1000.csv | 2 |
 | mergecap_real_c25.csv | 2 |
@@ -434,6 +485,18 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | statelat_real_d50000.csv | 3 |
 | statelat_real_d50000_t16.csv | 4 |
 | statelat_real_d50000_t32.csv | 2 |
+| tau_real_t0.1_16774645.csv | 3 |
+| tau_real_t0.1_18581726.csv | 13 |
+| tau_real_t0.1_19557289.csv | 4 |
+| tau_real_t0.3_16774645.csv | 3 |
+| tau_real_t0.3_18581726.csv | 11 |
+| tau_real_t0.3_19557289.csv | 2 |
+| tau_real_t0.5_16774645.csv | 4 |
+| tau_real_t0.5_18581726.csv | 6 |
+| tau_real_t0.5_19557289.csv | 2 |
+| tau_real_t1.0_16774645.csv | 1 |
+| tau_real_t1.0_18581726.csv | 5 |
+| tau_real_t1.0_19557289.csv | 1 |
 | threads_real_t16.csv | 3 |
 | threads_real_t24.csv | 3 |
 | threads_real_t32.csv | 1 |
