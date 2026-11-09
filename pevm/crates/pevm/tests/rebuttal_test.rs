@@ -1417,7 +1417,8 @@ fn test_rebuttal_state_latency_real() {
     let mut w = std::io::BufWriter::new(std::fs::File::create(&output).expect("create output"));
     writeln!(w, "batch_idx,num_blocks,num_txs,delay_ns,seq_time_s,par_time_s,concat_time_s,integrated_time_s,\
 phase_pre_execute_s,phase_graph_build_s,phase_integrate_s,par_re_exec,integ_re_exec,num_integrated_groups,\
-par_fallbacks,concat_fallbacks,integ_fallbacks").unwrap();
+par_fallbacks,concat_fallbacks,integ_fallbacks,\
+graph_time_s,cgraph_time_s,vegeta_time_s,graph_re_exec,cgraph_re_exec,graph_fallbacks,cgraph_fallbacks,vegeta_tail").unwrap();
     let chain = PevmEthereum::mainnet();
     let overall = Instant::now();
     let wrap = |s: InMemoryStorage| LatencyStorage { inner: s, delay_ns };
@@ -1456,21 +1457,29 @@ par_fallbacks,concat_fallbacks,integ_fallbacks").unwrap();
 
         // Proposer side: pre-execute (latency applied — it is a replay) and graph build.
         let mut prep = wrap(storage.clone());
+        let mut access_sets: Vec<Vec<(HashSet<u64>, HashSet<u64>)>> = Vec::new();
         let t = Instant::now();
         for txs in blocks_txs.iter() {
-            if let Ok((r, _)) = execute_revm_sequential_with_access_sets(&chain, &prep, spec_id, real_block_env(), txs.clone()) {
-                update_storage_with_results(&mut prep.inner, r);
+            match execute_revm_sequential_with_access_sets(&chain, &prep, spec_id, real_block_env(), txs.clone()) {
+                Ok((r, sets)) => {
+                    access_sets.push(sets.into_iter().map(|x| (x.read_set, x.write_set)).collect());
+                    update_storage_with_results(&mut prep.inner, r);
+                }
+                Err(_) => access_sets.push(Vec::new()),
             }
         }
         let pre_s = t.elapsed().as_secs_f64();
+        let nonce_snapshot = nonce_tracker.nonces.clone();
         let mut prep = wrap(storage.clone());
         let mut dep_graphs = Vec::new();
         let mut reordered = Vec::new();
+        let mut base_graphs = Vec::new();
         let t = Instant::now();
         for (i, txs) in blocks_txs.iter().enumerate() {
             match GraphPevm::construct_graph_pevm_by_sequential(&chain, &prep, spec_id, real_block_env(), txs.clone(), i as u64) {
                 Ok((mut g, r)) => {
                     update_storage_with_results(&mut prep.inner, r);
+                    base_graphs.push(g.clone());
                     let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut g, concurrency.get());
                     dep_graphs.push(ng); reordered.push(rtxs);
                 }
@@ -1484,7 +1493,7 @@ par_fallbacks,concat_fallbacks,integ_fallbacks").unwrap();
         // Validator side: integrate.
         let integrator = GreedyIntegrator::new(GreedyIntegratorConfig { num_threads: concurrency.get(), tau_cv, max_group_blocks: 10 });
         let t = Instant::now();
-        let (mut groups, graphs) = integrator.integrate_pevm_graphs(dep_graphs, reordered);
+        let (mut groups, graphs) = integrator.integrate_pevm_graphs(dep_graphs.clone(), reordered.clone());
         let integ_s = t.elapsed().as_secs_f64();
         for txs in groups.iter_mut() { nonce_tracker.update_txenv_nonces(txs); }
         let num_groups = groups.len();
@@ -1530,12 +1539,59 @@ par_fallbacks,concat_fallbacks,integ_fallbacks").unwrap();
         }
         let integ_exec_s = t.elapsed().as_secs_f64();
 
-        writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{}",
+        // Graph-aware OCC, per block (latency applied).
+        let mut s = wrap(storage.clone());
+        let (mut graph_re, mut graph_fb) = (0usize, 0usize);
+        let t = Instant::now();
+        for (txs, graph) in reordered.iter().zip(dep_graphs.iter()) {
+            let mut engine = GraphPevm::default();
+            if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, real_block_env(), txs.clone(), concurrency, graph.clone()) {
+                graph_re += engine.last_diagnostics.re_executions;
+                graph_fb += engine.last_diagnostics.fallbacks;
+                update_storage_with_results(&mut s.inner, r);
+            }
+        }
+        let graph_s = t.elapsed().as_secs_f64();
+
+        // Concatenated round on graph-aware OCC (latency applied).
+        let rg = round_graph(&base_graphs, hot_key_threshold);
+        let concat_all: Vec<TxEnv> = blocks_txs.iter().flat_map(|b| b.iter().cloned()).collect();
+        let mut s = wrap(storage.clone());
+        let mut engine = GraphPevm::default();
+        let t = Instant::now();
+        if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, concat_block_env(blocks_txs.len()), concat_all, concurrency, rg) {
+            update_storage_with_results(&mut s.inner, r);
+        }
+        let cgraph_s = t.elapsed().as_secs_f64();
+        let (cgraph_re, cgraph_fb) = (engine.last_diagnostics.re_executions, engine.last_diagnostics.fallbacks);
+
+        // Vegeta: speculation on the pre-pass access sets, Aria-style batched replay (latency applied).
+        let mut s = wrap(storage.clone());
+        let mut schedules: Vec<vegeta::VegetaSchedule> = blocks_txs.iter().zip(access_sets.iter()).map(|(txs, sets)| {
+            let (reads, writes): (Vec<HashSet<u64>>, Vec<HashSet<u64>>) = if sets.len() == txs.len() {
+                (sets.iter().map(|(r, _)| r.clone()).collect(), sets.iter().map(|(_, w)| w.clone()).collect())
+            } else { (vec![HashSet::new(); txs.len()], vec![HashSet::new(); txs.len()]) };
+            vegeta::speculate(txs.clone(), reads, writes)
+        }).collect();
+        let mut nt = NonceTracker { nonces: nonce_snapshot.clone() };
+        for sched in schedules.iter_mut() { nt.update_txenv_nonces(&mut sched.txs); }
+        let mut vegeta_tail = 0usize;
+        let t = Instant::now();
+        for sched in schedules.iter() {
+            if let Ok((_r, stats)) = vegeta::replay(&chain, &mut s, spec_id, real_block_env(), sched, concurrency,
+                |st: &mut LatencyStorage, results| update_storage_with_results(&mut st.inner, results)) {
+                vegeta_tail += stats.re_executed;
+            }
+        }
+        let vegeta_s = t.elapsed().as_secs_f64();
+
+        writeln!(w, "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{},{:.6},{:.6},{:.6},{},{},{},{},{}",
             batch_idx, blocks_txs.len(), total_txs, delay_ns, seq_s, par_s, concat_s, integ_exec_s,
-            pre_s, build_s, integ_s, par_re, integ_re, num_groups, par_fb, concat_fb, integ_fb).unwrap();
+            pre_s, build_s, integ_s, par_re, integ_re, num_groups, par_fb, concat_fb, integ_fb,
+            graph_s, cgraph_s, vegeta_s, graph_re, cgraph_re, graph_fb, cgraph_fb, vegeta_tail).unwrap();
         w.flush().unwrap();
-        println!("  d={}ns batch {} txs={} | seq {:.2}s par {:.2}s concat {:.2}s omakase {:.2}s (+integ {:.2}s) | cum {:.0}s",
-            delay_ns, batch_idx, total_txs, seq_s, par_s, concat_s, integ_exec_s, integ_s, overall.elapsed().as_secs_f64());
+        println!("  d={}ns batch {} txs={} | seq {:.2}s par {:.2}s concat {:.2}s cgraph {:.2}s graph {:.2}s vegeta {:.2}s omakase {:.2}s (+integ {:.2}s) | cum {:.0}s",
+            delay_ns, batch_idx, total_txs, seq_s, par_s, concat_s, cgraph_s, graph_s, vegeta_s, integ_exec_s, integ_s, overall.elapsed().as_secs_f64());
     }
     println!("✓ CSV -> {output}");
 }
