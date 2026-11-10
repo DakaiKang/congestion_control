@@ -244,6 +244,11 @@ impl TransactionGraph {
     /// Set the hot key threshold
     pub fn set_hot_key_threshold(&mut self, threshold: f64) {
         self.hot_key_threshold = threshold;
+        // Hot keys are derived from the last simulation with the threshold in
+        // force at that time; keep them consistent if the threshold changes.
+        if self.simulation_result.is_some() {
+            self.detect_hot_keys();
+        }
     }
 
     /// Gets a reference to a node by TransactionId
@@ -516,7 +521,22 @@ impl TransactionGraph {
     }
 
     /// Simulate parallel execution with k threads using a min-heap for completion times
-    pub fn simulate_parallel_execution(&mut self, k: usize) -> (){
+    /// Algorithms 2-3 of the paper followed by the per-resource access-span
+    /// analysis (Definition 1) and hot-key detection.
+    pub fn simulate_parallel_execution(&mut self, k: usize) {
+        self.simulate_schedule(k);
+        self.analyze_key_access_spans();
+    }
+
+    /// Algorithms 2-3 only: the schedule (execution order, per-thread gas),
+    /// without access spans or hot keys. Used for the proposal-order graph,
+    /// whose only purpose is to produce the reordered list; the graph rebuilt
+    /// in that order is the one that gets the full analysis.
+    pub fn simulate_order_only(&mut self, k: usize) {
+        self.simulate_schedule(k);
+    }
+
+    fn simulate_schedule(&mut self, k: usize) {
         // Initialize temporary parent COUNTS (we only need to know how many
         // parents remain, not which ones).
         self.temp_parents = self.nodes.iter()
@@ -613,8 +633,6 @@ impl TransactionGraph {
         }
         
         self.simulation_result = Some(SimulationResult::new(current_time, threads, execution_order));
-        // println!("simulation_result: {:#?}", self.simulation_result.clone().unwrap().thread_results);
-        self.analyze_key_access_spans();
     }
     
     /// Remove a transaction and add its newly-freed children to the heap

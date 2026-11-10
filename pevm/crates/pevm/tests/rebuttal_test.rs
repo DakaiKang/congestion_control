@@ -434,8 +434,9 @@ fn run_synthetic_batch(
         .expect("graph build failed");
         update_storage_with_results(&mut prep, results);
         base_graphs.push(graph.clone());
-        let (rtxs, new_graph) =
-            GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut graph, concurrency.get());
+        let (rtxs, new_graph) = GraphPevm::reorder_and_simulate(
+            txs.clone(), &mut graph, concurrency.get(), cfg.hot_key_threshold,
+        );
         dep_graphs.push(new_graph);
         reordered.push(rtxs);
     }
@@ -928,8 +929,8 @@ fn test_rebuttal_real() {
                 Ok((mut graph, results)) => {
                     update_storage_with_results(&mut prep, results);
                     base_graphs.push(graph.clone());
-                    let (rtxs, g) = GraphPevm::reorder_txs_by_dependency_graph(
-                        txs.clone(), &mut graph, concurrency.get(),
+                    let (rtxs, g) = GraphPevm::reorder_and_simulate(
+                        txs.clone(), &mut graph, concurrency.get(), hot_key_threshold,
                     );
                     dep_graphs.push(g);
                     reordered.push(rtxs);
@@ -1258,7 +1259,7 @@ fn test_rebuttal_pipeline_real() {
                 &chain, &prep, spec_id, real_block_env(), txs.clone(), i as u64,
             ) else { ok = false; break; };
             update_storage_with_results(&mut prep, res);
-            let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut g, concurrency.get());
+            let (rtxs, ng) = GraphPevm::reorder_and_simulate(txs.clone(), &mut g, concurrency.get(), hot_key_threshold);
             dep_graphs.push(ng);
             reordered.push(rtxs);
         }
@@ -1480,7 +1481,7 @@ graph_time_s,cgraph_time_s,vegeta_time_s,graph_re_exec,cgraph_re_exec,graph_fall
                 Ok((mut g, r)) => {
                     update_storage_with_results(&mut prep.inner, r);
                     base_graphs.push(g.clone());
-                    let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(txs.clone(), &mut g, concurrency.get());
+                    let (rtxs, ng) = GraphPevm::reorder_and_simulate(txs.clone(), &mut g, concurrency.get(), hot_key_threshold);
                     dep_graphs.push(ng); reordered.push(rtxs);
                 }
                 Err(_) => { ok = false; break; }

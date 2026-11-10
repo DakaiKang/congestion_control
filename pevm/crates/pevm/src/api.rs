@@ -374,8 +374,8 @@ impl PevmExecutor {
                     ) {
                         Ok((mut g, res)) => {
                             update_storage_with_results(&mut prep, res);
-                            let (rtxs, ng) = GraphPevm::reorder_txs_by_dependency_graph(
-                                txs.clone(), &mut g, concurrency.get(),
+                            let (rtxs, ng) = GraphPevm::reorder_and_simulate(
+                                txs.clone(), &mut g, concurrency.get(), 1.5,
                             );
                             dep_graphs.push(ng);
                             reordered.push(rtxs);

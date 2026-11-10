@@ -119,6 +119,30 @@ impl GraphPevm {
         (reordered_txs, new_graph)
     }
 
+    /// Proposer-side per-block preparation after graph construction
+    /// (paper Sec. V-B): simulate the proposal-order graph to fix the order
+    /// `L`, rebuild the graph by inserting the transactions in `L` order, then
+    /// simulate the rebuilt graph so that it carries the per-thread gas, the
+    /// per-resource access spans and the hot keys (threshold
+    /// `hot_key_threshold`) that integration consumes. The returned graph is
+    /// what a proposer would ship with its block; the integrator finds it
+    /// already simulated and does not simulate it again.
+    pub fn reorder_and_simulate(
+        txs: Vec<TxEnv>,
+        graph: &mut TransactionGraph,
+        concurrency_level: usize,
+        hot_key_threshold: f64,
+    ) -> (Vec<TxEnv>, TransactionGraph) {
+        if graph.simulation_result.is_none() {
+            graph.simulate_order_only(concurrency_level);
+        }
+        let (reordered_txs, mut rebuilt) =
+            Self::reorder_txs_by_dependency_graph(txs, graph, concurrency_level);
+        rebuilt.set_hot_key_threshold(hot_key_threshold);
+        rebuilt.simulate_parallel_execution(concurrency_level);
+        (reordered_txs, rebuilt)
+    }
+
     /// Execute an REVM block.
     // Ideally everyone would go through the [Alloy] interface. This one is currently
     // useful for testing, and for users that are heavily tied to Revm like Reth.
