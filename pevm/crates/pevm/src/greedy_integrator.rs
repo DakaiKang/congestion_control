@@ -299,7 +299,7 @@ impl GreedyIntegrator {
 
             // Reorder transactions based on integrated graph. reorder_txs_*
             // skips its internal simulate when simulation_result is present.
-            let (final_reordered_txns, final_graph) = GraphPevm::reorder_txs_by_dependency_graph(
+            let (final_reordered_txns, final_graph) = GraphPevm::reorder_txs_for_execution(
                 merged_txns,
                 &mut merged_graph,
                 self.config.num_threads,

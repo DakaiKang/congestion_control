@@ -738,6 +738,25 @@ differential degradation without the fallback rounds (concat -6 %, Omakase -9 %,
 43, 45; concat 1.25-1.71x, re-exec 0.8-1.2/tx) run at 2.3-4.0x under Omakase (0.4-0.6 re-exec/tx). REPORT.md
 section "Concatenated round: whole-window sequential fallback".
 
+### Campaign v5 — full-conflict graph, RAW gating (2026-11-10), `pevm/experiments/rebuttal_v5/`
+
+Design change for the ICDE'27 submission. Algorithm 1 now records every conflict as an edge (RAW from the
+last writer, WAW from the last writer, WAR from the readers since the last write, `tail_readers`), and
+Algorithm 5 adds the cross-graph WAR edges, so the reordered list is a topological order of a
+conflict-complete graph: it keeps every conflicting pair in block order (conflict-equivalent to the block),
+the graph rebuilt in the new order has the same edges (`CHECK_REBUILD=1` asserts it), and the proposal-order
+simulation is reused instead of re-simulating a rebuilt graph. The executor gates on RAW parents only
+(`GATE_EDGES=raw`): WAW/WAR are resolved by the multi-version store, waiting for them only costs parallelism.
+The proposer now also simulates the graph it ships (`reorder_and_simulate`), so integration time no longer
+includes a per-block simulation.
+
+A/B on 18 Cancun rounds / 20 synthetic rounds before the campaign (`GRAPH_EDGES`, 8 threads):
+RAW-only Omakase 2.66x real / 2.58x synthetic; RAW+WAR with every edge gated 2.42x (-9%); all edges gated
+2.37x (-11%) / 2.58x; all edges, RAW gating 2.59x (-2.8%) / 2.57x (-0.5%). Every non-graph engine within
++-1%. The remaining real-data gap tracks a more conservative grouping (21.3 vs 18.7 groups per 100-block
+round): the all-edge simulation yields longer access spans, hence more hot-key vetoes; see the tau_hot
+re-calibration below.
+
 ### Campaign v3 — paper's Algorithm 1 graph (2026-09-14/15), `pevm/experiments/rebuttal_v3/`
 
 Default construction is now `GRAPH_EDGES=raw` (RAW edges from the last writer, head sets) with account-level

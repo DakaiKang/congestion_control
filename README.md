@@ -89,17 +89,23 @@ produced the submission's figures with the write-after-write-only graph and
 are kept for reference only.
 
 Two conventions apply to every statistic: the conflict graph is built as the
-paper's Algorithm 1 specifies (RAW edges from the last writer, account-level
-reads in the predicted read set; `GRAPH_EDGES=waw TRACK_BASIC_READS=0` selects
-the ablated variant), and rounds in which any engine abandoned an optimistic
-window and re-executed it sequentially (`*_fallbacks` columns) are excluded by
-`analyze.py`.
+paper's Algorithm 1 specifies (an edge for every conflict, RAW, WAW and WAR,
+with account-level reads in the predicted read set; the executor gates on RAW
+parents only, `GATE_EDGES=raw`), and rounds in which any engine abandoned an
+optimistic window and re-executed it sequentially (`*_fallbacks` columns) are
+excluded by `analyze.py`. Script 13 runs the graph ablations: `GRAPH_EDGES=raw`
+(RAW edges only, order may flip WAR/WAW pairs), `GATE_EDGES=same` (executor
+waits for every parent), `REORDER=0` (block order kept), and
+`GRAPH_EDGES=waw TRACK_BASIC_READS=0` (the submission's WAW-only graph).
 
 ## Useful knobs
 
 `NUM_THREADS`, `TAU_CV`, `HOT_KEY_THRESHOLD`, `MERGE_CAP`, `BATCH_SIZE`,
 `MAX_BATCHES`, `START_BLOCK`, `STATE_DELAY_NS`, `TARGET`, `K`/`M` (artificial
 ρ_inter/ρ_intra), `ENGINES=vegeta` (Vegeta and sequential only),
-`ENGINES=omakase` (sequential and Omakase only), `PEVM_TRACE_FALLBACK=1` (print
-sequential fallbacks). See `EXPERIMENTS.md` for
-the full list and the recorded results.
+`ENGINES=omakase` (sequential and Omakase only), `GRAPH_EDGES` (`all` default,
+`raw`, `raw+war`, `raw+waw`, `waw`), `GATE_EDGES` (`raw` default, `same`),
+`REORDER=0` (no intra-block or intra-group reordering), `CHECK_REBUILD=1`
+(assert that the graph rebuilt in the reordered order equals the proposal-order
+graph), `PEVM_TRACE_FALLBACK=1` (print sequential fallbacks). See
+`EXPERIMENTS.md` for the full list and the recorded results.

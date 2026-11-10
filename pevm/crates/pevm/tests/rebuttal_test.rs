@@ -268,7 +268,7 @@ fn round_graph(
     base_graphs: &[pevm::dependency_graph::TransactionGraph],
     hot_key_threshold: f64,
 ) -> pevm::dependency_graph::TransactionGraph {
-    let mut g = pevm::dependency_graph::TransactionGraph::new();
+    let mut g = pevm::dependency_graph::TransactionGraph::new_with_mode(pevm::dependency_graph::EdgeMode::gating());
     g.set_hot_key_threshold(hot_key_threshold);
     for bg in base_graphs {
         for node in &bg.nodes {
@@ -433,7 +433,7 @@ fn run_synthetic_batch(
         )
         .expect("graph build failed");
         update_storage_with_results(&mut prep, results);
-        base_graphs.push(graph.clone());
+        base_graphs.push(graph.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating()));
         let (rtxs, new_graph) = GraphPevm::reorder_and_simulate(
             txs.clone(), &mut graph, concurrency.get(), cfg.hot_key_threshold,
         );
@@ -538,8 +538,9 @@ fn run_synthetic_batch(
 
     // ── 4. Graph-aware OCC, per block.
     let mut s = base.clone();
+    let gate_graphs = dep_graphs.iter().map(|g| g.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating())).collect::<Vec<_>>(); // RAW view the executor gates on, built outside the timer
     let t = Instant::now();
-    for (txs, graph) in reordered.iter().zip(dep_graphs.iter()) {
+    for (txs, graph) in reordered.iter().zip(gate_graphs.iter()) {
         let mut engine = GraphPevm::default();
         let r = engine
             .execute_revm_parallel(
@@ -928,7 +929,7 @@ fn test_rebuttal_real() {
             ) {
                 Ok((mut graph, results)) => {
                     update_storage_with_results(&mut prep, results);
-                    base_graphs.push(graph.clone());
+                    base_graphs.push(graph.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating()));
                     let (rtxs, g) = GraphPevm::reorder_and_simulate(
                         txs.clone(), &mut graph, concurrency.get(), hot_key_threshold,
                     );
@@ -1035,9 +1036,10 @@ fn test_rebuttal_real() {
 
         // ── 4. Graph-aware OCC, per block.
         let mut s = storage.clone();
+        let gate_graphs = dep_graphs.iter().map(|g| g.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating())).collect::<Vec<_>>();
         let a0 = pevm::api::APPLY_NS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
-        for (txs, graph) in reordered.iter().zip(dep_graphs.iter()) {
+        for (txs, graph) in reordered.iter().zip(gate_graphs.iter()) {
             let mut engine = GraphPevm::default();
             match engine.execute_revm_parallel(
                 &chain, &s, spec_id, real_block_env(), txs.clone(), concurrency, graph.clone(),
@@ -1480,7 +1482,7 @@ graph_time_s,cgraph_time_s,vegeta_time_s,graph_re_exec,cgraph_re_exec,graph_fall
             match GraphPevm::construct_graph_pevm_by_sequential(&chain, &prep, spec_id, real_block_env(), txs.clone(), i as u64) {
                 Ok((mut g, r)) => {
                     update_storage_with_results(&mut prep.inner, r);
-                    base_graphs.push(g.clone());
+                    base_graphs.push(g.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating()));
                     let (rtxs, ng) = GraphPevm::reorder_and_simulate(txs.clone(), &mut g, concurrency.get(), hot_key_threshold);
                     dep_graphs.push(ng); reordered.push(rtxs);
                 }
@@ -1543,8 +1545,9 @@ graph_time_s,cgraph_time_s,vegeta_time_s,graph_re_exec,cgraph_re_exec,graph_fall
         // Graph-aware OCC, per block (latency applied).
         let mut s = wrap(storage.clone());
         let (mut graph_re, mut graph_fb) = (0usize, 0usize);
+        let gate_graphs = dep_graphs.iter().map(|g| g.rebuilt_with_mode(pevm::dependency_graph::EdgeMode::gating())).collect::<Vec<_>>();
         let t = Instant::now();
-        for (txs, graph) in reordered.iter().zip(dep_graphs.iter()) {
+        for (txs, graph) in reordered.iter().zip(gate_graphs.iter()) {
             let mut engine = GraphPevm::default();
             if let Ok(r) = engine.execute_revm_parallel(&chain, &s, spec_id, real_block_env(), txs.clone(), concurrency, graph.clone()) {
                 graph_re += engine.last_diagnostics.re_executions;

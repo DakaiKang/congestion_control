@@ -271,7 +271,7 @@ pub fn speculate_graph(
     // transaction only to the latest earlier writer of a key it writes (WAW),
     // which is Rule 2's blocking condition; RAW/WAR are left to OCC validation
     // just as Rule 2 lets them proceed within a batch.
-    let mut new_graph = TransactionGraph::new();
+    let mut new_graph = TransactionGraph::new_with_mode(crate::dependency_graph::EdgeMode::gating());
     new_graph.set_hot_key_threshold(graph.hot_key_threshold);
     let mut reordered = Vec::with_capacity(n);
     let mut txs_opt: Vec<Option<TxEnv>> = txs.into_iter().map(Some).collect();

@@ -19,7 +19,7 @@ use crate::{
     hash_deterministic,
     mv_memory::MvMemory,
     graph_scheduler::GraphScheduler,
-    dependency_graph::{TransactionNode, TransactionGraph},
+    dependency_graph::{EdgeMode, TransactionNode, TransactionGraph},
     pevm::{PevmError, execute_revm_sequential_with_access_sets, execute_revm_sequential, AbortReason, AsyncDropper, PevmResult},
     vm::{
         ExecutionError, PevmTxExecutionResult, Vm, VmExecutionError, VmExecutionResult,
@@ -84,6 +84,34 @@ impl GraphPevm {
         graph: &mut TransactionGraph,
         concurrency_level: usize
     ) -> (Vec<TxEnv>, TransactionGraph) {
+        Self::reorder_txs_with_mode(txs, graph, concurrency_level, EdgeMode::current())
+    }
+
+    /// Reorder and rebuild the graph the *executor* will gate on
+    /// (`EdgeMode::gating()`, RAW-only by default: WAW and WAR are resolved by
+    /// the multi-version store, so waiting for those parents would only cost
+    /// parallelism).
+    pub fn reorder_txs_for_execution(
+        txs: Vec<TxEnv>,
+        graph: &mut TransactionGraph,
+        concurrency_level: usize
+    ) -> (Vec<TxEnv>, TransactionGraph) {
+        Self::reorder_txs_with_mode(txs, graph, concurrency_level, EdgeMode::gating())
+    }
+
+    /// `REORDER=0`: ablation that keeps the block (and group concatenation)
+    /// order; the simulation still runs for the integration metrics.
+    pub fn reorder_disabled() -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OFF.get_or_init(|| matches!(std::env::var("REORDER").as_deref(), Ok("0") | Ok("off") | Ok("false")))
+    }
+
+    pub fn reorder_txs_with_mode(
+        txs: Vec<TxEnv>,
+        graph: &mut TransactionGraph,
+        concurrency_level: usize,
+        mode: EdgeMode,
+    ) -> (Vec<TxEnv>, TransactionGraph) {
         // Skip the simulation if the caller already populated it (e.g. greedy
         // integrator hands us a graph that was just simulated as part of its
         // merge step). Re-running with the same concurrency_level would
@@ -91,7 +119,14 @@ impl GraphPevm {
         if graph.simulation_result.is_none() {
             graph.simulate_parallel_execution(concurrency_level);
         }
-        let mut new_graph = TransactionGraph::new();
+        if Self::reorder_disabled() {
+            let mut g = graph.rebuilt_with_mode(mode);
+            g.simulation_result = graph.simulation_result.clone();
+            g.hot_keys = graph.hot_keys.clone();
+            return (txs, g);
+        }
+        let mut new_graph = TransactionGraph::new_with_mode(mode);
+        new_graph.hot_key_threshold = graph.hot_key_threshold;
 
         let mut reordered_txs = Vec::new();
         // Access simulation_result directly from graph
@@ -133,6 +168,30 @@ impl GraphPevm {
         concurrency_level: usize,
         hot_key_threshold: f64,
     ) -> (Vec<TxEnv>, TransactionGraph) {
+        if graph.edge_mode.complete() {
+            // Conflict-complete graph (RAW, WAW and WAR): the reordered list
+            // keeps every conflicting pair in block order, so the graph
+            // rebuilt in that order has exactly the same edges and the
+            // simulation of the proposal-order graph already describes it.
+            graph.set_hot_key_threshold(hot_key_threshold);
+            if graph.simulation_result.is_none() {
+                graph.simulate_parallel_execution(concurrency_level);
+            }
+            let (reordered_txs, mut rebuilt) =
+                Self::reorder_txs_by_dependency_graph(txs, graph, concurrency_level);
+            if std::env::var("CHECK_REBUILD").is_ok() {
+                let edges = |g: &TransactionGraph| -> std::collections::HashSet<(u64, u64, u64, u64)> {
+                    g.nodes.iter().flat_map(|n| {
+                        n.children_indices.iter().map(move |&c| (n.id, n.replica, g.nodes[c].id, g.nodes[c].replica))
+                    }).collect()
+                };
+                assert_eq!(edges(graph), edges(&rebuilt), "graph rebuilt in L order differs from the proposal-order graph");
+            }
+            rebuilt.hot_key_threshold = hot_key_threshold;
+            rebuilt.simulation_result = graph.simulation_result.clone();
+            rebuilt.hot_keys = graph.hot_keys.clone();
+            return (reordered_txs, rebuilt);
+        }
         if graph.simulation_result.is_none() {
             graph.simulate_order_only(concurrency_level);
         }

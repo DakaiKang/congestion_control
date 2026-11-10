@@ -3,22 +3,32 @@ use std::sync::OnceLock;
 
 /// Which dependencies become graph edges (env `GRAPH_EDGES`).
 ///
-/// * `Raw` (default; the paper's Algorithm 1): the per-key tail is the last
-///   *writer*; every reader of a key gets an edge from that writer; a key's
-///   head set is the readers before its first write plus the first writer. No
-///   explicit WAW edges: with account-level reads in the read set (see
-///   `TRACK_BASIC_READS`) every writer has read the account it writes, so
-///   consecutive writers are already RAW-linked (measured identical to
-///   `RawWaw` on real Ethereum).
+/// * `Raw` (`GRAPH_EDGES=raw`; the default until 2026-11-10): the per-key
+///   tail is the last *writer*; every reader of a key gets an edge from that
+///   writer; a key's head set is the readers before its first write plus the
+///   first writer. No explicit WAW edges: with account-level reads in the read
+///   set (see `TRACK_BASIC_READS`) every writer has read the account it
+///   writes, so consecutive writers are already RAW-linked (measured identical
+///   to `RawWaw` on real Ethereum). The reordered list may flip WAR/WAW pairs,
+///   so the graph has to be rebuilt in the new order.
 /// * `Waw` (`GRAPH_EDGES=waw`; the code path the submission's experiments
 ///   used): an edge only between two writers of the same key; the per-key
 ///   tail is the last *toucher*.
 /// * `RawWaw`: `Raw` plus an edge between consecutive writers of a key.
+/// * `RawWar` (`GRAPH_EDGES=raw+war`): `Raw` plus an edge from every reader
+///   of a key since its last write to the key's next writer.
+/// * `All` (default; the paper's Algorithm 1): RAW, WAW and WAR. The graph then orders every
+///   conflicting pair exactly as the block does, so the reordered list of
+///   Algorithm 3 is conflict-equivalent to block order: rebuilding the graph
+///   in that order reproduces the same edges, and the committed state of a
+///   block equals its sequential block-order state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EdgeMode {
     Waw,
     Raw,
     RawWaw,
+    RawWar,
+    All,
 }
 
 impl EdgeMode {
@@ -26,8 +36,33 @@ impl EdgeMode {
         match std::env::var("GRAPH_EDGES").as_deref() {
             Ok("waw") => EdgeMode::Waw,
             Ok("raw+waw") | Ok("raw_waw") | Ok("rawwaw") => EdgeMode::RawWaw,
-            _ => EdgeMode::Raw,
+            Ok("raw+war") | Ok("raw_war") | Ok("rawwar") => EdgeMode::RawWar,
+            Ok("all") | Ok("raw+waw+war") => EdgeMode::All,
+            Ok("raw") => EdgeMode::Raw,
+            _ => EdgeMode::All,
         }
+    }
+    /// Consecutive writers of a key are linked.
+    pub fn waw(self) -> bool { matches!(self, EdgeMode::RawWaw | EdgeMode::All) }
+    /// Readers of a key since its last write precede the key's next writer.
+    pub fn war(self) -> bool { matches!(self, EdgeMode::RawWar | EdgeMode::All) }
+    /// Every conflicting pair is ordered: any topological order is
+    /// conflict-equivalent to the insertion order.
+    pub fn complete(self) -> bool { self == EdgeMode::All }
+    /// Edge policy of the graphs the *executor* gates on (env `GATE_EDGES`).
+    /// Default `raw`: the multi-version store resolves WAW and WAR by index,
+    /// so a transaction only has to wait for its RAW parents; the WAW/WAR
+    /// edges of `All` serve the reorder and the integration decisions.
+    /// `GATE_EDGES=same` gates on every edge of the current mode.
+    pub fn gating() -> Self {
+        static GATE: OnceLock<EdgeMode> = OnceLock::new();
+        *GATE.get_or_init(|| match std::env::var("GATE_EDGES").as_deref() {
+            Ok("same") | Ok("all") => EdgeMode::current(),
+            Ok("raw+waw") | Ok("raw_waw") | Ok("rawwaw") => EdgeMode::RawWaw,
+            Ok("raw+war") | Ok("raw_war") | Ok("rawwar") => EdgeMode::RawWar,
+            Ok("waw") => EdgeMode::Waw,
+            _ => EdgeMode::Raw,
+        })
     }
     pub fn current() -> Self {
         static MODE: OnceLock<EdgeMode> = OnceLock::new();
@@ -220,12 +255,37 @@ pub struct TransactionGraph {
     /// before its first write in this graph, plus that first writer. Only
     /// maintained in `Raw`/`RawWaw` mode; `tail_txns` then holds the last writer.
     pub head_sets: HashMap<u64, Vec<TransactionId>>,
+    /// `RawWar`/`All` modes: per key, the readers since the key's last write
+    /// in this graph (all its readers if it was never written). They precede
+    /// the key's next writer (WAR).
+    pub tail_readers: HashMap<u64, Vec<TransactionId>>,
 }
 
 impl TransactionGraph {
 
     // Initialize a new empty transaction graph
     pub fn new() -> Self {
+        Self::new_with_mode(EdgeMode::current())
+    }
+
+    /// The same graph with the edges recomputed under `mode`, nodes kept in
+    /// their current order (same predicted sets, same threshold, no
+    /// simulation result).
+    pub fn rebuilt_with_mode(&self, mode: EdgeMode) -> Self {
+        let mut g = Self::new_with_mode(mode);
+        g.hot_key_threshold = self.hot_key_threshold;
+        for node in &self.nodes {
+            let mut n = node.clone();
+            n.children_indices.clear();
+            n.parent_indices.clear();
+            n.longest_suffix = n.gas_cost;
+            g.add_transaction(n).expect("rebuilding a graph cannot produce duplicate ids");
+        }
+        g
+    }
+
+    /// An empty graph whose edges follow `mode` rather than `GRAPH_EDGES`.
+    pub fn new_with_mode(mode: EdgeMode) -> Self {
         Self {
             nodes: Vec::new(),
             id_to_index: HashMap::new(),
@@ -236,8 +296,9 @@ impl TransactionGraph {
             temp_parents: Vec::new(),
             hot_key_threshold: 1.5,
             hot_keys: HashSet::new(),
-            edge_mode: EdgeMode::current(),
+            edge_mode: mode,
             head_sets: HashMap::new(),
+            tail_readers: HashMap::new(),
         }
     }
 
@@ -372,6 +433,8 @@ impl TransactionGraph {
         let writes: Vec<u64> = node.write_set.iter().copied().collect();
         let new_idx = self.add_node(node);
 
+        let waw = self.edge_mode.waw();
+        let war = self.edge_mode.war();
         let mut parents: HashSet<TransactionId> = HashSet::new();
         for r in &reads {
             match self.tail_txns.get(r) {
@@ -380,11 +443,14 @@ impl TransactionGraph {
                 }
                 None => self.head_sets.entry(*r).or_default().push(tx_id.clone()),
             }
+            if war {
+                self.tail_readers.entry(*r).or_default().push(tx_id.clone());
+            }
         }
         for r in &writes {
             match self.tail_txns.get(r) {
                 Some(t) => {
-                    if self.edge_mode == EdgeMode::RawWaw {
+                    if waw {
                         parents.insert(t.clone());
                     }
                 }
@@ -395,6 +461,11 @@ impl TransactionGraph {
                     }
                 }
             }
+            if war {
+                if let Some(rs) = self.tail_readers.get(r) {
+                    parents.extend(rs.iter().cloned());
+                }
+            }
         }
         parents.remove(&tx_id);
         for p in &parents {
@@ -402,6 +473,11 @@ impl TransactionGraph {
         }
         for r in &writes {
             self.tail_txns.insert(*r, tx_id.clone());
+            if war {
+                // This transaction is now the last writer: readers before it
+                // no longer constrain the next writer.
+                self.tail_readers.remove(r);
+            }
         }
         // `head_txns` (first toucher) is kept for the WAW-mode code paths.
         for r in reads.iter().chain(writes.iter()) {
@@ -415,10 +491,50 @@ impl TransactionGraph {
     /// G1 never wrote keep G2's heads as heads of the integrated graph.
     fn integrate_graph_paper(&mut self, other: &TransactionGraph) -> Result<usize, String> {
         let mut edges_added = 0;
+        let war = self.edge_mode.war();
         let mut keys: HashSet<u64> = HashSet::new();
         keys.extend(other.head_sets.keys().copied());
         keys.extend(other.tail_txns.keys().copied());
+        if war {
+            keys.extend(other.tail_readers.keys().copied());
+        }
         for r in keys {
+            if war {
+                if other.tail_txns.contains_key(&r) {
+                    // WAR across graphs: G1's readers since its last write of
+                    // r precede G2's first writer of r (the head of G2 that
+                    // writes r).
+                    if let (Some(readers), Some(heads)) =
+                        (self.tail_readers.get(&r).cloned(), other.head_sets.get(&r))
+                    {
+                        let first_writer = heads.iter().find(|h| {
+                            other.get_node(h).map_or(false, |n| n.write_set.iter().any(|k| *k == r))
+                        }).cloned();
+                        if let Some(w2) = first_writer {
+                            for rd in readers {
+                                if rd != w2 && !self.has_edge(&rd, &w2)? {
+                                    self.add_edge(rd, w2.clone())?;
+                                    edges_added += 1;
+                                }
+                            }
+                        }
+                    }
+                    // G2 wrote r, so G2's readers after that write are the
+                    // merged graph's tail readers.
+                    match other.tail_readers.get(&r) {
+                        Some(rs) => { self.tail_readers.insert(r, rs.clone()); }
+                        None => { self.tail_readers.remove(&r); }
+                    }
+                } else if let Some(rs) = other.tail_readers.get(&r) {
+                    // G2 only read r: its readers join G1's tail readers.
+                    let e = self.tail_readers.entry(r).or_default();
+                    for x in rs {
+                        if !e.contains(x) {
+                            e.push(x.clone());
+                        }
+                    }
+                }
+            }
             match self.tail_txns.get(&r).cloned() {
                 Some(g1_tail) => {
                     if let Some(heads) = other.head_sets.get(&r) {
