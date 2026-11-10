@@ -757,6 +757,12 @@ RAW-only Omakase 2.66x real / 2.58x synthetic; RAW+WAR with every edge gated 2.4
 round): the all-edge simulation yields longer access spans, hence more hot-key vetoes; see the tau_hot
 re-calibration below.
 
+Campaign v5 reruns every step except 03 (Vegeta): Vegeta's path is unchanged (its schedule comes from the
+transactions' read/write sets and it executes on the RAW gating view), so `rebuttal_v5/vegeta/` is copied from
+`rebuttal_v3/vegeta/`. A/B pass 3 (17 Cancun rounds, RAW gating throughout): Omakase RAW-only 2.62x, all 2.58x,
+all with tau_hot=3.0 2.60x, all with tau_cv=1.0 2.47x (groups per round double), all without reordering
+(`REORDER=0`) 2.56x. Thresholds stay at tau_hot=1.5, tau_cv=0.5.
+
 ### Campaign v3 — paper's Algorithm 1 graph (2026-09-14/15), `pevm/experiments/rebuttal_v3/`
 
 Default construction is now `GRAPH_EDGES=raw` (RAW edges from the last writer, head sets) with account-level
