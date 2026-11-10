@@ -391,13 +391,13 @@ Only Omakase depends on this parameter (sequential + Omakase timed, `ENGINES=oma
 
 | read latency µs | seq ms/block | Block-STM × | Concat × | Omakase exec × | Omakase exec+integrate × | integrate ms/block | integrate share of validator time | exec saved vs Block-STM ms/block | re-exec/tx Block-STM | Omakase |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 10.6 | 1.97 | 2.62 | 2.76 | 1.55 | 3.00 | 44% | 1.54 | 0.62 | 0.33 |
-| 1 | 12.3 | 2.08 | 2.74 | 2.81 | 1.66 | 3.03 | 41% | 1.55 | 0.62 | 0.33 |
-| 2 | 13.6 | 2.12 | 2.82 | 2.81 | 1.75 | 2.94 | 38% | 1.58 | 0.61 | 0.32 |
-| 5 | 18.2 | 2.27 | 3.00 | 2.84 | 1.93 | 3.01 | 32% | 1.61 | 0.60 | 0.32 |
-| 10 | 25.5 | 2.37 | 3.07 | 2.85 | 2.13 | 3.01 | 25% | 1.78 | 0.59 | 0.32 |
-| 20 | 40.0 | 2.44 | 3.09 | 2.82 | 2.32 | 3.07 | 18% | 2.22 | 0.58 | 0.32 |
-| 50 | 83.1 | 2.45 | 3.09 | 2.86 | 2.60 | 2.97 | 9% | 4.88 | 0.56 | 0.35 |
+| 0 | 10.9 | 1.95 | 2.59 | 2.72 | 1.55 | 3.02 | 43% | 1.58 | 0.63 | 0.33 |
+| 1 | 13.9 | 2.13 | 2.85 | 2.83 | 1.75 | 3.03 | 38% | 1.61 | 0.61 | 0.32 |
+| 2 | 15.4 | 2.15 | 2.89 | 2.80 | 1.81 | 3.00 | 35% | 1.66 | 0.61 | 0.32 |
+| 5 | 19.7 | 2.24 | 2.97 | 2.79 | 1.96 | 3.01 | 30% | 1.71 | 0.60 | 0.32 |
+| 10 | 27.3 | 2.34 | 3.03 | 2.79 | 2.12 | 3.07 | 24% | 1.85 | 0.59 | 0.32 |
+| 20 | 42.2 | 2.41 | 3.06 | 2.79 | 2.32 | 3.07 | 17% | 2.38 | 0.58 | 0.33 |
+| 50 | 86.8 | 2.43 | 3.08 | 2.78 | 2.53 | 3.05 | 9% | 4.46 | 0.57 | 0.34 |
 
 Every account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.
 
@@ -406,12 +406,12 @@ Every account/slot read pays the latency in every engine; graph construction and
 
 | read latency µs | workers | Block-STM | Concat | Omakase exec | Omakase exec+integ |
 |---|---:|---:|---:|---:|---:|
-| 20 | 8 | 2.44 | 3.09 | 2.82 | 2.32 |
-| 20 | 16 | 2.19 | 3.00 | 2.74 | 2.24 |
-| 20 | 32 | 2.08 | 2.66 | 2.48 | 2.16 |
-| 50 | 8 | 2.45 | 3.09 | 2.86 | 2.60 |
-| 50 | 16 | 2.40 | 3.12 | 2.81 | 2.53 |
-| 50 | 32 | 2.27 | 2.90 | 2.58 | 2.40 |
+| 20 | 8 | 2.41 | 3.06 | 2.79 | 2.32 |
+| 20 | 16 | 2.15 | 2.92 | 2.68 | 2.22 |
+| 20 | 32 | 2.04 | 2.58 | 2.44 | 2.13 |
+| 50 | 8 | 2.43 | 3.08 | 2.78 | 2.53 |
+| 50 | 16 | 2.37 | 3.10 | 2.77 | 2.51 |
+| 50 | 32 | 2.24 | 2.84 | 2.55 | 2.38 |
 
 
 ## Live 4-validator Mysticeti deployment — minround1000 (ERC20 8x4x8, steady state, per validator)
@@ -482,7 +482,7 @@ The generator caps committed throughput at ~40k tx/s per validator in every mode
 | statelat_real_d20000_t16.csv | 3 |
 | statelat_real_d20000_t32.csv | 1 |
 | statelat_real_d5000.csv | 2 |
-| statelat_real_d50000.csv | 3 |
+| statelat_real_d50000.csv | 2 |
 | statelat_real_d50000_t16.csv | 4 |
 | statelat_real_d50000_t32.csv | 2 |
 | tau_real_t0.1_16774645.csv | 3 |
