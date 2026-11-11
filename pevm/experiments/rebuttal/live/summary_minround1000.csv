@@ -1,0 +1,16 @@
+sequential,sequential_v0.log,2634,25912,39409.8,0.392,9.84
+sequential,sequential_v1.log,2639,25908,39404.1,0.395,9.82
+sequential,sequential_v2.log,2640,25903,39402.6,0.391,9.81
+sequential,sequential_v3.log,2638,25912,39404.2,0.386,9.82
+parallel,parallel_v0.log,2682,26384,39975.7,0.443,9.84
+parallel,parallel_v1.log,2681,26374,39961.4,0.448,9.84
+parallel,parallel_v2.log,2680,26383,39974.3,0.452,9.84
+parallel,parallel_v3.log,2681,26374,39961.4,0.432,9.84
+concatenated,concatenated_v0.log,2738,26859,40001.4,0.324,9.81
+concatenated,concatenated_v1.log,2737,26865,40015.7,0.320,9.82
+concatenated,concatenated_v2.log,2738,26865,40015.7,0.328,9.81
+concatenated,concatenated_v3.log,2737,26865,40015.7,0.322,9.82
+integrated,integrated_v0.log,1931,10277,39964.3,0.796,5.32
+integrated,integrated_v1.log,1929,10277,39970.0,0.793,5.33
+integrated,integrated_v2.log,1934,10277,39981.4,0.792,5.31
+integrated,integrated_v3.log,1924,10277,39964.3,0.801,5.34

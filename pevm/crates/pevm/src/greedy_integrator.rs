@@ -13,6 +13,12 @@ pub struct GreedyIntegratorConfig {
     pub tau_cv: f64,
     /// Number of threads for simulation
     pub num_threads: usize,
+    /// Maximum number of source graphs (blocks) absorbed into one integrated
+    /// group. Historically hard-coded to 10; exposed so the rebuttal can sweep
+    /// it — an unbounded cap with no hot-key filtering degenerates to the
+    /// "concatenate the whole round" baseline, so this knob is what places
+    /// Omakase between per-block execution and full concatenation.
+    pub max_group_blocks: usize,
 }
 
 impl Default for GreedyIntegratorConfig {
@@ -33,6 +39,7 @@ impl Default for GreedyIntegratorConfig {
             num_threads: std::thread::available_parallelism()
                 .unwrap_or(std::num::NonZeroUsize::MIN)
                 .get(),
+            max_group_blocks: 10,
         }
     }
 }
@@ -135,8 +142,7 @@ impl GreedyIntegrator {
                             .unwrap_or(0.0)
                     );
 
-                    if source_indices.len() > 10 {
-                        println!("Warning: Integrated more than 10 graphs into one group. Possible excessive merging.");
+                    if source_indices.len() > self.config.max_group_blocks {
                         break;
                     }
                 }
@@ -293,7 +299,7 @@ impl GreedyIntegrator {
 
             // Reorder transactions based on integrated graph. reorder_txs_*
             // skips its internal simulate when simulation_result is present.
-            let (final_reordered_txns, final_graph) = GraphPevm::reorder_txs_by_dependency_graph(
+            let (final_reordered_txns, final_graph) = GraphPevm::reorder_txs_for_execution(
                 merged_txns,
                 &mut merged_graph,
                 self.config.num_threads,

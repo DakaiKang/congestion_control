@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+"""Turn the rebuttal CSVs into the tables and figures the author feedback needs.
+
+Robust to partial results: any missing file is reported and skipped, so this
+can be re-run while the campaign is still going.
+
+    python3 experiments/rebuttal/analyze.py [--dir experiments/rebuttal] [--out REPORT.md]
+"""
+import argparse, glob, os, re, sys
+import numpy as np
+import pandas as pd
+import matplotlib
+
+# Rounds in which any engine abandoned an optimistic window and re-executed it
+# sequentially (an implementation artifact of the Block-STM engine, e.g. a
+# read of an account self-destructed in the same window) are excluded from
+# every statistic. Files written before the *_fallbacks columns existed are
+# taken as-is. DROPPED records how many rounds each file lost.
+DROPPED = {}
+_pd_read_csv = pd.read_csv
+def _read_csv_no_fallback(path, *a, **kw):
+    d = _pd_read_csv(path, *a, **kw)
+    fb = [c for c in d.columns if c.endswith("_fallbacks")]
+    if fb:
+        m = d[fb].fillna(0).sum(axis=1) > 0
+        if m.any():
+            DROPPED[os.path.basename(str(path))] = int(m.sum())
+            d = d[~m].reset_index(drop=True)
+    return d
+pd.read_csv = _read_csv_no_fallback
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+ENGINES = [  # (csv prefix, display name)
+    ("seq", "Sequential"),
+    ("par", "Block-STM"),
+    ("concat", "Block-STM, concatenated"),
+    ("cgraph", "Graph-aware OCC, concatenated"),
+    ("graph", "Graph-aware OCC"),
+    ("vegeta", "Vegeta (speculate + batch replay + serial tail)"),
+    ("integrated", "Omakase"),
+]
+DIAG = [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("cgraph", "Graph OCC, concatenated"),
+        ("graph", "Graph-aware OCC"), ("vegeta", "Vegeta"), ("integ", "Omakase")]
+
+
+def overlay_vegeta(d, paths):
+    """Replace Vegeta's columns with the faithful-model re-measurement (same batches),
+    matching rows by batch_idx and source chunk; Vegeta's own sequential baseline is
+    kept out so the speedup denominator stays the shared one."""
+    v = load(paths)
+    if d is None or v is None:
+        return d
+    d = d.copy()
+    key = ["src_chunk", "batch_idx"]
+    for f in (d, v):
+        f["src_chunk"] = f["src"].str.extract(r"(\d{8}|v2|k\d+_m\d+)")[0].fillna("x")
+    cols = [c for c in v.columns if c.startswith("vegeta_")]
+    m = d.merge(v[key + cols], on=key, how="left", suffixes=("", "_new"))
+    for c in cols:
+        d[c] = m[c + "_new"].fillna(m[c]).values
+    return d
+
+
+def load(paths):
+    frames = []
+    for p in paths:
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            d = pd.read_csv(p)
+            d = d[(d.num_txs > 0) & (d.seq_time_s > 0)]
+            if len(d):
+                d["src"] = os.path.basename(p)
+                frames.append(d)
+    return pd.concat(frames, ignore_index=True) if frames else None
+
+
+def md_table(rows, header):
+    out = ["| " + " | ".join(header) + " |", "|" + "|".join("---:" if i else "---" for i in range(len(header))) + "|"]
+    for r in rows:
+        out.append("| " + " | ".join(str(x) for x in r) + " |")
+    return "\n".join(out)
+
+
+def throughput_table(d, title):
+    """Absolute time, aggregate tx/s, per-block latency percentiles, speedup."""
+    seq_tot = d.seq_time_s.sum()
+    rows = []
+    for k, name in ENGINES:
+        col = f"{k}_time_s"
+        if col not in d:
+            continue
+        t = d[col]
+        if (t <= 0).all():
+            continue
+        m = t > 0
+        tot = t[m].sum()
+        tput = d.num_txs[m].sum() / tot
+        ms_blk = (t[m] / d.num_blocks[m]) * 1000
+        p50, p90, p99 = np.percentile(ms_blk, [50, 90, 99])
+        rows.append([name, f"{tot:.1f}", f"{tput:,.0f}", f"{p50:.2f}", f"{p90:.2f}", f"{p99:.2f}",
+                     f"{d.seq_time_s[m].sum() / tot:.2f}×"])
+    hdr = ["Engine", "total s", "tx/s (aggregate)", "ms/block p50", "p90", "p99", "speedup"]
+    return f"**{title}** — {len(d)} batches, {int(d.num_blocks.sum()):,} blocks, {int(d.num_txs.sum()):,} txs\n\n" + md_table(rows, hdr)
+
+
+def phase_table(d, title):
+    pre, gb, integ, ex = (d.phase_pre_execute_s.sum(), d.phase_graph_build_s.sum(),
+                          d.phase_integrate_s.sum(), d.phase_execute_s.sum())
+    seq = d.seq_time_s.sum()
+    tot = pre + gb + integ + ex
+    n_blocks = d.num_blocks.sum()
+    rows = [
+        ["Pre-execute (proposer, once per block)", f"{pre:.1f}", f"{pre / tot * 100:.0f}%", f"{pre / n_blocks * 1000:.2f}", f"{pre / seq:.2f}×"],
+        ["Build conflict graph + intra-block reorder", f"{gb:.1f}", f"{gb / tot * 100:.0f}%", f"{gb / n_blocks * 1000:.2f}", f"{gb / seq:.2f}×"],
+        ["Integrate (greedy, per committed round)", f"{integ:.1f}", f"{integ / tot * 100:.0f}%", f"{integ / n_blocks * 1000:.2f}", f"{integ / seq:.2f}×"],
+        ["Execute (Omakase, parallel)", f"{ex:.1f}", f"{ex / tot * 100:.0f}%", f"{ex / n_blocks * 1000:.2f}", f"{ex / seq:.2f}×"],
+        ["All phases on one node (single proposer, P = 1)", f"{tot:.1f}", "100%", f"{tot / n_blocks * 1000:.2f}", f"{tot / seq:.2f}× (speedup {seq / tot:.2f}×)"],
+        ["Validator-side: integrate + execute", f"{integ + ex:.1f}", "", f"{(integ + ex) / n_blocks * 1000:.2f}", f"{(integ + ex) / seq:.2f}× (speedup {seq / (integ + ex):.2f}×)"],
+    ] + [
+        [f"**Every stage on one node, 1/P of proposer stages, P = {P}**", f"**{integ + ex + (pre + gb) / P:.1f}**", "", f"**{(integ + ex + (pre + gb) / P) / n_blocks * 1000:.2f}**",
+         f"**{(integ + ex + (pre + gb) / P) / seq:.2f}×** (speedup {seq / (integ + ex + (pre + gb) / P):.2f}×)"]
+        for P in (20, 50, 100)
+    ] + [
+        ["Sequential execution (reference)", f"{seq:.1f}", "", f"{seq / n_blocks * 1000:.2f}", "1.00×"],
+    ]
+    hdr = ["Phase", "total s", "share", "ms/block", "cost as a fraction of sequential time"]
+    veg = d.vegeta_speculate_s.sum()
+    note = (f"\n\nVegeta's schedule construction (Rule-1 reorder + DAG rebuild) on the same pre-pass: "
+            f"{veg:.2f} s total, {veg / n_blocks * 1000:.3f} ms/block.")
+    return f"**{title}**\n\n" + md_table(rows, hdr) + note
+
+
+def proposer_table(D, main_d, pattern, title):
+    """Every stage on one node with one block per proposer per round: a validator
+    pays integrate + execute at round size P plus 1/P of the proposer stages,
+    all measured at round size P (round size 100 = the main campaign)."""
+    rows = []
+    for P in (5, 10, 20, 50, 100):
+        d = main_d if P == 100 else load(sorted(glob.glob(os.path.join(D, "sweeps", pattern.format(P=P)))))
+        if d is None:
+            continue
+        nb = d.num_blocks.sum(); seq = d.seq_time_s.sum()
+        pre, gb, integ, ex = (d[c].sum() for c in ("phase_pre_execute_s", "phase_graph_build_s", "phase_integrate_s", "phase_execute_s"))
+        par = d.par_time_s.sum()
+        full = integ + ex + (pre + gb) / P
+        f = lambda x: f"{x / nb * 1000:.2f}"
+        rows.append([P, f"{int(nb):,}", f(seq), f(pre + gb), f(integ), f(ex), f(full), f"{seq / ex:.2f}×", f"{seq / (integ + ex):.2f}×",
+                     f"**{seq / full:.2f}×**", f"{seq / par:.2f}×"])
+    if not rows:
+        return ""
+    return (f"**{title}** — round size = P (one block per proposer per round); ms/block\n\n" +
+            md_table(rows, ["P", "blocks", "seq.", "proposer stages (pre-exec + graph)", "integrate", "execute",
+                            "validator + proposer/P", "exec only", "integ + exec", "every stage on one node, 1/P", "Block-STM"]) +
+            "\n\nIntegration cost per block grows with the round (more candidate merges) while execution improves "
+            "(more inter-block parallelism); the proposer stages are paid once per block by its proposer, so a validator "
+            "pays 1/P of them. Round size 100 is the main campaign; the other sizes are the full-dataset round-size runs "
+            "(`run_roundsize_full.sh`).\n")
+
+
+def worst_rounds_section(d, dd):
+    """Concatenated round's worst rounds, separating pevm's whole-window sequential
+    fallback (a read of a self-destructed account aborts the optimistic window and
+    re-executes it sequentially; marked by zero re-executions in the diagnostics run)
+    from genuine contention."""
+    if d is None or dd is None or "concat_re_exec" not in dd:
+        return ""
+    t = d.copy(); t["src"] = t.src.str.replace("_diag", "")
+    g = dd.copy(); g["src"] = g.src.str.replace("_diag", "")
+    fb = set(zip(g.src[g.concat_re_exec == 0], g.batch_idx[g.concat_re_exec == 0]))
+    t["fallback"] = [(a, b) in fb for a, b in zip(t.src, t.batch_idx)]
+    eng = [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("cgraph", "Graph OCC, concatenated"),
+           ("graph", "Graph-aware OCC"), ("integrated", "Omakase")]
+    out = [f"**Concatenated round: whole-window sequential fallback** — {int(t.fallback.sum())} of {len(t)} rounds "
+           "(concat re-executions = 0 in the diagnostics run; confirmed with `PEVM_TRACE_FALLBACK=1`: a transaction "
+           "reads an account self-destructed earlier in the same optimistic window, pevm abandons the window and "
+           "re-executes all of it sequentially). Per-block Block-STM and Omakase's <=10-block groups never fell back "
+           "on these rounds because the self-destruct and the read land in different windows.\n"]
+    rows = []
+    for _, r in t[t.fallback].sort_values("seq_time_s").iterrows():
+        rows.append([r.src, int(r.batch_idx), f"{int(r.num_txs):,}", f"{r.seq_time_s*1000/r.num_blocks:.2f}"] +
+                    [f"{r.seq_time_s / r[k + '_time_s']:.2f}×" for k, _ in eng])
+    out.append(md_table(rows, ["chunk", "round", "txs", "seq ms/block"] + [n for _, n in eng]))
+    out.append("\n**Per-round statistics with and without the fallback rounds** (execution phase, speedup over sequential)\n")
+    rows = []
+    for lab, sub in (("all rounds", t), ("excluding fallback rounds", t[~t.fallback])):
+        for k, name in eng:
+            sp = sub.seq_time_s / sub[f"{k}_time_s"]; ms = sub[f"{k}_time_s"] / sub.num_blocks * 1000
+            rows.append([lab, name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 90) / np.percentile(ms, 50):.2f}"])
+    out.append(md_table(rows, ["rounds", "engine", "mean", "worst", "p10", "rounds < 1×", "p90/p50"]))
+    out.append("\n**Worst genuine (non-fallback) rounds for the concatenated round**, with every engine's speedup and re-executions per tx\n")
+    sub = t[~t.fallback].copy(); sub["spc"] = sub.seq_time_s / sub.concat_time_s
+    sub = sub.sort_values("spc").head(10).merge(g, on=["src", "batch_idx"], suffixes=("", "_d"))
+    rows = []
+    for _, r in sub.iterrows():
+        n = r.num_txs
+        rows.append([r.src, int(r.batch_idx), f"{int(n):,}", f"{r.seq_time_s*1000/r.num_blocks:.2f}"] +
+                    [f"{r.seq_time_s / r[k + '_time_s']:.2f}×" for k, _ in eng] +
+                    [f"{r.concat_re_exec_d / n:.2f}", f"{r.par_re_exec_d / n:.2f}", f"{r.integ_re_exec_d / n:.2f}"])
+    out.append(md_table(rows, ["chunk", "round", "txs", "seq ms/block"] + [n for _, n in eng] +
+                        ["re-exec/tx concat", "Block-STM", "Omakase"]))
+    return "\n".join(out) + "\n"
+
+
+def bandwidth_table(d, title):
+    cd, og, vg = d.calldata_bytes.sum(), d.omakase_graph_bytes.sum(), d.vegeta_sched_bytes.sum()
+    n_blocks = d.num_blocks.sum()
+    rows = [
+        ["Transaction calldata (what a block already carries)", f"{cd / 1e6:.1f}", f"{cd / n_blocks / 1e3:.1f}", "100%"],
+        ["Omakase per-block conflict graph (access-set hashes + WAW edges)", f"{og / 1e6:.1f}", f"{og / n_blocks / 1e3:.1f}", f"{og / cd * 100:.1f}%"],
+        ["Vegeta schedule (same encoding)", f"{vg / 1e6:.1f}", f"{vg / n_blocks / 1e3:.1f}", f"{vg / cd * 100:.1f}%"],
+    ]
+    return f"**{title}**\n\n" + md_table(rows, ["Payload", "MB total", "KB/block", "vs calldata"])
+
+
+def abort_table(d, title):
+    n = d.num_txs.sum()
+    rows = []
+    for k, name in DIAG:
+        if f"{k}_re_exec" not in d:
+            continue
+        re, va, ca, wn = (d[f"{k}_re_exec"].sum(), d[f"{k}_validation_aborts"].sum(),
+                          d[f"{k}_cascade_aborts"].sum(), d[f"{k}_wrote_new_loc"].sum())
+        rows.append([name, f"{re / n:.3f}", f"{va / n:.3f}", f"{ca / n:.4f}", f"{wn / n:.4f}",
+                     f"{(ca / va * 100) if va else 0:.0f}%"])
+    hdr = ["Engine", "re-executions / tx", "validation aborts / tx", "cascade aborts / tx",
+           "re-exec writing a new location / tx", "cascade share of aborts"]
+    return (f"**{title}** — {int(n):,} txs (diagnostics build)\n\n" + md_table(rows, hdr) +
+            "\n\n*cascade abort* = validation failure caused by the *re-execution* of a lower-indexed transaction "
+            "(the invalidating write carries incarnation > 0, is an ESTIMATE left by an aborted incarnation, or is a version "
+            "the reader saw that a later incarnation no longer writes); an abort caused by a lower-indexed writer's first "
+            "execution is an ordinary optimistic abort. *re-exec writing a new location* = re-executions whose write set gained "
+            "a location the previous incarnation had not written (post-blocking first executions excluded).")
+
+
+def artificial_grid(dirpath):
+    files = sorted(glob.glob(os.path.join(dirpath, "artificial", "k*_m*.csv")))
+    files = [f for f in files if not f.endswith("_diag.csv")]
+    if not files:
+        return None, None
+    rec = []
+    for f in files:
+        d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+        if not len(d):
+            continue
+        base = os.path.basename(f)[:-4]
+        K = int(base.split("_")[0][1:]); M = int(base.split("_")[1][1:])
+        seq = d.seq_time_s.sum()
+        row = {"K": K, "M": M}
+        for k, _ in ENGINES[1:]:
+            t = d.get(f"{k}_time_s"); row[k] = seq / t.sum() if t is not None and (t > 0).all() else np.nan
+        dg = f[:-4] + "_diag.csv"
+        if os.path.exists(dg):
+            dd = pd.read_csv(dg); n = dd.num_txs.sum()
+            for k, _ in DIAG:
+                if f"{k}_re_exec" in dd:
+                    row[f"{k}_re"] = dd[f"{k}_re_exec"].sum() / n
+        rec.append(row)
+    g = pd.DataFrame(rec).sort_values(["M", "K"])
+    lines = ["**Artificial workload — speedup over sequential (t=8, H=5)**\n"]
+    hdr = ["ρ_inter K", "ρ_intra M", "Block-STM", "Concat", "Concat+graph", "Graph OCC", "Vegeta", "Omakase"]
+    rows = [[r.K, f"{r.M}%", f"{r.par:.2f}", f"{r.concat:.2f}", f"{r.cgraph:.2f}", f"{r.graph:.2f}", f"{r.vegeta:.2f}", f"{r.integrated:.2f}"]
+            for r in g.itertuples()]
+    lines.append(md_table(rows, hdr))
+    if "par_re" in g:
+        lines.append("\n**Artificial workload — re-executions per transaction**\n")
+        rows = [[r.K, f"{r.M}%", f"{r.par_re:.3f}", f"{r.concat_re:.3f}", f"{r.cgraph_re:.3f}", f"{r.graph_re:.3f}", f"{r.vegeta_re:.3f}", f"{r.integ_re:.3f}"]
+                for r in g.dropna(subset=["par_re"]).itertuples()]
+        lines.append(md_table(rows, ["K", "M", "Block-STM", "Concat", "Concat+graph", "Graph OCC", "Vegeta", "Omakase"]))
+    return "\n".join(lines), g
+
+
+def sweep_table(dirpath, pattern, key, label):
+    """Speedup of each engine as `key` varies (thread / round-size / merge-cap sweeps)."""
+    files = sorted(glob.glob(os.path.join(dirpath, pattern)))
+    if not files:
+        return None
+    rec = []
+    for f in files:
+        d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+        if not len(d):
+            continue
+        seq = d.seq_time_s.sum(); n = d.num_txs.sum()
+        if key in d:
+            kv = int(d[key].iloc[0])
+        else:  # e.g. tx_target: encoded in the filename as ..._g<TARGET>.csv
+            import re as _re
+            kv = int(_re.search(r"_g(\d+)\.csv$", f).group(1))
+        row = {key: kv, "src": os.path.basename(f)}
+        for k, _ in ENGINES[1:]:
+            t = d.get(f"{k}_time_s"); row[k] = seq / t.sum() if t is not None and (t > 0).all() else np.nan
+        row["groups"] = d.num_integrated_groups.mean()
+        for k, _ in DIAG:
+            if f"{k}_re_exec" in d:
+                row[f"{k}_re"] = d[f"{k}_re_exec"].sum() / n
+        rec.append(row)
+    if not rec:
+        return None
+    g = pd.DataFrame(rec).sort_values(key)
+    hdr = [label, "Block-STM", "Concat", "Concat+graph", "Graph OCC", "Vegeta", "Omakase", "groups/batch", "re-exec/tx: Concat", "Omakase"]
+    rows = [[r[key], f"{r.par:.2f}", f"{r.concat:.2f}", f"{r.cgraph:.2f}", f"{r.graph:.2f}", f"{r.vegeta:.2f}", f"{r.integrated:.2f}",
+             f"{r.groups:.1f}", f"{r.get('concat_re', np.nan):.3f}", f"{r.get('integ_re', np.nan):.3f}"] for _, r in g.iterrows()]
+    return md_table(rows, hdr)
+
+
+def param_sweep_table(D, prefix, tag, label, default):
+    """Omakase as an integration parameter varies (hot-key threshold / tau_cv sweeps,
+    ENGINES=omakase runs): files sweeps/<prefix>_real_<tag><value>_<chunk>.csv, the
+    three dataset chunks of one value merged (fallback rounds already dropped by load)."""
+    files = sorted(glob.glob(os.path.join(D, "sweeps", f"{prefix}_real_{tag}*_*.csv")))
+    if not files:
+        return None
+    by_val = {}
+    for f in files:
+        m = re.search(rf"_{tag}([0-9.]+)_\d+\.csv$", os.path.basename(f))
+        if m:
+            by_val.setdefault(float(m.group(1)), []).append(f)
+    rows = []
+    for v in sorted(by_val):
+        d = load(by_val[v])
+        if d is None or not (d.integrated_time_s > 0).all():
+            continue
+        seq, integ = d.seq_time_s.sum(), d.integrated_time_s.sum()
+        per = d.seq_time_s / d.integrated_time_s
+        nb = d.num_blocks.sum()
+        mark = " (paper)" if abs(v - default) < 1e-9 else ""
+        rows.append([f"{v:g}{mark}", len(d), f"**{seq / integ:.2f}×**", f"{per.mean():.2f}", f"{per.median():.2f}",
+                     f"{per.min():.2f}", f"{per.max():.2f}", f"{d.num_integrated_groups.mean():.1f}",
+                     f"{d.phase_integrate_s.sum() / nb * 1000:.2f}", f"{d.integ_re_exec.sum() / d.num_txs.sum():.3f}"])
+    if not rows:
+        return None
+    return md_table(rows, [label, "rounds", "Omakase speedup (agg.)", "mean/round", "median", "min", "max",
+                           "groups/round", "integrate ms/block", "re-exec/tx"])
+
+
+def plot_engines(d, title, path):
+    fig, ax = plt.subplots(figsize=(7, 3.6))
+    seq = d.seq_time_s.sum()
+    names, vals = [], []
+    for k, name in ENGINES[1:]:
+        t = d[f"{k}_time_s"]
+        if (t > 0).all():
+            names.append(name.replace(" (schedule on graph OCC)", "").replace(", concatenated", "\n(concat)")); vals.append(seq / t.sum())
+    ax.bar(names, vals, color=["#888", "#b8860b", "#daa520", "#4682b4", "#8a2be2", "#2e8b57"][:len(vals)])
+    for i, v in enumerate(vals):
+        ax.text(i, v + 0.03, f"{v:.2f}×", ha="center", fontsize=9)
+    ax.set_ylabel("speedup over sequential"); ax.set_title(title); ax.tick_params(axis="x", labelsize=8)
+    fig.tight_layout(); fig.savefig(path, dpi=140); plt.close(fig)
+
+
+def plot_phases(d, title, path):
+    n = d.num_blocks.sum()
+    parts = [("pre-execute", d.phase_pre_execute_s.sum()), ("graph build", d.phase_graph_build_s.sum()),
+             ("integrate", d.phase_integrate_s.sum()), ("execute", d.phase_execute_s.sum())]
+    fig, ax = plt.subplots(figsize=(7, 2.4))
+    left = 0
+    for name, v in parts:
+        ax.barh([title], [v / n * 1000], left=left, label=name); left += v / n * 1000
+    ax.barh(["sequential exec"], [d.seq_time_s.sum() / n * 1000], color="#bbb")
+    ax.set_xlabel("ms per block"); ax.legend(ncol=4, fontsize=8, loc="lower right")
+    fig.tight_layout(); fig.savefig(path, dpi=140); plt.close(fig)
+
+
+def plot_artificial(g, path):
+    fig, axes = plt.subplots(1, 4, figsize=(13, 3.2), sharey=True)
+    for ax, M in zip(axes, sorted(g.M.unique())):
+        sub = g[g.M == M].sort_values("K")
+        for k, name, mk in [("par", "Block-STM", "o"), ("concat", "Concat", "s"), ("cgraph", "Concat+graph", "P"),
+                            ("graph", "Graph OCC", "^"), ("vegeta", "Vegeta", "v"), ("integrated", "Omakase", "D")]:
+            if k in sub:
+                ax.plot(sub.K, sub[k], marker=mk, label=name)
+        ax.set_title(f"ρ_intra = {M}%"); ax.set_xlabel("ρ_inter (K)")
+    axes[0].set_ylabel("speedup over sequential"); axes[0].legend(fontsize=7)
+    fig.tight_layout(); fig.savefig(path, dpi=140); plt.close(fig)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", default=os.path.join(os.path.dirname(__file__)))
+    ap.add_argument("--out", default=None)
+    a = ap.parse_args()
+    D = a.dir
+    out = a.out or os.path.join(D, "REPORT.md")
+    sections = ["# Rebuttal experiments — generated tables\n",
+                "Machine: c4.8xlarge (18 cores / 36 threads, 58 GiB), t = 8 workers, τ_CV = 0.5, τ_hot = 1.5, InMemoryStorage.\n"]
+    sections.append("Rounds in which any engine fell back to sequential execution of an optimistic window are excluded "
+                    "from every table (see the note at the end for the count per file).\n")
+    missing = []
+
+    real = load([f for f in sorted(glob.glob(os.path.join(D, "real_*.csv")))
+                 if re.fullmatch(r"real_\d+\.csv", os.path.basename(f))])  # timing runs only (not *_diag*.csv)
+    real_d = load([f for f in sorted(glob.glob(os.path.join(D, "real_*_diag.csv")))])
+    real = overlay_vegeta(real, sorted(glob.glob(os.path.join(D, "vegeta", "real_*.csv"))))
+    v2 = load([os.path.join(D, "v2.csv")])
+    v2 = overlay_vegeta(v2, [os.path.join(D, "vegeta", "v2.csv")])
+    v2_d = load([os.path.join(D, "v2_diag.csv")])
+
+    def congestion_section(d, dd):
+        """Worst-case / contention-split view: the congestion-control reading."""
+        out = ["**Worst case across rounds (execution phase, in-memory)**\n"]
+        rows = []
+        for k, name in [("par", "Block-STM"), ("concat", "Block-STM, concatenated"), ("integrated", "Omakase")]:
+            sp = d.seq_time_s / d[f"{k}_time_s"]; ms = d[f"{k}_time_s"] / d.num_blocks * 1000
+            rows.append([name, f"{sp.mean():.2f}×", f"{sp.min():.2f}×", f"{np.percentile(sp, 10):.2f}×",
+                         int((sp < 1.0).sum()), f"{np.percentile(ms, 90) / np.percentile(ms, 50):.2f}"])
+        out.append(md_table(rows, ["Engine", "mean speedup", "worst round", "p10", "rounds slower than sequential", "p90/p50 per-block time"]))
+        if dd is not None and "par_re_exec" in dd:
+            rex = dd.par_re_exec / dd.num_txs
+            rows = []
+            for lab, m in [("low contention (bottom 20% Block-STM re-exec/tx)", rex <= rex.quantile(0.2)),
+                           ("high contention (top 20%)", rex >= rex.quantile(0.8))]:
+                s_ = dd[m]; seq = s_.seq_time_s.sum()
+                rows.append([lab, f"{rex[m].mean():.2f}", f"{seq / s_.par_time_s.sum():.2f}×",
+                             f"{seq / s_.concat_time_s.sum():.2f}×", f"{seq / s_.integrated_time_s.sum():.2f}×"])
+            out.append("\n**Speedup by contention level** (rounds split by Block-STM's re-execution rate)\n\n" +
+                       md_table(rows, ["rounds", "Block-STM re-exec/tx", "Block-STM", "Concat", "Omakase"]))
+        return "\n".join(out) + "\n"
+
+    for label, d, dd, rs_pat in [("Real Ethereum (15 000 mainnet blocks)", real, real_d, "roundsize_full_real_b{P}_*.csv"),
+                                 ("Synthetic V2 (paper §7.2.2)", v2, v2_d, "roundsize_full_v2_b{P}.csv")]:
+        sections.append(f"\n## {label}\n")
+        if d is None:
+            missing.append(label); sections.append("_no results yet_\n"); continue
+        sections.append(throughput_table(d, "Absolute throughput and per-block latency") + "\n")
+        sections.append(phase_table(d, "Where the time goes — full pipeline including the preparatory phases") + "\n")
+        sections.append(proposer_table(D, d, rs_pat, "Every stage on one node with P proposers") + "\n")
+        sections.append(bandwidth_table(d, "Metadata shipped in a proposal") + "\n")
+        sections.append(congestion_section(d, dd))
+        if "Real" in label:
+            sections.append(worst_rounds_section(d, dd))
+        if dd is not None:
+            sections.append(abort_table(dd, "Aborts and re-executions") + "\n")
+        else:
+            missing.append(label + " (diagnostics)")
+        tag = "real" if d is real else "v2"
+        plot_engines(d, label, os.path.join(D, f"plot_{tag}_speedup.png"))
+        plot_phases(d, "Omakase pipeline", os.path.join(D, f"plot_{tag}_phases.png"))
+        sections.append(f"![]({os.path.basename(os.path.join(D, f'plot_{tag}_speedup.png'))}) ![](plot_{tag}_phases.png)\n")
+
+    sections.append("\n## Artificial workload (tunable conflict)\n")
+    txt, g = artificial_grid(D)
+    if txt is None:
+        missing.append("artificial"); sections.append("_no results yet_\n")
+    else:
+        sections.append(txt + "\n")
+        plot_artificial(g, os.path.join(D, "plot_artificial_grid.png"))
+        sections.append("![](plot_artificial_grid.png)\n")
+
+    for sub, pattern, key, label, title in [
+        ("sweeps", "threads_*_t*.csv", "threads", "worker threads", "Thread-count sweep"),
+        ("sweeps", "roundsize_*_b*.csv", "num_blocks", "blocks per round", "Round-size sweep"),
+        ("sweeps", "mergecap_*_c*.csv", "merge_cap", "merge cap (blocks/group)", "Merge-cap sweep (Omakase only varies)"),
+        ("sweeps", "aggressive_*_c*.csv", "merge_cap", "merge cap, tau_cv=0.01", "Aggressive integration (merge unless hot-key conflict)"),
+        ("sweeps", "txcost_*_g*.csv", "tx_target", "simulated work per tx (TARGET)", "Per-transaction cost sweep"),
+    ]:
+        for wl in ["artificial", "real", "v2"]:
+            t = sweep_table(os.path.join(D, sub), pattern.replace("*_", f"{wl}_", 1), key, label)
+            if t:
+                sections.append(f"\n## {title} — {wl}\n\n{t}\n")
+
+    for prefix, tag, label, default, title in [
+        ("hot", "h", "hot-key threshold τ_hot", 1.5, "Hot-key threshold sweep (τ_CV = 0.5) — real"),
+        ("tau", "t", "CV threshold τ_CV", 0.5, "τ_CV sweep (τ_hot = 1.5) — real"),
+    ]:
+        t = param_sweep_table(D, prefix, tag, label, default)
+        if t:
+            sections.append(f"\n## {title}\n\nOnly Omakase depends on this parameter (sequential + Omakase timed, `ENGINES=omakase`).\n\n{t}\n")
+
+    pipes = sorted(glob.glob(os.path.join(D, "sweeps", "pipeline_real_b*.csv")))
+    if pipes:
+        rows = []
+        for f in pipes:
+            d = pd.read_csv(f).iloc[0]
+            sp = lambda x: d.seq_time_s / x
+            rows.append([int(d.blocks_per_round), int(d.rounds), int(d.num_txs), f"{d.seq_time_s:.2f}",
+                         f"{d.par_time_s:.2f} ({sp(d.par_time_s):.2f}×)",
+                         f"{d.omakase_serial_s:.2f} ({sp(d.omakase_serial_s):.2f}×)",
+                         f"{d.integrate_only_s:.2f}",
+                         f"{d.omakase_pipelined_s:.2f} ({sp(d.omakase_pipelined_s):.2f}×)",
+                         f"{(d.omakase_serial_s - d.omakase_pipelined_s) / d.integrate_only_s * 100:.0f}%"])
+        sections.append("\n## Pipelined integration — real\n\n" + md_table(rows,
+            ["blocks/round", "rounds", "txs", "seq s", "Block-STM s", "Omakase serial s", "integration s",
+             "Omakase pipelined s", "integration hidden"]) + "\n")
+
+    import re as _re
+    def _dt(f):  # (delay_ns, threads) from statelat_real_d<delay>[_t<threads>].csv
+        m = _re.match(r"statelat_real_d(\d+)(?:_t(\d+))?\.csv", os.path.basename(f))
+        return (int(m.group(1)), int(m.group(2) or 8))
+    lat_all = sorted(glob.glob(os.path.join(D, "sweeps", "statelat_real_d*.csv")), key=_dt)
+    lat = [f for f in lat_all if _dt(f)[1] == 8]
+    lat_threads = [f for f in lat_all if _dt(f)[1] != 8 or _dt(f)[0] in (20000, 50000)]
+    if lat:
+        rows = []
+        for f in lat:
+            d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+            if not len(d):
+                continue
+            nb = d.num_blocks.sum(); seq = d.seq_time_s.sum(); ms = lambda c: d[c].sum() / nb * 1000
+            integ, ex, par, con = d.phase_integrate_s.sum(), d.integrated_time_s.sum(), d.par_time_s.sum(), d.concat_time_s.sum()
+            rows.append([f"{int(d.delay_ns.iloc[0]) / 1000:g}", f"{ms('seq_time_s'):.1f}", f"{seq / par:.2f}", f"{seq / con:.2f}",
+                         f"{seq / ex:.2f}", f"{seq / (ex + integ):.2f}", f"{ms('phase_integrate_s'):.2f}",
+                         f"{integ / (ex + integ) * 100:.0f}%", f"{ms('par_time_s') - ms('integrated_time_s'):.2f}",
+                         f"{d.par_re_exec.sum() / d.num_txs.sum():.2f}", f"{d.integ_re_exec.sum() / d.num_txs.sum():.2f}"])
+        sections.append("\n## Emulated state-access latency — real Ethereum (20 Cancun batches, t=8)\n\n" + md_table(rows,
+            ["read latency µs", "seq ms/block", "Block-STM ×", "Concat ×", "Omakase exec ×", "Omakase exec+integrate ×",
+             "integrate ms/block", "integrate share of validator time", "exec saved vs Block-STM ms/block", "re-exec/tx Block-STM", "Omakase"]) +
+            "\n\nEvery account/slot read pays the latency in every engine; graph construction and integration never touch state and stay constant.\n")
+        if lat_threads:
+            rows = []
+            for f in lat_threads:
+                d = pd.read_csv(f); d = d[d.seq_time_s > 0]
+                if not len(d):
+                    continue
+                dl, th = _dt(f); seq = d.seq_time_s.sum(); integ, ex = d.phase_integrate_s.sum(), d.integrated_time_s.sum()
+                rows.append([f"{dl / 1000:g}", th, f"{seq / d.par_time_s.sum():.2f}", f"{seq / d.concat_time_s.sum():.2f}",
+                             f"{seq / ex:.2f}", f"{seq / (ex + integ):.2f}"])
+            sections.append("\n**Read latency × worker count** (real Ethereum, 20 batches; speedup over sequential at the same latency)\n\n" +
+                            md_table(rows, ["read latency µs", "workers", "Block-STM", "Concat", "Omakase exec", "Omakase exec+integ"]) + "\n")
+
+    lives = sorted(glob.glob(os.path.join(D, "live", "summary*.csv")))
+    for live in lives:
+        d = pd.read_csv(live, header=None, names=["mode", "log", "rounds", "blocks", "tps", "busy", "bpr"])
+        d["step"] = (d.groupby("mode").cumcount() // 4)  # each driver invocation appends 4 validators per mode
+        rows = []
+        for (mode, step), g in d.groupby(["mode", "step"], sort=False):
+            cap = g.tps.mean() / max(g.busy.mean(), 1e-9)
+            rows.append([mode, int(step), f"{g.tps.mean():,.0f}", f"{g.busy.mean() * 100:.0f}%", f"{cap:,.0f}",
+                         f"{g.bpr.mean():.1f}", f"{g.blocks.mean() * 1.0 / max(g.rounds.mean(), 1):.1f}" if False else f"{g.rounds.mean():,.0f}"])
+        tag = os.path.basename(live).replace("summary", "").replace(".csv", "").strip("_") or "default"
+        sections.append(f"\n## Live 4-validator Mysticeti deployment — {tag} (ERC20 8x4x8, steady state, per validator)\n\n" + md_table(rows,
+            ["execution mode", "load step", "committed tx/s", "executor busy", "implied executor capacity tx/s", "blocks/round", "rounds"]) +
+            "\n\nThe generator caps committed throughput at ~40k tx/s per validator in every mode, so the executor is never the bottleneck here; "
+            "*executor busy* is the share of wall-clock the executor spends on its round (all stages, pre-execution and integration included for Omakase), "
+            "and *implied capacity* = tx/s ÷ busy. Load step 0/1 = successive PEVM_LOAD settings.\n")
+    # Per-phase executor cost of the live Omakase mode (ROUND lines with prep_ms/integ_ms/exec_only_ms).
+    ph_pat = re.compile(r"ROUND blocks=(\d+) txs=(\d+) exec_ms=([\d.]+) total_txs=\d+ elapsed_s=([\d.]+) "
+                        r"Throughput = [\d.]+ prep_ms=([\d.]+) integ_ms=([\d.]+) exec_only_ms=([\d.]+)")
+    for pdir in sorted(glob.glob(os.path.join(D, "live", "phases_*"))):
+        rows, agg = [], [0.0] * 5
+        for f in sorted(glob.glob(os.path.join(pdir, "integrated_v*.log"))):
+            st = [tuple(map(float, m.groups())) for m in ph_pat.finditer(open(f, errors="ignore").read())]
+            st = [r for r in st if 20 <= r[3] <= 90]
+            if not st:
+                continue
+            txs = sum(r[1] for r in st)
+            tot, pre, integ, ex = (sum(r[i] for r in st) for i in (2, 4, 5, 6))
+            rows.append([os.path.basename(f), f"{len(st)}", f"{sum(r[0] for r in st) / len(st):.1f}", f"{tot * 1e3 / txs:.2f}",
+                         f"{pre * 1e3 / txs:.2f}", f"{integ * 1e3 / txs:.2f}", f"{ex * 1e3 / txs:.2f}", f"{(tot - pre * 0.75) * 1e3 / txs:.2f}"])
+            for i, v in enumerate((txs, tot, pre, integ, ex)):
+                agg[i] += v
+        if rows:
+            txs, tot, pre, integ, ex = agg
+            rows.append(["**mean**", "", "", f"**{tot * 1e3 / txs:.2f}**", f"**{pre * 1e3 / txs:.2f}**", f"**{integ * 1e3 / txs:.2f}**",
+                         f"**{ex * 1e3 / txs:.2f}**", f"**{(tot - pre * 0.75) * 1e3 / txs:.2f}**"])
+            sections.append(f"\n## Live Omakase executor cost per phase — {os.path.basename(pdir)} (us per committed tx, steady state)\n\n" +
+                md_table(rows, ["validator", "rounds", "blocks/round", "total", "pre-execute + graph", "integrate", "execute", "own 1/4 of proposer stages"]) +
+                "\n\nThe prototype re-derives every block's graph at every validator (it does not ship graphs with proposals), so the "
+                "pre-execute + graph column is counted P = 4 times; the last column charges each validator only its own quarter of it. "
+                "The remainder (total minus the three phases) is hex decoding and state bookkeeping.\n")
+
+    if missing:
+        sections.append("\n---\n_Still missing: " + ", ".join(missing) + "_\n")
+    if DROPPED:
+        sections.append("\n## Rounds excluded because an engine fell back to sequential execution\n\n" +
+                        md_table([[k, v] for k, v in sorted(DROPPED.items())], ["file", "rounds excluded"]) + "\n")
+
+    with open(out, "w") as f:
+        f.write("\n".join(sections))
+    print("\n".join(sections))
+    print(f"\n[written {out}]", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

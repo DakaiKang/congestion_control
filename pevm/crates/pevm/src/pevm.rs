@@ -114,6 +114,8 @@ pub struct Pevm {
     dropper: AsyncDropper<(MvMemory, Scheduler, Vec<TxEnv>)>,
     /// Incarnation-0 access set keys from last parallel execution, for divergence analysis
     pub last_incarnation0_keys: Vec<Option<(std::collections::HashSet<u64>, std::collections::HashSet<u64>)>>,
+    /// Abort / re-execution counters from the last parallel execution.
+    pub last_diagnostics: crate::ExecDiagnostics,
 }
 
 impl Pevm {
@@ -237,6 +239,10 @@ impl Pevm {
         if let Some(abort_reason) = self.abort_reason.take() {
             match abort_reason {
                 AbortReason::FallbackToSequential => {
+                    if std::env::var("PEVM_TRACE_FALLBACK").is_ok() {
+                        eprintln!("[Pevm] FALLBACK to sequential (self-destructed account read) block_size={}", txs.len());
+                    }
+                    self.last_diagnostics = crate::ExecDiagnostics { block_size: txs.len(), fallbacks: 1, ..Default::default() };
                     self.dropper.drop((mv_memory, scheduler, Vec::new()));
                     return execute_revm_sequential(chain, storage, spec_id, block_env, txs);
                 }
@@ -380,8 +386,12 @@ impl Pevm {
         }
 
         let re_execs = scheduler.total_reexecutions();
+        self.last_diagnostics = mv_memory.diagnostics(block_size);
+        self.last_diagnostics.re_executions = re_execs;
         #[cfg(feature = "diagnostics")]
         {
+            self.last_diagnostics.blocking_aborts =
+                scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
             self.last_incarnation0_keys = mv_memory.get_incarnation0_keys();
             let blocking = scheduler.blocking_reexecs.load(std::sync::atomic::Ordering::Relaxed);
             let blk_est = mv_memory.blocking_estimate.load(std::sync::atomic::Ordering::Relaxed);
@@ -597,14 +607,23 @@ pub struct TxAccessSets {
 /// - For lazy txs (pure ETH transfers: recipient is an EOA), `caller` and
 ///   `recipient` are excluded from the read set (pevm returns a mock account and
 ///   writes only a `LazySender`/`LazyRecipient` delta, not a full account entry).
-struct TrackingDB<DB> {
+/// Include account-level (balance/nonce/code) reads in the predicted read set
+/// used for conflict-graph construction (default on, as the paper's Algorithm 1
+/// requires; `TRACK_BASIC_READS=0` restores the storage-only read set of the
+/// submission's experiments).
+pub(crate) fn track_basic_reads() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("TRACK_BASIC_READS").map(|v| v != "0").unwrap_or(true))
+}
+
+pub(crate) struct TrackingDB<DB> {
     pub inner: DB,
     pub reads: HashSet<u64>,
     /// Block-level: coinbase address, excluded from all sets.
-    coinbase: Address,
+    pub(crate) coinbase: Address,
     /// Tx-level: caller + recipient for lazy (pure-ETH-transfer) txs.
     /// Cleared and repopulated before each transaction.
-    lazy_addresses: HashSet<Address>,
+    pub(crate) lazy_addresses: HashSet<Address>,
 }
 
 impl<DB: Database> TrackingDB<DB> {
@@ -619,7 +638,16 @@ impl<DB: Database> Database for TrackingDB<DB> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        // MemoryLocation::Basic excluded: only storage slots are compared for divergence analysis
+        // Account-level reads are part of the predicted read set (the paper's
+        // Algorithm 1 needs them: a transaction's read of its own sender
+        // account is what orders same-sender transactions). Only the zero
+        // address and the coinbase are skipped. TRACK_BASIC_READS=0 restores
+        // the storage-only read set of the submission's experiments.
+        // Lazy (pure-transfer) sender/recipient accounts are *not* skipped here:
+        // the sender's own account read is what orders same-sender transfers.
+        if track_basic_reads() && address != Address::ZERO && address != self.coinbase {
+            self.reads.insert(hash_deterministic(MemoryLocation::Basic(address)));
+        }
         self.inner.basic(address)
     }
 
@@ -736,7 +764,7 @@ pub fn execute_revm_sequential_with_access_sets<S: Storage, C: PevmChain>(
 /// - Storage(addr, slot): slot value changed
 ///
 /// Excludes `coinbase` (pevm applies gas rewards via LazyRecipient, never as a full write).
-fn extract_write_set_from_result(
+pub(crate) fn extract_write_set_from_result(
     result_and_state: &ResultAndState,
     coinbase: Address,
 ) -> HashSet<u64> {

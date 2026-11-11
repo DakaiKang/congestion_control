@@ -1,4 +1,74 @@
 use std::collections::{HashSet, HashMap, BinaryHeap};
+use std::sync::OnceLock;
+
+/// Which dependencies become graph edges (env `GRAPH_EDGES`).
+///
+/// * `Raw` (`GRAPH_EDGES=raw`; the default until 2026-11-10): the per-key
+///   tail is the last *writer*; every reader of a key gets an edge from that
+///   writer; a key's head set is the readers before its first write plus the
+///   first writer. No explicit WAW edges: with account-level reads in the read
+///   set (see `TRACK_BASIC_READS`) every writer has read the account it
+///   writes, so consecutive writers are already RAW-linked (measured identical
+///   to `RawWaw` on real Ethereum). The reordered list may flip WAR/WAW pairs,
+///   so the graph has to be rebuilt in the new order.
+/// * `Waw` (`GRAPH_EDGES=waw`; the code path the submission's experiments
+///   used): an edge only between two writers of the same key; the per-key
+///   tail is the last *toucher*.
+/// * `RawWaw`: `Raw` plus an edge between consecutive writers of a key.
+/// * `RawWar` (`GRAPH_EDGES=raw+war`): `Raw` plus an edge from every reader
+///   of a key since its last write to the key's next writer.
+/// * `All` (default; the paper's Algorithm 1): RAW, WAW and WAR. The graph then orders every
+///   conflicting pair exactly as the block does, so the reordered list of
+///   Algorithm 3 is conflict-equivalent to block order: rebuilding the graph
+///   in that order reproduces the same edges, and the committed state of a
+///   block equals its sequential block-order state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EdgeMode {
+    Waw,
+    Raw,
+    RawWaw,
+    RawWar,
+    All,
+}
+
+impl EdgeMode {
+    pub fn from_env() -> Self {
+        match std::env::var("GRAPH_EDGES").as_deref() {
+            Ok("waw") => EdgeMode::Waw,
+            Ok("raw+waw") | Ok("raw_waw") | Ok("rawwaw") => EdgeMode::RawWaw,
+            Ok("raw+war") | Ok("raw_war") | Ok("rawwar") => EdgeMode::RawWar,
+            Ok("all") | Ok("raw+waw+war") => EdgeMode::All,
+            Ok("raw") => EdgeMode::Raw,
+            _ => EdgeMode::All,
+        }
+    }
+    /// Consecutive writers of a key are linked.
+    pub fn waw(self) -> bool { matches!(self, EdgeMode::RawWaw | EdgeMode::All) }
+    /// Readers of a key since its last write precede the key's next writer.
+    pub fn war(self) -> bool { matches!(self, EdgeMode::RawWar | EdgeMode::All) }
+    /// Every conflicting pair is ordered: any topological order is
+    /// conflict-equivalent to the insertion order.
+    pub fn complete(self) -> bool { self == EdgeMode::All }
+    /// Edge policy of the graphs the *executor* gates on (env `GATE_EDGES`).
+    /// Default `raw`: the multi-version store resolves WAW and WAR by index,
+    /// so a transaction only has to wait for its RAW parents; the WAW/WAR
+    /// edges of `All` serve the reorder and the integration decisions.
+    /// `GATE_EDGES=same` gates on every edge of the current mode.
+    pub fn gating() -> Self {
+        static GATE: OnceLock<EdgeMode> = OnceLock::new();
+        *GATE.get_or_init(|| match std::env::var("GATE_EDGES").as_deref() {
+            Ok("same") | Ok("all") => EdgeMode::current(),
+            Ok("raw+waw") | Ok("raw_waw") | Ok("rawwaw") => EdgeMode::RawWaw,
+            Ok("raw+war") | Ok("raw_war") | Ok("rawwar") => EdgeMode::RawWar,
+            Ok("waw") => EdgeMode::Waw,
+            _ => EdgeMode::Raw,
+        })
+    }
+    pub fn current() -> Self {
+        static MODE: OnceLock<EdgeMode> = OnceLock::new();
+        *MODE.get_or_init(EdgeMode::from_env)
+    }
+}
 use smallvec::SmallVec;
 
 /// In-line storage for `parent_indices`. Real ETH blocks see ~0.5 parents per
@@ -179,12 +249,43 @@ pub struct TransactionGraph {
     pub temp_parents: Vec<u32>,
     pub hot_key_threshold: f64, // Threshold to classify hot keys based on access frequency
     pub hot_keys: HashSet<u64>,
+    /// Edge policy this graph was built with (see [`EdgeMode`]).
+    pub edge_mode: EdgeMode,
+    /// Paper (Algorithm 1) head sets: per key, the transactions that access it
+    /// before its first write in this graph, plus that first writer. Only
+    /// maintained in `Raw`/`RawWaw` mode; `tail_txns` then holds the last writer.
+    pub head_sets: HashMap<u64, Vec<TransactionId>>,
+    /// `RawWar`/`All` modes: per key, the readers since the key's last write
+    /// in this graph (all its readers if it was never written). They precede
+    /// the key's next writer (WAR).
+    pub tail_readers: HashMap<u64, Vec<TransactionId>>,
 }
 
 impl TransactionGraph {
 
     // Initialize a new empty transaction graph
     pub fn new() -> Self {
+        Self::new_with_mode(EdgeMode::current())
+    }
+
+    /// The same graph with the edges recomputed under `mode`, nodes kept in
+    /// their current order (same predicted sets, same threshold, no
+    /// simulation result).
+    pub fn rebuilt_with_mode(&self, mode: EdgeMode) -> Self {
+        let mut g = Self::new_with_mode(mode);
+        g.hot_key_threshold = self.hot_key_threshold;
+        for node in &self.nodes {
+            let mut n = node.clone();
+            n.children_indices.clear();
+            n.parent_indices.clear();
+            n.longest_suffix = n.gas_cost;
+            g.add_transaction(n).expect("rebuilding a graph cannot produce duplicate ids");
+        }
+        g
+    }
+
+    /// An empty graph whose edges follow `mode` rather than `GRAPH_EDGES`.
+    pub fn new_with_mode(mode: EdgeMode) -> Self {
         Self {
             nodes: Vec::new(),
             id_to_index: HashMap::new(),
@@ -195,12 +296,20 @@ impl TransactionGraph {
             temp_parents: Vec::new(),
             hot_key_threshold: 1.5,
             hot_keys: HashSet::new(),
+            edge_mode: mode,
+            head_sets: HashMap::new(),
+            tail_readers: HashMap::new(),
         }
     }
 
     /// Set the hot key threshold
     pub fn set_hot_key_threshold(&mut self, threshold: f64) {
         self.hot_key_threshold = threshold;
+        // Hot keys are derived from the last simulation with the threshold in
+        // force at that time; keep them consistent if the threshold changes.
+        if self.simulation_result.is_some() {
+            self.detect_hot_keys();
+        }
     }
 
     /// Gets a reference to a node by TransactionId
@@ -259,6 +368,9 @@ impl TransactionGraph {
         if self.id_to_index.contains_key(&tx_id) {
             return Err(format!("Transaction {:?} already exists in graph", tx_id));
         }
+        if self.edge_mode != EdgeMode::Waw {
+            return self.add_transaction_paper(node);
+        }
 
         // Collect all addresses this transaction touches
         // Collect all addresses this transaction touches
@@ -309,6 +421,150 @@ impl TransactionGraph {
         }
 
         Ok(new_idx)
+    }
+
+    /// Algorithm 1 of the paper (`Raw` / `RawWaw` modes). `tail_txns[r]` is
+    /// the last writer of `r`; `head_sets[r]` the accessors of `r` before its
+    /// first write plus that first writer. A reader of `r` depends on the tail
+    /// writer; in `RawWaw` mode so does the next writer.
+    fn add_transaction_paper(&mut self, node: TransactionNode) -> Result<usize, String> {
+        let tx_id = node.transaction_id();
+        let reads: Vec<u64> = node.read_set.iter().copied().collect();
+        let writes: Vec<u64> = node.write_set.iter().copied().collect();
+        let new_idx = self.add_node(node);
+
+        let waw = self.edge_mode.waw();
+        let war = self.edge_mode.war();
+        let mut parents: HashSet<TransactionId> = HashSet::new();
+        for r in &reads {
+            match self.tail_txns.get(r) {
+                Some(t) => {
+                    parents.insert(t.clone());
+                }
+                None => self.head_sets.entry(*r).or_default().push(tx_id.clone()),
+            }
+            if war {
+                self.tail_readers.entry(*r).or_default().push(tx_id.clone());
+            }
+        }
+        for r in &writes {
+            match self.tail_txns.get(r) {
+                Some(t) => {
+                    if waw {
+                        parents.insert(t.clone());
+                    }
+                }
+                None => {
+                    let hs = self.head_sets.entry(*r).or_default();
+                    if !hs.contains(&tx_id) {
+                        hs.push(tx_id.clone());
+                    }
+                }
+            }
+            if war {
+                if let Some(rs) = self.tail_readers.get(r) {
+                    parents.extend(rs.iter().cloned());
+                }
+            }
+        }
+        parents.remove(&tx_id);
+        for p in &parents {
+            self.add_edge(p.clone(), tx_id.clone())?;
+        }
+        for r in &writes {
+            self.tail_txns.insert(*r, tx_id.clone());
+            if war {
+                // This transaction is now the last writer: readers before it
+                // no longer constrain the next writer.
+                self.tail_readers.remove(r);
+            }
+        }
+        // `head_txns` (first toucher) is kept for the WAW-mode code paths.
+        for r in reads.iter().chain(writes.iter()) {
+            self.head_txns.entry(*r).or_insert_with(|| tx_id.clone());
+        }
+        Ok(new_idx)
+    }
+
+    /// Algorithm 1 integration for `Raw` / `RawWaw`: for every key written in
+    /// G1, attach G1's last writer to every head node of G2 for that key; keys
+    /// G1 never wrote keep G2's heads as heads of the integrated graph.
+    fn integrate_graph_paper(&mut self, other: &TransactionGraph) -> Result<usize, String> {
+        let mut edges_added = 0;
+        let war = self.edge_mode.war();
+        let mut keys: HashSet<u64> = HashSet::new();
+        keys.extend(other.head_sets.keys().copied());
+        keys.extend(other.tail_txns.keys().copied());
+        if war {
+            keys.extend(other.tail_readers.keys().copied());
+        }
+        for r in keys {
+            if war {
+                if other.tail_txns.contains_key(&r) {
+                    // WAR across graphs: G1's readers since its last write of
+                    // r precede G2's first writer of r (the head of G2 that
+                    // writes r).
+                    if let (Some(readers), Some(heads)) =
+                        (self.tail_readers.get(&r).cloned(), other.head_sets.get(&r))
+                    {
+                        let first_writer = heads.iter().find(|h| {
+                            other.get_node(h).map_or(false, |n| n.write_set.iter().any(|k| *k == r))
+                        }).cloned();
+                        if let Some(w2) = first_writer {
+                            for rd in readers {
+                                if rd != w2 && !self.has_edge(&rd, &w2)? {
+                                    self.add_edge(rd, w2.clone())?;
+                                    edges_added += 1;
+                                }
+                            }
+                        }
+                    }
+                    // G2 wrote r, so G2's readers after that write are the
+                    // merged graph's tail readers.
+                    match other.tail_readers.get(&r) {
+                        Some(rs) => { self.tail_readers.insert(r, rs.clone()); }
+                        None => { self.tail_readers.remove(&r); }
+                    }
+                } else if let Some(rs) = other.tail_readers.get(&r) {
+                    // G2 only read r: its readers join G1's tail readers.
+                    let e = self.tail_readers.entry(r).or_default();
+                    for x in rs {
+                        if !e.contains(x) {
+                            e.push(x.clone());
+                        }
+                    }
+                }
+            }
+            match self.tail_txns.get(&r).cloned() {
+                Some(g1_tail) => {
+                    if let Some(heads) = other.head_sets.get(&r) {
+                        for h in heads {
+                            if h != &g1_tail && !self.has_edge(&g1_tail, h)? {
+                                self.add_edge(g1_tail.clone(), h.clone())?;
+                                edges_added += 1;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some(heads) = other.head_sets.get(&r) {
+                        let e = self.head_sets.entry(r).or_default();
+                        for h in heads {
+                            if !e.contains(h) {
+                                e.push(h.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(t2) = other.tail_txns.get(&r) {
+                self.tail_txns.insert(r, t2.clone());
+            }
+            if let Some(h) = other.head_txns.get(&r) {
+                self.head_txns.entry(r).or_insert_with(|| h.clone());
+            }
+        }
+        Ok(edges_added)
     }
 
     pub fn update_longest_suffix_postorder(&mut self) {
@@ -381,7 +637,22 @@ impl TransactionGraph {
     }
 
     /// Simulate parallel execution with k threads using a min-heap for completion times
-    pub fn simulate_parallel_execution(&mut self, k: usize) -> (){
+    /// Algorithms 2-3 of the paper followed by the per-resource access-span
+    /// analysis (Definition 1) and hot-key detection.
+    pub fn simulate_parallel_execution(&mut self, k: usize) {
+        self.simulate_schedule(k);
+        self.analyze_key_access_spans();
+    }
+
+    /// Algorithms 2-3 only: the schedule (execution order, per-thread gas),
+    /// without access spans or hot keys. Used for the proposal-order graph,
+    /// whose only purpose is to produce the reordered list; the graph rebuilt
+    /// in that order is the one that gets the full analysis.
+    pub fn simulate_order_only(&mut self, k: usize) {
+        self.simulate_schedule(k);
+    }
+
+    fn simulate_schedule(&mut self, k: usize) {
         // Initialize temporary parent COUNTS (we only need to know how many
         // parents remain, not which ones).
         self.temp_parents = self.nodes.iter()
@@ -478,8 +749,6 @@ impl TransactionGraph {
         }
         
         self.simulation_result = Some(SimulationResult::new(current_time, threads, execution_order));
-        // println!("simulation_result: {:#?}", self.simulation_result.clone().unwrap().thread_results);
-        self.analyze_key_access_spans();
     }
     
     /// Remove a transaction and add its newly-freed children to the heap
@@ -551,6 +820,10 @@ impl TransactionGraph {
                 .collect();
         }
 
+        if self.edge_mode != EdgeMode::Waw {
+            return self.integrate_graph_paper(other);
+        }
+
         // Step 4: For each address, connect G1's tail to G2's head
         for addr in &all_addresses {
             let g1_tail = self.tail_txns.get(addr).cloned();
@@ -594,6 +867,38 @@ impl TransactionGraph {
         Ok(edges_added)
     }
 
+    /// Experimental (`GRAPH_RAW_EDGES=all|cross`): add read-after-write edges
+    /// over the final execution order, so a reader is gated on the last
+    /// preceding writer of every key it reads. `cross_only` adds them only
+    /// when writer and reader come from different blocks (`replica`), i.e. the
+    /// dependencies a block boundary used to resolve before integration.
+    /// Returns the number of edges added. Nodes must be in execution order.
+    pub fn add_raw_edges(&mut self, cross_only: bool) -> usize {
+        let mut last_writer: HashMap<u64, usize> = HashMap::new();
+        let mut added = 0;
+        for i in 0..self.nodes.len() {
+            let replica = self.nodes[i].replica;
+            let reads: Vec<u64> = self.nodes[i].read_set.iter().copied().collect();
+            for k in reads {
+                if let Some(&j) = last_writer.get(&k) {
+                    if j != i
+                        && (!cross_only || self.nodes[j].replica != replica)
+                        && !self.nodes[j].children_indices.contains(&i)
+                    {
+                        self.nodes[j].children_indices.push(i);
+                        self.nodes[i].parent_indices.push(j);
+                        added += 1;
+                    }
+                }
+            }
+            let writes: Vec<u64> = self.nodes[i].write_set.iter().copied().collect();
+            for k in writes {
+                last_writer.insert(k, i);
+            }
+        }
+        added
+    }
+
     /// Detect and store hot keys
     fn detect_hot_keys(&mut self) {
         self.hot_keys.clear();
@@ -620,6 +925,13 @@ impl TransactionGraph {
                 .collect();
             
             let mut key_spans: HashMap<u64, KeyAccessSpan> = HashMap::new();
+
+            // Only keys that some transaction *writes* can be hot: a key that is
+            // merely read (e.g. a popular contract's account info, which every
+            // caller reads) creates no dependency and must not veto integration.
+            let written: HashSet<u64> = self.nodes.iter()
+                .flat_map(|n| n.write_set.iter().copied())
+                .collect();
             
             for (_thread_id, tx_id, start_time, end_time) in &result.execution_order {
                 if let Some(&node) = node_map.get(&(tx_id.id as u64)) {
@@ -628,6 +940,7 @@ impl TransactionGraph {
                     let all_keys: HashSet<u64> = node.read_set.iter()
                         .chain(node.write_set.iter())
                         .copied()
+                        .filter(|k| written.contains(k))
                         .collect();
                     
                     for key in all_keys {

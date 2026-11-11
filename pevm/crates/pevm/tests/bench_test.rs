@@ -613,6 +613,7 @@ pub fn different_conflict_test(
     // 4. Greedy integration
     println!("Greedy integration...");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         tau_cv: 0.5,
         num_threads: std::thread::available_parallelism()
             .map(|n| n.get())
@@ -1090,6 +1091,7 @@ pub fn different_conflict_test_real_blocks(
     // 4. Greedy integration
     println!("\n=== 5. Greedy Integration ===");
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         tau_cv: 0.5,
         num_threads: parallel_concurrency().get(),
     });
@@ -1887,6 +1889,7 @@ fn run_one_batch(
     let tau_cv: f64 = std::env::var("TAU_CV")
         .ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         tau_cv,
         num_threads: parallel_concurrency().get(),
     });
@@ -2165,6 +2168,7 @@ fn test_integration_vs_execution_smoke() {
     println!("\n=== Timed: greedy integration (tau_cv={}, hot_key_threshold={}) ===",
         tau_cv, hot_key_threshold);
     let integrator = GreedyIntegrator::new(GreedyIntegratorConfig {
+        max_group_blocks: 10,
         tau_cv,
         num_threads: parallel_concurrency().get(),
     });
